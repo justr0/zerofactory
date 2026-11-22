@@ -225,6 +225,16 @@ def spawn_agent_worker(
     except Exception:
         pass
 
+    task_meta: dict = {}
+    try:
+        task_meta = (
+            json.loads(metadata or "{}")
+            if isinstance(metadata, str)
+            else dict(metadata or {})
+        )
+    except Exception:
+        task_meta = {}
+
     if assignee == "zf-reviewer":
         target_branch = ""
         if board_slug:
@@ -234,16 +244,40 @@ def spawn_agent_worker(
                 except (ImportError, ValueError):
                     from dashboard.plugin_api import get_db_conn
                 with get_db_conn() as conn:
-                    row = conn.execute(
-                        "SELECT target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC LIMIT 1",
-                        (board_slug,),
-                    ).fetchone()
+                    row = None
+                    if repo_alias:
+                        row = conn.execute(
+                            "SELECT target_branch FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
+                            (board_slug, repo_alias),
+                        ).fetchone()
+                    if not row or not row[0]:
+                        row = conn.execute(
+                            "SELECT target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC LIMIT 1",
+                            (board_slug,),
+                        ).fetchone()
                     if row and row[0]:
                         target_branch = str(row[0]).strip()
             except Exception:
                 pass
+        current_review_round = (
+            int(
+                task_meta.get(
+                    "review_round", task_meta.get("commit_review_count", 0)
+                )
+            )
+            + 1
+        )
+        max_review_rounds = int(
+            os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "2")
+        )
+        spec_text = str(task_meta.get("specification") or description or "")
+        skip_untested = bool(task_meta.get("skip_untested_check"))
         pre_digested_git = _d().digest_reviewer_git_context(
-            Path(workdir), branch_name, target_branch=target_branch or None
+            Path(workdir),
+            branch_name,
+            target_branch=target_branch or None,
+            spec_text=spec_text,
+            skip_untested_check=skip_untested,
         )
         pre_digested_block = f"\n{pre_digested_git}\n\n" if pre_digested_git else "\n"
         automerge_reviewer_block = (
@@ -258,15 +292,16 @@ def spawn_agent_worker(
             else ""
         )
         reviewer_approved_action = (
-            "run `hermes zerofactory block {task_id} --reason 'approved'` (Auto-Merge is ACTIVE: the dispatcher will automatically merge this PR into the target branch upon your approval; DO NOT mark done yourself)."
+            f"run `hermes zerofactory block {task_id} --reason 'approved'` (Auto-Merge is ACTIVE: the dispatcher will automatically merge this PR into the target branch upon your approval; DO NOT mark done yourself)."
             if automerge_enabled
-            else "run `hermes zerofactory block {task_id} --reason 'approved'` (the task will be assigned to human for review/merge, and the dispatcher will automatically move the task to 'done' once merged on GitHub; DO NOT mark done yourself)."
+            else f"run `hermes zerofactory block {task_id} --reason 'approved'` (the task will be assigned to human for review/merge, and the dispatcher will automatically move the task to 'done' once merged on GitHub; DO NOT mark done yourself)."
         )
         prompt = (
             f"Task ID: {task_id}\n"
             f"Title: {title}\n"
             f"Priority: {priority}\n"
             f"Assigned Role: {assignee}\n"
+            f"Review Round: Round {current_review_round} of {max_review_rounds}\n"
             f"{repo_header}"
             f"\n"
             f"Description:\n{description or 'No description provided.'}\n\n"
@@ -279,20 +314,20 @@ def spawn_agent_worker(
             f"{automerge_reviewer_block}"
             f"Your goal as Reviewer:\n"
             f"1. Examine the Pull Request branch changes ({branch_name or 'main'}) for correctness, edge cases, test coverage, and security (review the pre-digested diff above).\n"
-            f"2. Apply Ponytail Anti-Overengineering Review (7-Rung Ladder of Laziness):\n"
-            f"   - Diff Scope & Hygiene (Rung 7): Reject drive-by reformatting, unrelated changes, or leftover debug code.\n"
+            f"2. Apply Ponytail Anti-Overengineering Review (7-Rung Ladder of Laziness) & Diff Hygiene Scorecard:\n"
+            f"   - Diff Scope & Hygiene (Rung 7): Check the Diff Hygiene Scorecard above; if the diff preview was truncated, inspect remaining files via `git diff` before approving. Reject drive-by reformatting, unrelated changes, or leftover debug code.\n"
             f"   - Dependency Veto (Rungs 3 & 5): Reject newly added packages if standard library or existing packages suffice.\n"
-            f"   - Simplicity & YAGNI (Rungs 1 & 6): Reject premature abstractions, unnecessary wrappers, single-caller factories, and deep nesting.\n"
+            f"   - Simplicity & YAGNI (Rungs 1 & 6): Reject premature abstractions, unnecessary wrappers, single-caller factories, tautological mock-only tests, and deep nesting.\n"
             f"3. Run automated test suites and linters in your workspace ({workdir}).\n"
             f'4. Submit your review feedback on GitHub as a comment (`gh pr review --comment -b "[AI:zf-reviewer] [Reviewer Feedback] ..."` or inline via `gh api`). Do not use `--approve` or `--request-changes` as GitHub prevents authors/tokens from approving their own PRs.\n'
-            f'   - AI ATTRIBUTION: Every GitHub comment or review you post (review bodies, `gh pr comment`, inline `gh api` comments) MUST begin with `[AI:zf-reviewer]` (e.g. `"[AI:zf-reviewer] [Reviewer Feedback] Round 1: ..."`) so humans can distinguish agent output. Do not strip the `[AI:zf-builder]` prefix from the auto-opened PR title or body.\n'
+            f'   - AI ATTRIBUTION: Every GitHub comment or review you post (review bodies, `gh pr comment`, inline `gh api` comments) MUST begin with `[AI:zf-reviewer]` (e.g. `"[AI:zf-reviewer] [Reviewer Feedback] Round {current_review_round}: ..."`) so humans can distinguish agent output. Do not strip the `[AI:zf-builder]` prefix from the auto-opened PR title or body.\n'
             f"5. Continuous Learning & Repository Knowledge:\n"
             f"   - If you catch a recurring mistake, testing gotcha, or project convention that future tasks should follow, record it!\n"
             f"   - In your review comment or summary, include a line: `GOTCHA: <rule>` or `CONVENTION: <rule>` (the system will auto-record it).\n"
             f'   - Or run: `hermes zerofactory memory add --board {board_slug or "default"} "<rule>" --category <gotcha|convention>`.\n'
             f"6. When finished:\n"
             f"   - If approved: {reviewer_approved_action}\n"
-            f"   - If changes are requested: run `hermes zerofactory block {task_id} --reason 'changes-requested'` (the dispatcher will route it back to the builder).\n"
+            f"   - If changes are requested (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` when defects remain; the dispatcher routes Round 1 back to the builder and escalates Round {max_review_rounds} to Human blocked).\n"
             f"7. Provide a clear review summary.\n"
         )
     elif assignee == "zf-orchestrator":
@@ -330,15 +365,6 @@ def spawn_agent_worker(
             if wiki_files:
                 openwiki_info = f"Documentation substrate available in openwiki/: {', '.join(sorted(wiki_files))}\n\n"
 
-        task_meta: dict = {}
-        try:
-            task_meta = (
-                json.loads(metadata or "{}")
-                if isinstance(metadata, str)
-                else dict(metadata or {})
-            )
-        except Exception:
-            task_meta = {}
         target_repos_val = task_meta.get("target_repos") or []
         is_recovery = task_meta.get("triage_phase") == "recovery"
         is_egm = bool(
@@ -397,6 +423,8 @@ def spawn_agent_worker(
                 f"3. DRAFT TECHNICAL SPECIFICATION & COMMIT TO SUBSTRATE:\n"
                 f"   - If all requirements are clear, draft a comprehensive technical specification including:\n"
                 f"     * Exact architectural boundaries, components, and contracts\n"
+                f"     * Existing Code to Reuse (exact file paths and symbols to call instead of reinventing utilities)\n"
+                f"     * Do Not Touch / Non-Goals (explicit negative scope to prevent drive-by refactors)\n"
                 f"     * Step-by-step implementation plan\n"
                 f"     * Concrete, testable acceptance criteria\n"
                 f"     * YAGNI & Ponytail justification\n"
@@ -466,16 +494,6 @@ def spawn_agent_worker(
             f"{goal_instructions}"
         )
     elif assignee == "zf-goldfish":
-        task_meta: dict = {}
-        try:
-            task_meta = (
-                json.loads(metadata or "{}")
-                if isinstance(metadata, str)
-                else dict(metadata or {})
-            )
-        except Exception:
-            task_meta = {}
-
         draft_spec = (
             task_meta.get("specification")
             or description
@@ -517,8 +535,8 @@ def spawn_agent_worker(
             f"### Drafted Specification to Audit:\n"
             f"```markdown\n{draft_spec}\n```\n\n"
             f"### Audit Guidelines (Ponytail 7-Rung Ladder of Laziness & Acceptance Criteria):\n"
-            f"1. Rung 1-3 (Do Nothing / Delete / Stdlib): Is this feature truly necessary? Does it re-invent existing standard library or repository utilities?\n"
-            f"2. Over-engineering: Flag speculative abstractions, unnecessary wrapper classes, unused configuration parameters, or premature generalizations.\n"
+            f"1. Rung 1-3 (Do Nothing / Delete / Stdlib): Is this feature truly necessary? Does it re-invent existing standard library or repository utilities? Verify the spec lists **Existing Code to Reuse** with concrete file/symbol references.\n"
+            f"2. Negative Scope & Over-engineering: Verify the spec declares **Do Not Touch / Non-Goals** to bound blast radius. Flag speculative abstractions, unnecessary wrapper classes, unused configuration parameters, or premature generalizations.\n"
             f"3. Acceptance Criteria Testability: Are acceptance criteria concrete and mechanically testable? Reject vague statements like 'should be fast' or 'handle errors gracefully'.\n"
             f"4. Interface Boundaries & Multi-Repo Contracts: Are cross-service APIs, endpoints, and schemas explicitly defined without ambiguity?\n"
             f"5. Edge Cases & Concurrency: Flag unhandled failure modes, race conditions, missing timeouts, or security risks.\n\n"
@@ -564,11 +582,6 @@ def spawn_agent_worker(
             conflict_check_verified, _cc_err = False, str(e)
         # Conflict state lives in metadata (conflict_retries set by the
         # conflict handlers); titles carry no state markers.
-        task_meta: dict = {}
-        try:
-            task_meta = json.loads(metadata or "{}")
-        except Exception:
-            task_meta = {}
         has_conflict = (
             int(task_meta.get("conflict_retries") or 0) > 0
             or (not conflict_check_verified and Path(workdir).exists())

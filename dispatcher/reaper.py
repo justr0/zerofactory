@@ -217,8 +217,11 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                     curr_stat = row_status
 
                 meta = _d()._mark_task_session_ended(meta, now, "finished")
-                meta.pop("worker_failure_retries", None)
-                meta.pop("last_worker_failure", None)
+                # Set to None so transition_task deletes these keys from stored
+                # metadata (transition_task re-reads the row and merges the patch;
+                # a popped key would survive the merge).
+                meta["worker_failure_retries"] = None
+                meta["last_worker_failure"] = None
                 meta.pop("worker_pid", None)
                 meta.pop("session_id", None)
                 meta.pop("started_at", None)
@@ -244,7 +247,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                         )
                         meta["permanently_blocked"] = True
                         meta["blocked_reason_type"] = "stuck"
-                        meta.pop("triage_phase", None)
+                        meta["triage_phase"] = None
                         target_status = "blocked"
                         target_asgn = "human"
                     else:
@@ -259,7 +262,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 ):
                     target_status = "triage"
                     target_asgn = "human"
-                    meta.pop("blocked_reason", None)
+                    meta["blocked_reason"] = None
                     meta["awaiting_interview"] = True
                 elif curr_asgn == "zf-goldfish":
                     target_status = "triage"
@@ -278,9 +281,25 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                     target_status = curr_stat
                 elif is_triage_task:
                     target_status = "triage"
+                elif curr_asgn == "zf-reviewer":
+                    # Reviewer exited cleanly without recording a verdict via
+                    # `block --reason approved|changes-requested|human-gate`.
+                    # Never stamp awaiting_pr (builder-only packaging state);
+                    # park in blocked (human-gate) so pr_poll can still act on
+                    # GitHub review decisions/comments or a human can resolve it.
+                    target_status = "blocked"
+                    target_asgn = "human"
+                    meta["awaiting_pr"] = None
+                    meta["blocked_reason"] = (
+                        "Reviewer exited without recording a verdict; awaiting human review"
+                    )
+                    meta["blocked_reason_type"] = "human-gate"
                 else:
                     target_status = "running"
                     meta["awaiting_pr"] = True
+                    meta["permanently_blocked"] = None
+                    meta["blocked_reason"] = None
+                    meta["blocked_reason_type"] = None
 
                 transition_task(
                     conn,
@@ -367,7 +386,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                         curr_asgn != "zf-orchestrator"
                         and int(meta.get("orchestrator_recovery_count", 0)) < 1
                     ):
-                        meta.pop("awaiting_pr", None)
+                        meta["awaiting_pr"] = None
                         meta["triage_phase"] = "recovery"
                         transition_task(
                             conn,
@@ -464,7 +483,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                         curr_asgn != "zf-orchestrator"
                         and int(meta.get("orchestrator_recovery_count", 0)) < 1
                     ):
-                        meta.pop("awaiting_pr", None)
+                        meta["awaiting_pr"] = None
                         meta["triage_phase"] = "recovery"
                         transition_task(
                             conn,
@@ -666,8 +685,6 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 stuck_reason,
             )
             reaped += 1
-
-    return reaped
 
     return reaped
 

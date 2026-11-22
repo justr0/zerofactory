@@ -225,8 +225,14 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
     hermes_bin = resolve_hermes_bin()
 
     prompt = (
-        f"Scan repository for board '{board_slug}' for improvements and "
-        "technical debt following Ponytail ladder of laziness."
+        f"Scan repository for board '{board_slug}' for high-signal improvements and "
+        "technical debt following the Ponytail 7-Rung Ladder of Laziness. "
+        "Anti-slop rules: (1) Only file tasks backed by concrete evidence — verified dead code, "
+        "real bugs, duplicate logic, or net-LOC-reducing simplifications (never cosmetic or "
+        "speculative rewrites). (2) Cite exact file/line references and the Ponytail rung. "
+        "(3) Queue newly filed tasks in `todo` assigned to `zf-builder` "
+        "(`--status todo --assignee zf-builder`) so the dispatcher can pick them up "
+        "(respecting the board's `idle_scan_max_todo` cap)."
     )
     cmd = [hermes_bin, "-p", "zf-orchestrator"]
     if is_unattended_approvals_enabled():

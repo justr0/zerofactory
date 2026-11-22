@@ -1349,6 +1349,14 @@ def _poll_pr_and_route_review(
         ) and not has_actionable_feedback
 
         if has_actionable_feedback and row["status"] in ("blocked", "todo"):
+            if (
+                bool(task_meta.get("review_cap_reached"))
+                and row["status"] == "blocked"
+                and (row["assignee"] or "") == "human"
+                and not new_pr_comments
+            ):
+                return False
+
             for c in new_pr_comments:
                 cmt_body = _disp.format_task_comment_body(c)
                 cursor.execute(
@@ -1376,18 +1384,36 @@ def _poll_pr_and_route_review(
                         try:
                             from ..dashboard.plugin_api import (
                                 extract_and_record_memory,
+                                record_rejection_memory,
                             )
                         except (ImportError, ValueError):
                             from dashboard.plugin_api import (
                                 extract_and_record_memory,
+                                record_rejection_memory,
                             )
-                        extract_and_record_memory(
-                            conn,
-                            board_slug=board_slug,
-                            text=c["body"],
-                            task_id=task_id,
-                            author=c.get("author") or "zf-reviewer",
+                        body_str = str(c["body"]).strip()
+                        is_human_changes_req = str(
+                            c.get("state") or ""
+                        ).upper() == "CHANGES_REQUESTED" and not body_str.startswith(
+                            "[AI:"
                         )
+                        if is_human_changes_req:
+                            record_rejection_memory(
+                                conn,
+                                board_slug=board_slug,
+                                feedback=body_str,
+                                task_id=task_id,
+                                task_title=title,
+                                author=c.get("author") or "human",
+                            )
+                        else:
+                            extract_and_record_memory(
+                                conn,
+                                board_slug=board_slug,
+                                text=body_str,
+                                task_id=task_id,
+                                author=c.get("author") or "zf-reviewer",
+                            )
                     except Exception as _mem_e:
                         _log.debug(
                             "Auto-record memory from review comment failed: %s",
@@ -1415,15 +1441,19 @@ def _poll_pr_and_route_review(
                 except Exception:
                     pass
 
-            last_reviewed_commit = task_meta.get("last_reviewed_commit")
-            commit_review_count = int(task_meta.get("commit_review_count", 0))
-            if head_commit_sha and last_reviewed_commit != head_commit_sha:
-                commit_review_count = 0
+            review_round = (
+                int(
+                    task_meta.get(
+                        "review_round", task_meta.get("commit_review_count", 0)
+                    )
+                )
+                + 1
+            )
+            if head_commit_sha:
                 task_meta["last_reviewed_commit"] = head_commit_sha
 
-            commit_review_count += 1
-            task_meta["commit_review_count"] = commit_review_count
-            task_meta["review_round"] = commit_review_count
+            task_meta["review_round"] = review_round
+            task_meta["commit_review_count"] = review_round
 
             max_review_rounds = int(
                 os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "2")
@@ -1432,7 +1462,7 @@ def _poll_pr_and_route_review(
             _disp.stop_task_worker(task_id, cursor)
             _disp._remove_worktree(workspace_path, repo_path)
 
-            if commit_review_count > max_review_rounds:
+            if review_round >= max_review_rounds:
                 commit_tag = (
                     f" on commit {head_commit_sha[:7]}" if head_commit_sha else ""
                 )
@@ -1453,7 +1483,7 @@ def _poll_pr_and_route_review(
                     "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_reached', ?, ?)",
                     (
                         task_id,
-                        f"Review cap reached ({max_review_rounds} review rounds on commit); escalating to human review and merge decision",
+                        f"Review cap reached ({max_review_rounds} review rounds on PR); escalating to human review and merge decision",
                         now,
                     ),
                 )
@@ -1486,9 +1516,9 @@ def _poll_pr_and_route_review(
                 repo_alias=repo_alias,
             )
             reason_text = (
-                f"Review feedback received (Round {commit_review_count}/{max_review_rounds}, {len(actionable_comments)} actionable comment(s)), routed back to {builder_author}"
+                f"Review feedback received (Round {review_round}/{max_review_rounds}, {len(actionable_comments)} actionable comment(s)), routed back to {builder_author}"
                 if actionable_comments
-                else f"Changes requested by reviewer (Round {commit_review_count}/{max_review_rounds}), routed back to {builder_author}"
+                else f"Changes requested by reviewer (Round {review_round}/{max_review_rounds}), routed back to {builder_author}"
             )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'changes_requested', ?, ?)",
@@ -1906,6 +1936,69 @@ def _package_and_open_pr(
             conn.commit()
             return False
 
+        target_branch = ""
+        repo_alias = str(dict(row).get("repo_alias") or "").strip()
+        if board_slug:
+            try:
+                if repo_alias:
+                    cursor.execute(
+                        "SELECT target_branch FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
+                        (board_slug, repo_alias),
+                    )
+                    br_row = cursor.fetchone()
+                    if br_row and br_row[0]:
+                        target_branch = str(br_row[0]).strip()
+                if not target_branch:
+                    cursor.execute(
+                        "SELECT target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC LIMIT 1",
+                        (board_slug,),
+                    )
+                    br_row = cursor.fetchone()
+                    if br_row and br_row[0]:
+                        target_branch = str(br_row[0]).strip()
+                if not target_branch:
+                    cursor.execute(
+                        "SELECT target_branch FROM boards WHERE slug = ?", (board_slug,)
+                    )
+                    b_row = cursor.fetchone()
+                    if b_row and b_row[0]:
+                        target_branch = str(b_row[0]).strip()
+            except Exception:
+                pass
+
+        # Deterministic Anti-Slop Gate (0 LLM tokens)
+        steps.start("package.slop_gate")
+        row_dict = dict(row)
+        spec_text = str(
+            (meta or {}).get("specification") or row_dict.get("description") or ""
+        )
+        skip_untested = bool((meta or {}).get("skip_untested_check"))
+        slop_ok, slop_out, slop_code = _disp.run_deterministic_slop_gate(
+            Path(workspace_path),
+            target_branch=target_branch or None,
+            spec_text=spec_text,
+            skip_untested_check=skip_untested,
+        )
+        if not slop_ok:
+            _log.warning(
+                "Task %s deterministic slop gate failed (code %s): %s",
+                task_id,
+                slop_code,
+                slop_out,
+            )
+            steps.end("fail", f"slop_gate exit={slop_code}")
+            _disp._handle_precommit_failure(
+                cursor,
+                task_id,
+                title,
+                workspace_path,
+                slop_out,
+                now,
+                code=slop_code,
+            )
+            conn.commit()
+            return False
+
         if meta and ("precommit_retries" in meta or "last_precommit_error" in meta):
             meta.pop("precommit_retries", None)
             meta.pop("last_precommit_error", None)
@@ -1952,36 +2045,6 @@ def _package_and_open_pr(
                 text=True,
                 timeout=60,
             )
-
-        target_branch = ""
-        repo_alias = str(dict(row).get("repo_alias") or "").strip()
-        if board_slug:
-            try:
-                if repo_alias:
-                    cursor.execute(
-                        "SELECT target_branch FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
-                        (board_slug, repo_alias),
-                    )
-                    br_row = cursor.fetchone()
-                    if br_row and br_row[0]:
-                        target_branch = str(br_row[0]).strip()
-                if not target_branch:
-                    cursor.execute(
-                        "SELECT target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC LIMIT 1",
-                        (board_slug,),
-                    )
-                    br_row = cursor.fetchone()
-                    if br_row and br_row[0]:
-                        target_branch = str(br_row[0]).strip()
-                if not target_branch:
-                    cursor.execute(
-                        "SELECT target_branch FROM boards WHERE slug = ?", (board_slug,)
-                    )
-                    b_row = cursor.fetchone()
-                    if b_row and b_row[0]:
-                        target_branch = str(b_row[0]).strip()
-            except Exception:
-                pass
 
         steps.start("package.merge", f"target={target_branch or 'default'}")
         merged_ok, conflict_files, merge_err = _disp.pull_and_merge_main(

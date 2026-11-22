@@ -8,18 +8,26 @@ sources:
     resource: repo://__init__.py
   - id: openwiki-source-9ab161c6e9774cf771b19ced
     resource: repo://.zerofactory/precommit.sh
+  - id: openwiki-source-4de239baa4d579276db7cf80
+    resource: repo://dashboard/memory_service.py
   - id: openwiki-source-c705147b9966f3d6f300034a
     resource: repo://dashboard/routes/tasks.py
+  - id: openwiki-source-e7a6784a6e1f7f421dd572ed
+    resource: repo://dispatcher/reaper.py
+  - id: openwiki-source-9f9b3c9d5afeac588f3cdae1
+    resource: repo://dispatcher/scheduler.py
+  - id: openwiki-source-0445f3be32f0f8efe9dfeca4
+    resource: repo://dispatcher/slop_gate.py
   - id: openwiki-source-81127d20a2ccc07b7626fc4e
     resource: repo://plugin.yaml
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
   - id: openwiki-source-f0a6e7dc03522b2682f88655
     resource: repo://tests/conftest.py
-generated: { by: "hermes", at: "2026-11-06T15:00:57.907Z" }
+generated: { by: "hermes", at: "2026-11-20T15:20:57.003Z" }
 verified:
   - by: openwiki/0.6.0
-    at: 2026-11-07T14:59:48.283Z
+    at: 2026-11-20T15:20:57.003Z
 ---
 
 # Quickstart
@@ -38,9 +46,10 @@ coding rules in [Conventions](/openwiki/conventions.md).
 ## What it is
 
 Zero Factory is a self-contained **Hermes Agent plugin** that runs a 24/7
-multi-agent software factory. Three specialist profiles — `zf-orchestrator`
-(decomposes goals and scans for tech debt), `zf-builder` (writes code + tests),
-and `zf-reviewer` (thematic PR review, up to 2 rounds) — operate on a durable
+multi-agent software factory. Four specialist profiles — `zf-orchestrator`
+(decomposes goals, audits specs, and scans for tech debt), `zf-goldfish`
+(adversarial spec gatekeeper), `zf-builder` (writes code + tests), and
+`zf-reviewer` (thematic PR review, up to 2 rounds) — operate on a durable
 Kanban board, each in an isolated Git worktree. No external Node.js daemon or
 profile-manager is required.
 
@@ -99,6 +108,19 @@ failure:
 If the gate fails, the dispatcher re-spawns `zf-builder` with the exact error
 output (up to 3 precommit retries) before the work may become a PR.
 
+After precommit passes, the packaging phase runs a second zero-token gate —
+the deterministic **anti-slop gate**
+(`repo://dispatcher/slop_gate.py#L467-L504`): it blocks leftover debugger
+statements (`breakpoint()`, `pdb.set_trace()`, `import pdb`, `debugger;`),
+unresolved `TODO`/`FIXME`/`XXX`/`HACK` placeholder comments, and skipped
+tests; enforces an optional net-line budget via `ZEROFACTORY_MAX_DIFF_LINES`;
+and flags large diffs, net test-line deletions, dependency-manifest changes,
+and new lint/type suppressors as warnings. Its compact diff-hygiene scorecard
+(`repo://dispatcher/slop_gate.py#L505`) is pre-digested into the `zf-reviewer`
+prompt so review starts from a quantitative diff summary. Violations re-spawn
+`zf-builder` within the same 3-retry budget before any commit or PR is
+authored.
+
 ## Run the tests
 
 pytest is the framework (defined by `tests/conftest.py`), and the suite is
@@ -113,8 +135,8 @@ pytest tests/                 # full suite
 pytest tests/unit/            # or a single tier: integration/ / e2e/
 ```
 
-**As of this commit the full suite is green: `403 passed, 1 skipped`.** Re-run
-it before publishing any claim about the count.
+The precommit gate enforces the full suite in its `test` phase — keep the
+suite green before opening a PR.
 
 ## Core CLI surface
 
@@ -123,9 +145,9 @@ it before publishing any claim about the count.
 hermes zerofactory list [--status <status>] [--assignee <profile>]
 hermes zerofactory create "Implement Feature X" [--tags automerge,hitl]
 hermes zerofactory import-gh-issue 42 [--repo owner/repo] [--board <slug>] [--status triage] [--priority P1] [--assignee zf-builder] [--sync] [--force]
-hermes zerofactory import-jira-issue PROJ-123 [--board <slug>] [--priority P1]
 hermes zerofactory approve <task_id> [--split]          # release gate: promote single-repo triage to todo or split multi-repo
 hermes zerofactory reject <task_id> --feedback "..."   # send a triage spec back to zf-orchestrator for revision
+hermes zerofactory triage <task_id> [--mode grill|egm]  # dispatch triage: grill (small tasks) or egm (epics)
 hermes zerofactory stats                               # Kanban board statistics
 hermes zerofactory migrate [--status]                  # run or inspect SQLite database migrations
 hermes zerofactory update <task_id> [--title "..."] [--description "..."] [--assignee <profile>] [--priority P1] [--status <status>]
@@ -138,10 +160,9 @@ hermes zerofactory report-bug --task <task_id> --title "..." [--body "..."] [--c
 
 # Boards
 hermes zerofactory board list
-hermes zerofactory board update <slug> [--description "..."] [--target-branch <branch>] [--jira-url <url>] [--architecture <arch>]
+hermes zerofactory board update <slug> [--description "..."] [--target-branch <branch>] [--architecture <arch>]
 hermes zerofactory board delete <slug>
 hermes zerofactory setup-gh-issues --board <slug>   # file a P0 zf-builder task that ships the issue templates + labels
-hermes zerofactory setup-jira --board <slug> --url https://your-domain.atlassian.net [--test]
 
 # Repository memory (the per-board knowledge substrate)
 hermes zerofactory memory list --board <slug> [--category <cat>] [-q <query>]
@@ -149,6 +170,7 @@ hermes zerofactory memory add --board <slug> "<content>" --category convention -
 hermes zerofactory memory delete <memory_id>
 
 # Automation / dispatch
+hermes zerofactory start             # run the foreground dispatcher loop (requires setup)
 hermes zerofactory dispatch          # trigger an immediate dispatch cycle
 hermes zerofactory check-stuck       # audit hung worker processes
 hermes zerofactory cron list         # view periodic health & scanner jobs
@@ -164,14 +186,18 @@ hermes zerofactory sync-profiles     # update system prompts from templates
 or `owner/repo#42`) into a board as a Kanban task — stable task id, `issue:`
 dedup key, label-inferred priority/category — so re-imports report
 "Duplicate Skipped" instead of double-filing; `--sync` bulk-imports all open
-issues flagged with the AI-request label, and `import-jira-issue` does the same
-for Jira Cloud. `update` edits task fields in one call; its `--status` option
-routes through the `move_task` code path in the CLI handler (the API
-`PATCH /tasks/{id}` refuses status changes with a 400, pointing at
-`POST /tasks/{id}/move`) so lifecycle side effects — worker stop, flag cleanup,
-dispatch trigger — always apply. `move` accepts `--assignee` to reassign
-ownership while transitioning columns
-([External Issue Import](/openwiki/components/issues-importer.md)).
+issues flagged with the AI-request label. `update` edits task fields in one
+call; its `--status` option routes through the `move_task` code path in the
+CLI handler (the API `PATCH /tasks/{id}` refuses status changes with a 400,
+pointing at `POST /tasks/{id}/move`) so lifecycle side effects — worker stop,
+flag cleanup, dispatch trigger — always apply. `move` accepts `--assignee` to
+reassign ownership while transitioning columns
+([External Issue Import](/openwiki/components/issues-importer.md)). `reject`
+records the revision request as a task comment and, as a side effect,
+auto-records the human feedback as a `rejected_path` board memory
+(`repo://dashboard/routes/tasks.py#L2225`,
+`repo://dashboard/memory_service.py#L619`) so future triage runs on the board
+avoid repeating the rejected approach.
 
 OpenWiki architecture docs stay in sync automatically: the per-board
 `zero-factory-openwiki-update-<slug>` cron job runs the deterministic
@@ -192,6 +218,11 @@ human merge on GitHub; the dispatcher moves them to `done` through
 `_finalize_terminal_done` (which only cleans up — closing the open PR when
 `close_pr` is set — and never re-opens review) and prunes the worktree. The
 packaging step retries up to 3 times on git/PR failure before parking the task
-in `blocked` for a human. Details
+in `blocked` for a human. Tasks that exhaust their retry budget (worker
+crash/timeout, repeated precommit failures, merge conflicts) are routed to the
+`recovery` stage owned by `zf-orchestrator`, which gets exactly one autonomous
+diagnosis attempt — `hermes zerofactory recover <task_id> [--guidance "..."]`
+sends the task back to `todo` for `zf-builder` — before escalating to
+`blocked` for a human. Details
 in [Architecture](/openwiki/architecture.md#session-per-handoff-model)
 and [Dispatch Engine](/openwiki/components/dispatcher.md).

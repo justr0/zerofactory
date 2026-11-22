@@ -642,7 +642,10 @@ var ZeroFactoryDashboard = (function(exports) {
 	//#endregion
 	//#region dashboard/src/components/SetupBanners.jsx
 	function SetupBanners(props) {
-		const { selectedBoard, setupStatus, isTogglingDispatcher, handleStartDispatcher, precommitStatus, openwikiStatus, ghIssuesStatus, isSettingUpPrecommit, handleTriggerPrecommitSetup, isSettingUpOpenwiki, handleTriggerOpenwikiSetup, isSettingUpGhIssues, handleTriggerGhIssuesSetup } = props;
+		const { selectedBoard, setupStatus, isTogglingDispatcher, handleStartDispatcher, isSyncingProfiles, handleSyncProfiles, precommitStatus, openwikiStatus, ghIssuesStatus, isSettingUpPrecommit, handleTriggerPrecommitSetup, isSettingUpOpenwiki, handleTriggerOpenwikiSetup, isSettingUpGhIssues, handleTriggerGhIssuesSetup } = props;
+		const [dismissedUpdateVersion, setDismissedUpdateVersion] = React.useState(null);
+		const outdatedProfiles = setupStatus && setupStatus.profiles_ready && Array.isArray(setupStatus.outdated_profiles) ? setupStatus.outdated_profiles : [];
+		const showPluginUpdateBanner = Boolean(setupStatus && setupStatus.plugin_update_available && setupStatus.latest_plugin_version && dismissedUpdateVersion !== setupStatus.latest_plugin_version);
 		const missingSetupSteps = [];
 		if (setupStatus && !setupStatus.profiles_ready) missingSetupSteps.push({
 			id: "profiles",
@@ -659,7 +662,15 @@ var ZeroFactoryDashboard = (function(exports) {
 			label: "Start the dispatcher",
 			cmd: "hermes zerofactory start"
 		});
-		return React.createElement(React.Fragment, null, missingSetupSteps.length > 0 && React.createElement("div", { className: "mb-3.5 px-4 py-3 rounded-xl border border-indigo-500/30 bg-indigo-950/25 backdrop-blur-md text-xs" }, React.createElement("div", { className: "font-semibold text-slate-100 mb-1" }, "Zero Factory Setup Checklist"), React.createElement("div", { className: "text-slate-400 text-[11px] mb-2" }, "Run the following CLI commands to complete setup:"), React.createElement("div", { className: "flex flex-col gap-1.5" }, missingSetupSteps.map((step) => React.createElement("div", {
+		return React.createElement(React.Fragment, null, showPluginUpdateBanner && React.createElement("div", { className: "mb-3.5 px-4 py-2.5 rounded-xl border border-indigo-500/35 bg-indigo-950/25 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 text-xs" }, React.createElement("div", { className: "flex items-center gap-2.5 text-indigo-200" }, React.createElement("span", { className: "text-base" }, "⬆️"), React.createElement("div", null, React.createElement("div", { className: "font-semibold text-slate-100 flex flex-wrap items-center gap-1.5" }, "Zero Factory Plugin Update Available", React.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-indigo-950/80 text-indigo-300 border border-indigo-700/60" }, "v" + (setupStatus.plugin_version || "?") + " → v" + setupStatus.latest_plugin_version)), React.createElement("div", { className: "text-slate-400 text-[11px]" }, "A newer version of Zero Factory is available. Update the plugin, then sync profiles if prompted."))), React.createElement("div", { className: "flex items-center gap-2" }, React.createElement("code", { className: "hidden sm:inline font-mono text-[11px] text-indigo-300 bg-slate-950/70 px-2 py-1 rounded border border-slate-800 select-all" }, "hermes plugins update zerofactory"), React.createElement("a", {
+			href: "/plugins",
+			className: "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-xs bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all duration-150 cursor-pointer no-underline"
+		}, "🧩 Open Hermes Marketplace"), React.createElement("button", {
+			type: "button",
+			title: "Dismiss update notice for this session",
+			onClick: () => setDismissedUpdateVersion(setupStatus.latest_plugin_version),
+			className: "px-2 py-1 rounded-md text-[11px] text-slate-400 hover:text-slate-100 hover:bg-slate-800/70 transition-colors cursor-pointer"
+		}, "✕"))), missingSetupSteps.length > 0 && React.createElement("div", { className: "mb-3.5 px-4 py-3 rounded-xl border border-indigo-500/30 bg-indigo-950/25 backdrop-blur-md text-xs" }, React.createElement("div", { className: "font-semibold text-slate-100 mb-1" }, "Zero Factory Setup Checklist"), React.createElement("div", { className: "text-slate-400 text-[11px] mb-2" }, "Run the following CLI commands to complete setup:"), React.createElement("div", { className: "flex flex-col gap-1.5" }, missingSetupSteps.map((step) => React.createElement("div", {
 			key: step.cmd,
 			className: "flex flex-wrap items-center justify-between gap-2 bg-slate-900/60 px-2.5 py-1.5 rounded-lg border border-slate-800/80"
 		}, React.createElement("span", { className: "text-slate-300" }, step.label), React.createElement("div", { className: "flex items-center gap-2" }, React.createElement("code", { className: "font-mono text-[11px] text-indigo-300 select-all" }, step.cmd), step.id === "dispatcher" && handleStartDispatcher && React.createElement("button", {
@@ -668,7 +679,12 @@ var ZeroFactoryDashboard = (function(exports) {
 			disabled: Boolean(isTogglingDispatcher) || !setupStatus.profiles_ready,
 			title: !setupStatus.profiles_ready ? "Run 'hermes zerofactory setup' first to initialize profiles" : "Start the background dispatcher loop in this dashboard server",
 			className: "px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-		}, isTogglingDispatcher ? "Starting..." : "▶ Start Dispatcher")))))), Boolean(selectedBoard && selectedBoard !== "all" && precommitStatus && !precommitStatus.has_precommit) && React.createElement("div", { className: "mb-3.5 px-4 py-2.5 rounded-xl border border-amber-500/30 bg-amber-950/20 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 text-xs" }, React.createElement("div", { className: "flex items-center gap-2.5 text-amber-200" }, React.createElement("span", { className: "text-base" }, precommitStatus.pending_task_id ? "⚡" : "⚠️"), React.createElement("div", null, React.createElement("div", { className: "font-semibold text-slate-100" }, precommitStatus.pending_task_id ? "Precommit Setup Task in Progress" : "Precommit Verification Not Configured"), React.createElement("div", { className: "text-slate-400 text-[11px]" }, precommitStatus.pending_task_id ? "Task " + precommitStatus.pending_task_id + " (" + precommitStatus.pending_task_status + ") is generating .zerofactory/precommit.sh" : "This board lacks .zerofactory/precommit.sh. Set up standard automated test, build, and format verification for commits."))), !precommitStatus.pending_task_id && React.createElement("button", {
+		}, isTogglingDispatcher ? "Starting..." : "▶ Start Dispatcher")))))), outdatedProfiles.length > 0 && React.createElement("div", { className: "mb-3.5 px-4 py-2.5 rounded-xl border border-amber-500/35 bg-amber-950/25 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 text-xs" }, React.createElement("div", { className: "flex items-center gap-2.5 text-amber-200" }, React.createElement("span", { className: "text-base" }, "⚠️"), React.createElement("div", null, React.createElement("div", { className: "font-semibold text-slate-100 flex flex-wrap items-center gap-1.5" }, "Agent Profiles Out of Sync", React.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-amber-950/80 text-amber-300 border border-amber-700/60" }, outdatedProfiles.join(", "))), React.createElement("div", { className: "text-slate-400 text-[11px]" }, "Installed SOUL.md prompts in ~/.hermes/profiles/ differ from the latest plugin templates. Sync to apply updated rules (preserves config.yaml and .env)."))), React.createElement("div", { className: "flex items-center gap-2" }, React.createElement("code", { className: "hidden sm:inline font-mono text-[11px] text-amber-300/90 bg-slate-950/70 px-2 py-1 rounded border border-slate-800 select-all" }, "hermes zerofactory sync-profiles"), handleSyncProfiles && React.createElement("button", {
+			type: "button",
+			disabled: Boolean(isSyncingProfiles),
+			onClick: handleSyncProfiles,
+			className: "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-xs bg-amber-600 hover:bg-amber-500 text-white shadow-sm transition-all duration-150 cursor-pointer disabled:opacity-50"
+		}, isSyncingProfiles ? "⏳ Syncing..." : "🔄 Sync Profiles"))), Boolean(selectedBoard && selectedBoard !== "all" && precommitStatus && !precommitStatus.has_precommit) && React.createElement("div", { className: "mb-3.5 px-4 py-2.5 rounded-xl border border-amber-500/30 bg-amber-950/20 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 text-xs" }, React.createElement("div", { className: "flex items-center gap-2.5 text-amber-200" }, React.createElement("span", { className: "text-base" }, precommitStatus.pending_task_id ? "⚡" : "⚠️"), React.createElement("div", null, React.createElement("div", { className: "font-semibold text-slate-100" }, precommitStatus.pending_task_id ? "Precommit Setup Task in Progress" : "Precommit Verification Not Configured"), React.createElement("div", { className: "text-slate-400 text-[11px]" }, precommitStatus.pending_task_id ? "Task " + precommitStatus.pending_task_id + " (" + precommitStatus.pending_task_status + ") is generating .zerofactory/precommit.sh" : "This board lacks .zerofactory/precommit.sh. Set up standard automated test, build, and format verification for commits."))), !precommitStatus.pending_task_id && React.createElement("button", {
 			type: "button",
 			className: "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold text-xs bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all duration-150 cursor-pointer disabled:opacity-50",
 			disabled: isSettingUpPrecommit,
@@ -725,8 +741,9 @@ var ZeroFactoryDashboard = (function(exports) {
 	//#endregion
 	//#region dashboard/src/components/KanbanBoard.jsx
 	function KanbanBoard(props) {
-		const { tasksByColumn, dragOverCol, handleDragOver, handleDragLeave, handleDrop, handleDragStart, loadTaskDetails, selectedBoard, currentBoard, stoppingSessionId, handleStopTaskSession, handleAdvanceTask, handleTriageTask } = props;
+		const { tasksByColumn, doneArchiveDays = 7, dragOverCol, handleDragOver, handleDragLeave, handleDrop, handleDragStart, loadTaskDetails, selectedBoard, currentBoard, stoppingSessionId, handleStopTaskSession, handleAdvanceTask, handleTriageTask } = props;
 		const [openLaneInfo, setOpenLaneInfo] = React.useState({});
+		const [showArchivedDone, setShowArchivedDone] = React.useState(false);
 		const toggleLaneInfo = (colId) => {
 			setOpenLaneInfo((prev) => ({
 				...prev,
@@ -740,7 +757,22 @@ var ZeroFactoryDashboard = (function(exports) {
 				gridTemplateColumns: "repeat(4, minmax(220px, 1fr))"
 			}
 		}, COLUMNS.map((col) => {
-			const colTasks = tasksByColumn[col.id] || [];
+			const rawColTasks = tasksByColumn[col.id] || [];
+			const archiveDaysNum = Math.max(0, parseInt(doneArchiveDays, 10) || 0);
+			const archiveCutoff = archiveDaysNum > 0 ? Math.floor(Date.now() / 1e3) - archiveDaysNum * 86400 : 0;
+			let colTasks = rawColTasks;
+			let archivedDoneCount = 0;
+			if (col.id === "done" && archiveDaysNum > 0) {
+				const recentTasks = [];
+				const archivedTasks = [];
+				rawColTasks.forEach((t) => {
+					const ts = Number(t.updated_at || t.created_at || 0);
+					if (ts > 0 && ts < archiveCutoff) archivedTasks.push(t);
+					else recentTasks.push(t);
+				});
+				archivedDoneCount = archivedTasks.length;
+				colTasks = showArchivedDone ? recentTasks.concat(archivedTasks) : recentTasks;
+			}
 			const isOver = dragOverCol === col.id;
 			const isInfoOpen = Boolean(openLaneInfo[col.id]);
 			return React.createElement("div", {
@@ -896,7 +928,11 @@ var ZeroFactoryDashboard = (function(exports) {
 					onClick: (e) => handleAdvanceTask(t, e),
 					title: "Move to next column"
 				}, "→"))));
-			})));
+			}), col.id === "done" && archivedDoneCount > 0 && React.createElement("button", {
+				type: "button",
+				onClick: () => setShowArchivedDone((prev) => !prev),
+				className: "w-full mt-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-slate-400 hover:text-slate-200 bg-slate-900/60 hover:bg-slate-800/80 border border-dashed border-slate-700/70 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+			}, showArchivedDone ? `📦 Hide ${archivedDoneCount} archived (>${archiveDaysNum}d)` : `📦 Show ${archivedDoneCount} archived (>${archiveDaysNum}d)`)));
 		})));
 	}
 	//#endregion
@@ -2104,17 +2140,17 @@ var ZeroFactoryDashboard = (function(exports) {
 				},
 				{
 					num: "5",
-					title: "Precommit & PR",
+					title: "Precommit, Slop Gate & PR",
 					badge: "Running: packaging",
 					bcolor: "text-sky-100 bg-sky-900/90 border-sky-500/70",
-					desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens)."
+					desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens)."
 				},
 				{
 					num: "6",
 					title: "Thematic Review",
 					badge: "Running: review",
 					bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-					desc: "zf-reviewer conducts up to 2 thematic rounds (Correctness & Tests ➔ Verification & Polish). Rework loops back to Todo (building); approval moves to Human."
+					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); unresolved Round 2 escalates to Human (blocked); approval moves to Human (awaiting_merge)."
 				},
 				{
 					num: "7",
@@ -2138,7 +2174,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					desc: "Supervises the Kanban board, drafts technical specifications in triage, decomposes user epics into atomic tickets, schedules task execution, and detects stuck or hung worker processes.",
 					responsibilities: [
 						"Drafts end-to-end technical specifications, system contracts, and acceptance criteria in Triage",
-						"Autonomously scans projects via Codebase Improvement Scanner using the Ponytail ladder of laziness to create actionable TODO tasks",
+						"Autonomously scans projects via Codebase Improvement Scanner using the Ponytail ladder of laziness to file evidence-backed Todo tasks for zf-builder",
 						"Audits repository for dead code (Rung 1), stdlib reuse (Rungs 2-3), and anti-overengineering (Rung 6)",
 						"Decomposes high-level goals into structured sub-tasks using kanban_decomposer",
 						"Diagnoses failure logs and executes autonomous self-recovery for stuck tasks (strictly capped at 1 attempt)",
@@ -4047,7 +4083,17 @@ var ZeroFactoryDashboard = (function(exports) {
 				...settingsForm,
 				inactivity_timeout_seconds: e.target.value
 			})
-		}), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed" }, "Max idle time with no log output or session update before a worker is reaped. Default: 900 (15 minutes).")), React.createElement("div", { className: "pt-2 border-t border-slate-800/80 space-y-3" }, React.createElement("div", { className: "flex items-center justify-between" }, React.createElement("div", null, React.createElement("div", { className: "flex items-center gap-1.5" }, React.createElement("span", { className: "text-sm" }, "🧠"), React.createElement("label", { className: "block text-xs font-semibold text-slate-200 tracking-wide" }, "Auto-Record Repository Memory")), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed mt-0.5" }, "Automatically extract and persist gotchas, conventions, and rules when tasks complete or receive review feedback.")), React.createElement("input", {
+		}), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed" }, "Max idle time with no log output or session update before a worker is reaped. Default: 900 (15 minutes).")), React.createElement("div", { className: "space-y-1.5" }, React.createElement("label", { className: "block text-xs font-semibold text-slate-300 tracking-wide" }, "Archive Done Tasks (Days)"), React.createElement("input", {
+			type: "number",
+			min: 0,
+			step: 1,
+			className: "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors",
+			value: settingsForm.done_archive_days ?? 7,
+			onChange: (e) => setSettingsForm({
+				...settingsForm,
+				done_archive_days: e.target.value
+			})
+		}), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed" }, "Collapses Done tasks older than N days into an expandable archive without deleting tasks, comments, or PR history. Default: 7 (0 disables).")), React.createElement("div", { className: "pt-2 border-t border-slate-800/80 space-y-3" }, React.createElement("div", { className: "flex items-center justify-between" }, React.createElement("div", null, React.createElement("div", { className: "flex items-center gap-1.5" }, React.createElement("span", { className: "text-sm" }, "🧠"), React.createElement("label", { className: "block text-xs font-semibold text-slate-200 tracking-wide" }, "Auto-Record Repository Memory")), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed mt-0.5" }, "Automatically extract and persist gotchas, conventions, and rules when tasks complete or receive review feedback.")), React.createElement("input", {
 			type: "checkbox",
 			className: "h-4 w-4 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500 cursor-pointer",
 			checked: Boolean(settingsForm.auto_record_memory !== false),
@@ -4131,7 +4177,7 @@ var ZeroFactoryDashboard = (function(exports) {
 				...settingsForm,
 				mem0_embedder_model: e.target.value
 			})
-		})))), React.createElement("div", { className: "pt-2 border-t border-slate-800/80 space-y-3" }, React.createElement("div", { className: "flex items-start justify-between gap-3" }, React.createElement("div", null, React.createElement("div", { className: "flex items-center gap-1.5" }, React.createElement("span", { className: "text-sm" }, "🤖"), React.createElement("label", { className: "block text-xs font-semibold text-slate-200 tracking-wide" }, "Agent Profiles & Skills")), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed mt-0.5" }, "Synchronize SOUL.md system prompts, skills, and templates across zf-orchestrator, zf-builder, and zf-reviewer in ~/.hermes/profiles/.")), React.createElement("button", {
+		})))), React.createElement("div", { className: "pt-2 border-t border-slate-800/80 space-y-3" }, React.createElement("div", { className: "flex items-start justify-between gap-3" }, React.createElement("div", null, React.createElement("div", { className: "flex items-center gap-1.5" }, React.createElement("span", { className: "text-sm" }, "🤖"), React.createElement("label", { className: "block text-xs font-semibold text-slate-200 tracking-wide" }, "Agent Profiles & Skills")), React.createElement("p", { className: "text-[11px] text-slate-400 m-0 leading-relaxed mt-0.5" }, "Synchronize SOUL.md system prompts, skills, and templates across zf-orchestrator, zf-goldfish, zf-builder, and zf-reviewer in ~/.hermes/profiles/.")), React.createElement("button", {
 			type: "button",
 			disabled: isSyncingProfiles,
 			onClick: handleSyncProfiles,
@@ -4636,6 +4682,7 @@ var ZeroFactoryDashboard = (function(exports) {
 		const [settingsForm, setSettingsForm] = useState({
 			max_active_tasks: 10,
 			max_concurrent_llm_workers: 10,
+			done_archive_days: 7,
 			task_timeout_seconds: 3600,
 			inactivity_timeout_seconds: 900,
 			langfuse_enabled: false,
@@ -4806,6 +4853,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					setSettingsForm({
 						max_active_tasks: data.settings.max_active_tasks ?? 10,
 						max_concurrent_llm_workers: data.settings.max_concurrent_llm_workers ?? 10,
+						done_archive_days: data.settings.done_archive_days ?? 7,
 						task_timeout_seconds: data.settings.task_timeout_seconds ?? 3600,
 						inactivity_timeout_seconds: data.settings.inactivity_timeout_seconds ?? 900,
 						langfuse_enabled: Boolean(data.settings.langfuse_enabled),
@@ -4837,6 +4885,7 @@ var ZeroFactoryDashboard = (function(exports) {
 				const payload = {
 					max_active_tasks: Math.max(1, parseInt(settingsForm.max_active_tasks, 10) || 10),
 					max_concurrent_llm_workers: Math.max(1, parseInt(settingsForm.max_concurrent_llm_workers, 10) || 10),
+					done_archive_days: Math.max(0, Number.isNaN(parseInt(settingsForm.done_archive_days, 10)) ? 7 : parseInt(settingsForm.done_archive_days, 10)),
 					task_timeout_seconds: Math.max(1, parseInt(settingsForm.task_timeout_seconds, 10) || 3600),
 					inactivity_timeout_seconds: Math.max(1, parseInt(settingsForm.inactivity_timeout_seconds, 10) || 900),
 					langfuse_enabled: Boolean(settingsForm.langfuse_enabled),
@@ -4865,6 +4914,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					setSettingsForm({
 						max_active_tasks: res.settings.max_active_tasks ?? 10,
 						max_concurrent_llm_workers: res.settings.max_concurrent_llm_workers ?? 10,
+						done_archive_days: res.settings.done_archive_days ?? 7,
 						task_timeout_seconds: res.settings.task_timeout_seconds ?? 3600,
 						inactivity_timeout_seconds: res.settings.inactivity_timeout_seconds ?? 900,
 						langfuse_enabled: Boolean(res.settings.langfuse_enabled),
@@ -4943,6 +4993,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						message: msg
 					});
 					showToast("Agent profiles synchronized successfully!", "success");
+					loadSetupStatus();
 				} else {
 					const errMsg = res && res.error || "Failed to sync profiles";
 					setSyncProfilesResult({
@@ -6512,6 +6563,8 @@ var ZeroFactoryDashboard = (function(exports) {
 			setupStatus,
 			isTogglingDispatcher,
 			handleStartDispatcher,
+			isSyncingProfiles,
+			handleSyncProfiles,
 			precommitStatus,
 			openwikiStatus,
 			ghIssuesStatus,
@@ -6523,6 +6576,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			handleTriggerGhIssuesSetup
 		}), React.createElement(KanbanBoard, {
 			tasksByColumn,
+			doneArchiveDays: settingsForm.done_archive_days ?? 7,
 			dragOverCol,
 			handleDragOver,
 			handleDragLeave,

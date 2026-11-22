@@ -293,17 +293,17 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                 },
                 {
                   num: "5",
-                  title: "Precommit & PR",
+                  title: "Precommit, Slop Gate & PR",
                   badge: "Running: packaging",
                   bcolor: "text-sky-100 bg-sky-900/90 border-sky-500/70",
-                  desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens)."
+                  desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens)."
                 },
                 {
                   num: "6",
                   title: "Thematic Review",
                   badge: "Running: review",
                   bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-                  desc: "zf-reviewer conducts up to 2 thematic rounds (Correctness & Tests ➔ Verification & Polish). Rework loops back to Todo (building); approval moves to Human."
+                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); unresolved Round 2 escalates to Human (blocked); approval moves to Human (awaiting_merge)."
                 },
                 {
                   num: "7",
@@ -393,7 +393,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
           desc: "Supervises the Kanban board, drafts technical specifications in triage, decomposes user epics into atomic tickets, schedules task execution, and detects stuck or hung worker processes.",
           responsibilities: [
             "Drafts end-to-end technical specifications, system contracts, and acceptance criteria in Triage",
-            "Autonomously scans projects via Codebase Improvement Scanner using the Ponytail ladder of laziness to create actionable TODO tasks",
+            "Autonomously scans projects via Codebase Improvement Scanner using the Ponytail ladder of laziness to file evidence-backed Todo tasks for zf-builder",
             "Audits repository for dead code (Rung 1), stdlib reuse (Rungs 2-3), and anti-overengineering (Rung 6)",
             "Decomposes high-level goals into structured sub-tasks using kanban_decomposer",
             "Diagnoses failure logs and executes autonomous self-recovery for stuck tasks (strictly capped at 1 attempt)",
