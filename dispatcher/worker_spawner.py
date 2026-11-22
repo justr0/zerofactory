@@ -29,6 +29,30 @@ except ImportError:  # package-mode import without plugin root on sys.path
     from ..zf_wincompat import detached_popen_kwargs, resolve_hermes_bin  # type: ignore
 
 
+def build_worker_command(
+    prompt: str, task_id: str, workspace: str, role: str
+) -> list[str] | None:
+    """Build the external adapter argv, or None to use the native Hermes runner."""
+    executable = os.environ.get("ZEROFACTORY_WORKER_COMMAND")
+    if not executable:
+        return None
+    try:
+        args = json.loads(
+            os.environ.get("ZEROFACTORY_WORKER_ARGS", '["--prompt", "{prompt}"]')
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("ZEROFACTORY_WORKER_ARGS must be valid JSON") from exc
+    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+        raise ValueError("ZEROFACTORY_WORKER_ARGS must be a JSON array of strings")
+    return [
+        executable,
+        *(
+            arg.format(prompt=prompt, task_id=task_id, workspace=workspace, role=role)
+            for arg in args
+        ),
+    ]
+
+
 def build_minimal_child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a minimal whitelisted environment for spawned Hermes child processes."""
     from paths import get_hermes_home
@@ -139,7 +163,7 @@ def spawn_agent_worker(
         return None, None
 
     assignee = normalize_assignee(assignee)
-    hermes_bin = resolve_hermes_bin()
+    worker_command = os.environ.get("ZEROFACTORY_WORKER_COMMAND")
 
     if assignee in ("zf-builder", "zf-reviewer") and not os.environ.get(
         "ZEROFACTORY_SKIP_GIT"
@@ -754,10 +778,13 @@ def spawn_agent_worker(
 
     from paths import get_hermes_home
 
-    cmd = [hermes_bin, "-p", assignee]
-    if is_unattended_approvals_enabled():
-        cmd.extend(["--yolo", "--accept-hooks"])
-    cmd.extend(["--cli", "chat", "-q", prompt])
+    cmd = build_worker_command(prompt, task_id, str(workdir), assignee)
+    if cmd is None:
+        hermes_bin = resolve_hermes_bin()
+        cmd = [hermes_bin, "-p", assignee]
+        if is_unattended_approvals_enabled():
+            cmd.extend(["--yolo", "--accept-hooks"])
+        cmd.extend(["--cli", "chat", "-q", prompt])
 
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -768,7 +795,7 @@ def spawn_agent_worker(
             "HERMES_KANBAN_STOP_NUDGE": "0",
             "HERMES_KANBAN_WORKSPACE": str(workdir),
             "TERMINAL_CWD": str(workdir),
-            "HERMES_PROFILE": assignee,
+            **({} if worker_command else {"HERMES_PROFILE": assignee}),
         }
     )
 
@@ -806,9 +833,13 @@ def spawn_agent_worker(
         # Resolution goes through the shared helper so the dispatcher and the
         # dashboard agree on which state.db a profile owns.
         session_id = None
-        state_db_path = getattr(
-            _d(), "resolve_profile_state_db", resolve_profile_state_db
-        )(assignee)
+        state_db_path = (
+            None
+            if worker_command
+            else getattr(_d(), "resolve_profile_state_db", resolve_profile_state_db)(
+                assignee
+            )
+        )
         if state_db_path is not None and state_db_path.exists():
             resolved_state = state_db_path.resolve()
             uri = resolved_state.as_uri() + "?mode=ro"
