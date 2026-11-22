@@ -90,22 +90,19 @@ _RE_DNT_HEADER = re.compile(
     re.IGNORECASE,
 )
 _RE_SECTION_END = re.compile(r"^\s*(?:#{1,4}\s+\S|\*\*[A-Z][^*\n]+?\*\*:?)")
-_DNT_FILE_EXTS = (
-    tuple(CODE_EXTENSIONS)
-    + (
-        ".md",
-        ".json",
-        ".yaml",
-        ".yml",
-        ".toml",
-        ".css",
-        ".html",
-        ".sql",
-        ".lock",
-        ".cfg",
-        ".ini",
-        ".txt",
-    )
+_DNT_FILE_EXTS = tuple(CODE_EXTENSIONS) + (
+    ".md",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".css",
+    ".html",
+    ".sql",
+    ".lock",
+    ".cfg",
+    ".ini",
+    ".txt",
 )
 
 DEFAULT_WARN_NET_LINES = 400
@@ -501,7 +498,18 @@ def analyze_workspace_diff(
 
     merge_base = _resolve_merge_base(workspace_path, target_branch=target_branch)
     diff_ref = merge_base if include_working_tree else f"{merge_base}..HEAD"
-    diff_cmd = ["git", "diff", "-U0", diff_ref, "--", *EXCLUDED_DIFF_PATHSPECS]
+    # Do not let diff.mnemonicPrefix rewrite the standard b/<path> header;
+    # the parser below relies on that stable format for worktree paths.
+    diff_cmd = [
+        "git",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "diff",
+        "-U0",
+        diff_ref,
+        "--",
+        *EXCLUDED_DIFF_PATHSPECS,
+    ]
 
     raw_diff = ""
     try:

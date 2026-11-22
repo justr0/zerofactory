@@ -62,7 +62,9 @@ def flock(fd: int, operation: int) -> None:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, _LOCK_NBYTES)
         except OSError as e:
             if attempt + 1 >= attempts:
-                raise BlockingIOError(errno.EAGAIN, "resource temporarily unavailable") from e
+                raise BlockingIOError(
+                    errno.EAGAIN, "resource temporarily unavailable"
+                ) from e
             time.sleep(0.1)
         else:
             _locked_fds[fd] = _LOCK_NBYTES
