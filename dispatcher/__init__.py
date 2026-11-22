@@ -157,7 +157,6 @@ from .reaper import (
 )
 from .scanner import (
     _global_llm_occupancy,
-    _running_cron_llm_jobs,
     get_active_scanner_pids,
     get_scanner_cron_config,
     kill_board_scanner,
@@ -288,7 +287,6 @@ __all__ = [
     "get_active_scanner_pids",
     "kill_board_scanner",
     "reap_active_scanners",
-    "_running_cron_llm_jobs",
     "_global_llm_occupancy",
     "spawn_board_scanner",
     "reset_idle_scanner_state",
