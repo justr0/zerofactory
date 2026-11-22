@@ -40,10 +40,17 @@ Core Responsibilities:
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
+
+if os.name == "nt":
+    try:
+        import zf_wincompat as fcntl
+    except ImportError:
+        from .. import zf_wincompat as fcntl  # type: ignore
+else:
+    import fcntl
 import re
 import signal
 import sqlite3

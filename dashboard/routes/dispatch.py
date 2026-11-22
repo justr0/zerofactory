@@ -104,7 +104,15 @@ def stop_dispatcher():
 @router.get("/setup/status")
 def get_setup_status():
     """Read-only prerequisite status for the dashboard Setup Wizard."""
-    import fcntl
+    import os
+
+    if os.name == "nt":
+        try:
+            import zf_wincompat as fcntl
+        except ImportError:
+            from ... import zf_wincompat as fcntl  # type: ignore
+    else:
+        import fcntl
 
     try:
         from ...profile_manager import check_setup_status

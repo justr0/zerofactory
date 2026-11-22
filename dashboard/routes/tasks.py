@@ -26,6 +26,11 @@ except (ImportError, ValueError):
     from paths import get_active_profile  # type: ignore
 
 try:
+    from ...zf_wincompat import IS_WINDOWS, kill_tree
+except (ImportError, ValueError):
+    from zf_wincompat import IS_WINDOWS, kill_tree  # type: ignore
+
+try:
     from ...dispatcher import transition_task
 except (ImportError, ValueError):
     try:
@@ -598,7 +603,10 @@ def stop_task_session(task_id: str, to_status: str | None = "blocked"):
             wpid = meta.get("worker_pid")
             if wpid:
                 try:
-                    os.killpg(int(wpid), 15)
+                    if IS_WINDOWS:
+                        kill_tree(int(wpid))
+                    else:
+                        os.killpg(int(wpid), 15)
                 except Exception:
                     try:
                         os.kill(int(wpid), 15)

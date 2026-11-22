@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
 import sqlite3
+
+if os.name == "nt":
+    try:
+        import zf_wincompat as fcntl
+    except ImportError:
+        from .. import zf_wincompat as fcntl  # type: ignore
+else:
+    import fcntl
 import subprocess
 import threading
 import time

@@ -24,6 +24,11 @@ from .config import (
 )
 from .process_manager import build_shell_wrapper, cleanup_process_artifacts
 
+try:
+    from zf_wincompat import detached_popen_kwargs, resolve_hermes_bin
+except ImportError:  # package-mode import without plugin root on sys.path
+    from ..zf_wincompat import detached_popen_kwargs, resolve_hermes_bin  # type: ignore
+
 
 def build_minimal_child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a minimal whitelisted environment for spawned Hermes child processes."""
@@ -135,12 +140,7 @@ def spawn_agent_worker(
         return None, None
 
     assignee = normalize_assignee(assignee)
-    local_hermes = Path.home() / ".local" / "bin" / "hermes"
-    hermes_bin = (
-        os.environ.get("HERMES_BIN")
-        or shutil.which("hermes")
-        or (str(local_hermes) if local_hermes.exists() else "hermes")
-    )
+    hermes_bin = resolve_hermes_bin()
 
     if assignee in ("zf-builder", "zf-reviewer") and not os.environ.get(
         "ZEROFACTORY_SKIP_GIT"
@@ -784,7 +784,7 @@ def spawn_agent_worker(
             stdout=log_f,
             stderr=subprocess.STDOUT,
             env=env,
-            start_new_session=True,
+            **detached_popen_kwargs(),
         )
         log_f.close()
         _active_workers[task_id] = proc

@@ -29,6 +29,16 @@ from .process_manager import (
 )
 from .worker_spawner import build_minimal_child_env, is_unattended_approvals_enabled
 
+try:
+    from zf_wincompat import IS_WINDOWS, detached_popen_kwargs, kill_tree, resolve_hermes_bin
+except ImportError:  # package-mode import without plugin root on sys.path
+    from ..zf_wincompat import (  # type: ignore
+        IS_WINDOWS,
+        detached_popen_kwargs,
+        kill_tree,
+        resolve_hermes_bin,
+    )
+
 
 def get_active_scanner_pids() -> dict[str, int]:
     """Return mapping of board_slug -> active scanner PID across all processes."""
@@ -66,9 +76,12 @@ def kill_board_scanner(board_slug: str) -> bool:
             pid = int(pid_file.read_text().strip())
             if is_pid_alive(pid):
                 try:
-                    import signal
+                    if IS_WINDOWS:
+                        kill_tree(pid)
+                    else:
+                        import signal
 
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
                 except Exception:
                     try:
                         import signal
@@ -209,12 +222,7 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         )
         return None
 
-    local_hermes = Path.home() / ".local" / "bin" / "hermes"
-    hermes_bin = (
-        os.environ.get("HERMES_BIN")
-        or shutil.which("hermes")
-        or (str(local_hermes) if local_hermes.exists() else "hermes")
-    )
+    hermes_bin = resolve_hermes_bin()
 
     prompt = (
         f"Scan repository for board '{board_slug}' for improvements and "
@@ -264,7 +272,7 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
             stdout=log_f,
             stderr=subprocess.STDOUT,
             env=env,
-            start_new_session=True,
+            **detached_popen_kwargs(),
         )
         log_f.close()
         pid_file = log_dir / f"scanner_{board_slug}.pid"

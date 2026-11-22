@@ -8,6 +8,7 @@ import os
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -15,6 +16,13 @@ from typing import Optional, Tuple
 from paths import get_hermes_home
 
 from .config import _active_workers, _log
+
+try:
+    from zf_wincompat import IS_WINDOWS, kill_tree
+    from zf_wincompat import is_pid_alive as _win_pid_alive
+except ImportError:  # package-mode import without plugin root on sys.path
+    from ..zf_wincompat import IS_WINDOWS, kill_tree  # type: ignore
+    from ..zf_wincompat import is_pid_alive as _win_pid_alive  # type: ignore
 
 
 class ProcessState(str, enum.Enum):
@@ -25,6 +33,9 @@ class ProcessState(str, enum.Enum):
 
 def build_shell_wrapper(cmd: list[str], exit_prefix: Path | str) -> list[str]:
     """Wrap command in a POSIX shell invocation that atomically writes integer exit code on exit/signal."""
+    if IS_WINDOWS:
+        wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
+        return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
     script = (
         'prefix="$1"; shift; '
         'trap "rc=\\$?; printf \\"%d\\n\\" \\"\\$rc\\" > \\"${prefix}.exit.tmp\\" && '
@@ -57,18 +68,21 @@ def is_pid_alive(pid: int | None) -> bool:
     """Check if a process exists and is actively running (not a zombie/defunct)."""
     if not pid or not isinstance(pid, int) or pid <= 0:
         return False
+    if IS_WINDOWS:
+        return _win_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except (ProcessLookupError, OSError, ValueError):
         return False
 
     # If it is a direct child of the current process, non-blocking waitpid can also reap it
-    try:
-        res_pid, _ = os.waitpid(pid, os.WNOHANG)
-        if res_pid == pid:
-            return False
-    except (ChildProcessError, OSError):
-        pass
+    if hasattr(os, "WNOHANG"):
+        try:
+            res_pid, _ = os.waitpid(pid, os.WNOHANG)
+            if res_pid == pid:
+                return False
+        except (ChildProcessError, OSError):
+            pass
 
     # On Linux, inspect /proc/<pid>/status to ensure the process is not a zombie (defunct)
     try:
@@ -158,10 +172,13 @@ def terminate_process_group(
         return
 
     my_pid = os.getpid()
-    try:
-        my_pgid = os.getpgrp()
-    except OSError:
-        my_pgid = None
+    if hasattr(os, "getpgrp"):
+        try:
+            my_pgid = os.getpgrp()
+        except OSError:
+            my_pgid = None
+    else:
+        my_pgid = my_pid
     if (my_pgid is not None and pgid == my_pgid) or (
         isinstance(pid, int) and pid == my_pid
     ):
@@ -172,6 +189,17 @@ def terminate_process_group(
         )
         return
 
+    # Windows: no process groups or group signals — one hard tree kill.
+    if IS_WINDOWS:
+        target = pid if isinstance(pid, int) and pid > 0 else pgid
+        kill_tree(target)
+        if proc is not None and isinstance(proc.pid, int):
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        return
+
     # Cheap guard: probe group existence before signalling
     try:
         os.killpg(pgid, 0)
@@ -179,7 +207,8 @@ def terminate_process_group(
         if pid:
             if not is_pid_alive(pid):
                 try:
-                    os.waitpid(pid, os.WNOHANG)
+                    if hasattr(os, "WNOHANG"):
+                        os.waitpid(pid, os.WNOHANG)
                 except (ChildProcessError, OSError):
                     pass
                 return
@@ -190,7 +219,8 @@ def terminate_process_group(
             except OSError:
                 pass
             try:
-                os.waitpid(pid, os.WNOHANG)
+                if hasattr(os, "WNOHANG"):
+                    os.waitpid(pid, os.WNOHANG)
             except (ChildProcessError, OSError):
                 pass
         return
@@ -224,7 +254,8 @@ def terminate_process_group(
             pass
     elif pid and isinstance(pid, int):
         try:
-            os.waitpid(pid, os.WNOHANG)
+            if hasattr(os, "WNOHANG"):
+                os.waitpid(pid, os.WNOHANG)
         except (ChildProcessError, OSError):
             pass
 

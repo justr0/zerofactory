@@ -32,6 +32,11 @@ except (ImportError, ValueError):
     )
 
 try:
+    from ..zf_wincompat import is_pid_alive as _zf_win_pid_alive  # type: ignore
+except (ImportError, ValueError):
+    from zf_wincompat import is_pid_alive as _zf_win_pid_alive  # type: ignore
+
+try:
     from .db import get_db_conn
 except (ImportError, ValueError):
     from db import get_db_conn  # type: ignore
@@ -178,6 +183,8 @@ def resolve_task_all_sessions(
                 is_pid_alive = None
         if is_pid_alive is not None:
             is_alive = is_pid_alive(int(worker_pid))
+        elif os.name == "nt":
+            is_alive = _zf_win_pid_alive(int(worker_pid))
         else:
             try:
                 os.kill(int(worker_pid), 0)
@@ -464,11 +471,14 @@ def resolve_task_session_progress(
 
     is_alive = False
     if worker_pid:
-        try:
-            os.kill(int(worker_pid), 0)
-            is_alive = True
-        except (OSError, ValueError):
-            is_alive = False
+        if os.name == "nt":
+            is_alive = _zf_win_pid_alive(int(worker_pid))
+        else:
+            try:
+                os.kill(int(worker_pid), 0)
+                is_alive = True
+            except (OSError, ValueError):
+                is_alive = False
 
     try:
         from ..paths import get_hermes_home
