@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "runId": "49b302eb-8cf6-4fa5-9774-8efa015719b0",
+  "mode": "update",
+  "phase": "planning",
+  "startedAt": "2026-11-22T19:54:57.790Z",
+  "language": "en",
+  "languageChanged": false,
+  "requiredRewritePages": [],
+  "initialPages": [
+    "/openwiki/architecture/overview.md",
+    "/openwiki/architecture/task-lifecycle.md",
+    "/openwiki/conventions.md",
+    "/openwiki/operations/development.md",
+    "/openwiki/quickstart.md"
+  ],
+  "sourceFingerprint": "sha256:64b94fdac64d91e8580f0d233e13e6729aed659cb0996c75825d39b4f9c0ddce",
+  "targetGitHead": "8d4964ad2915e514ae706b287c9852b65ad7b921",
+  "actor": {
+    "producerActor": "hermes",
+    "metadataModel": "host-agent/hermes"
+  },
+  "previousLastUpdate": {
+    "updatedAt": "2026-11-22T19:33:06.472Z",
+    "command": "init",
+    "gitHead": "2972852a8d7b6146eee1258d18a85368dc79331c",
+    "model": "host-agent/hermes",
+    "status": "complete",
+    "language": "en"
+  },
+  "baseGitHead": "2972852a8d7b6146eee1258d18a85368dc79331c",
+  "beforeContentSnapshot": "087a879786720611b13c24960110e71988e1747300face99e9ebc729f23e2751",
+  "preparedWiki": {
+    "generatedProvenance": [
+      {
+        "page": "/openwiki/architecture/overview.md",
+        "bodyHash": "d0205963611774bcc811da43b20e04a579eda6c415d55a7031dd5c3249f6cffa",
+        "generated": {
+          "by": "hermes",
+          "at": "2026-11-22T19:30:17.111Z"
+        }
+      },
+      {
+        "page": "/openwiki/architecture/task-lifecycle.md",
+        "bodyHash": "f0af6d1d2c040c8b038e6aee3e0d06e6c921fa57869ae370779299c3f85cdf60",
+        "generated": {
+          "by": "hermes",
+          "at": "2026-11-22T19:30:17.111Z"
+        }
+      },
+      {
+        "page": "/openwiki/conventions.md",
+        "bodyHash": "9ebb9df25bedb6d410125e8993e27e88236bf537cc77391f0125991c6b8db91c",
+        "generated": {
+          "by": "hermes",
+          "at": "2026-11-22T19:30:17.111Z"
+        }
+      },
+      {
+        "page": "/openwiki/operations/development.md",
+        "bodyHash": "5cd88a3984ea3ddd1eba7ce14a99a50daf4b107bc92ea46b884866dd2ec3ccb6",
+        "generated": {
+          "by": "hermes",
+          "at": "2026-11-22T19:30:17.111Z"
+        }
+      },
+      {
+        "page": "/openwiki/quickstart.md",
+        "bodyHash": "0d913b72e348214be6747806d7c7878e0b364f026460b6a0c38be21ae0d8b208",
+        "generated": {
+          "by": "hermes",
+          "at": "2026-11-22T19:30:17.111Z"
+        }
+      }
+    ]
+  }
+}
