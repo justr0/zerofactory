@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:c56f10bd32f6fbdbb22ab684b20cd39348b6e0fd9cd8eaf3e23dd19a4b5108a9",
+  "claims": [
+    {
+      "id": "claim_27498213b21a49a89a1771f54263b735",
+      "statement": "The dashboard persistence layer opens SQLite connections with foreign-key enforcement and a busy timeout, and resolves its database location through shared path configuration.",
+      "evidence": [
+        {
+          "resource": "repo://dashboard/db.py#L111-L139",
+          "version": "repo-lines-v1:sha256:0e172a6e128e3ab5caa57697f5624e89ca5bd69a809616dcc9237e5980abb1c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5N2M3MTI0N2FmM2NkMWVkZjU1NWE3ZDEwNzU5MzE1N2Y2ZGMyYTIyYWYwZGU4MmU3Nzc0YWJmMTBmOGFkZTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjN2YxYjJmYTQwMGU0ZDlmOTcwNzFiMGU3ZThlNjY4MjZlY2U0NTFhZjZiODk2NzVmNzQwODM2ZjQ5NTM1NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmYjI2NTExZjI0ODVlNTEzZjdiMjY3MzhiZmNiNjY0MjAwN2UyYjFjNjRhNjIwODNjZTBkNDI4YzFmNWQyZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA3ODBiODA3YTYzNWVmNGU0NmUyY2E1ZDEyNjQxYzBmODU4Y2JjMzdmNmEzNDljNzc1OTU5NjI4NmQ2NzBiZjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_56cff23788364e65bc032dbe271de6c4",
+      "statement": "The dispatcher coordinates task scheduling, isolated worktrees, worker lifecycle, GitHub pull-request feedback, and concurrency control.",
+      "evidence": [
+        {
+          "resource": "repo://dispatcher/__init__.py#L1-L20",
+          "version": "repo-lines-v1:sha256:d51164330ba19d61539771e5552891ca9a386127db4411a32a582302ff57b20d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxOTI1ZmJlZDY0NzhiZmE5MTFjNzBmYjQ4ZWQwMWU5NzY0MzI3MWRjNmNiNmVlMzUxMjAxZjcyZjY4YjdhYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliM2ZkNjE2N2ExNGYxOWEwMGZjYjk1MjFlMjZhMTUyZDQ0ODI4MmYyYzgzNGZlODE4NjE1M2EyYjEyNGJlYTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmZGE2M2MwN2JjZTJhY2I0M2VlZjJmZGNiNDUzYzViM2I4Y2IzM2M4NTg2MjEyMTA1ZmQ4OTFkZjNiZjFkMmEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-22T19:30:17.111Z"
+  }
+}

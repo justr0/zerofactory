@@ -4,10 +4,10 @@ okf_version: "0.2"
 
 # Files
 
-- [Zero Factory Architecture](architecture.md) - High-level map of the Zero Factory Hermes plugin — subsystem contracts, the centralized 13-stage task state machine, the dispatcher control loop, durable SQLite persistence, and the stateless-worker / stateful-substrate handoff model.
-- [Conventions](conventions.md) - Repository patterns and rules agents must follow — the relative-import fallback, sys.path bootstrap, namespaced logging, the ruff lint/format gate, the pytest test organization, and the dashboard CSS rebuild rule.
-- [Quickstart](quickstart.md) - Install the Zero Factory Hermes plugin, provision the zf-* specialist profiles, open the dashboard, verify the deterministic precommit gate, and use the core CLI surface to operate the factory.
+- [Engineering conventions](conventions.md) - Summarizes shared configuration and path ownership, hermetic pytest patterns, and cross-platform implementation constraints.
+- [Repository quickstart](quickstart.md) - Entry point for Zero Factory agents, routing to architecture, task workflows, conventions, and verification instructions.
 
 # Directories
 
-- [components](components/)
+- [architecture](architecture/)
+- [operations](operations/)
