@@ -134,11 +134,6 @@ def reap_active_scanners() -> int:
     return reaped
 
 
-def _running_cron_llm_jobs() -> int:
-    """Obsolete stub: custom cron subsystem removed; returns 0."""
-    return 0
-
-
 def _global_llm_occupancy(running_tasks: int) -> int:
     """LLM workers currently tracked across all Zero Factory processes."""
     return running_tasks + len(get_active_scanner_pids())
