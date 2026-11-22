@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "runId": "49b302eb-8cf6-4fa5-9774-8efa015719b0",
   "mode": "update",
-  "phase": "planning",
+  "phase": "generating",
   "startedAt": "2026-11-22T19:54:57.790Z",
   "language": "en",
   "languageChanged": false,
@@ -14,8 +14,8 @@
     "/openwiki/operations/development.md",
     "/openwiki/quickstart.md"
   ],
-  "sourceFingerprint": "sha256:64b94fdac64d91e8580f0d233e13e6729aed659cb0996c75825d39b4f9c0ddce",
-  "targetGitHead": "8d4964ad2915e514ae706b287c9852b65ad7b921",
+  "sourceFingerprint": "sha256:2c61354a17216f3b752bf75b7731f4eae793a183e00e758341a4106e9faace0b",
+  "targetGitHead": "15ca6e06f68157fa62279bf2eae8b218a1fc68a5",
   "actor": {
     "producerActor": "hermes",
     "metadataModel": "host-agent/hermes"
@@ -73,5 +73,99 @@
         }
       }
     ]
+  },
+  "plan": {
+    "pages": [
+      {
+        "id": "c82915c7-7dec-44dd-a754-b8a617f63f7a",
+        "path": "/openwiki/architecture/overview.md",
+        "title": "System architecture",
+        "purpose": "Explain plugin structure, dispatcher, dashboard, issue import, persistence and integrations with responsibilities and boundaries.",
+        "seedPaths": [
+          "__init__.py",
+          "dashboard/plugin_api.py",
+          "dispatcher/",
+          "issue_importer.py"
+        ],
+        "relatedPages": [
+          "/openwiki/architecture/task-lifecycle.md",
+          "/openwiki/conventions.md"
+        ],
+        "instructions": [],
+        "status": "pending"
+      },
+      {
+        "id": "7ce48f6d-bd31-4d13-9847-fffb8301d5d5",
+        "path": "/openwiki/architecture/task-lifecycle.md",
+        "title": "Task lifecycle",
+        "purpose": "Describe lifecycle state transitions, worker dispatch, packaging, review and recovery contracts.",
+        "seedPaths": [
+          "dispatcher/",
+          "tests/unit/dispatcher/"
+        ],
+        "relatedPages": [
+          "/openwiki/architecture/overview.md",
+          "/openwiki/operations/development.md"
+        ],
+        "instructions": [],
+        "status": "pending"
+      },
+      {
+        "id": "1b0c9920-4388-43b3-b78d-ab2f9755bd7f",
+        "path": "/openwiki/conventions.md",
+        "title": "Engineering conventions",
+        "purpose": "Record actionable code, testing, documentation, and integration conventions supported by source and tests.",
+        "seedPaths": [
+          "AGENTS.md",
+          "pyproject.toml",
+          "tests/"
+        ],
+        "relatedPages": [
+          "/openwiki/architecture/overview.md",
+          "/openwiki/operations/development.md"
+        ],
+        "instructions": [],
+        "status": "pending"
+      },
+      {
+        "id": "e6b76a39-7a39-40dd-9353-7b2dc45c49e3",
+        "path": "/openwiki/operations/development.md",
+        "title": "Development and operations",
+        "purpose": "Document install/setup, CLI workflows, precommit and test operations, dashboard use, and operational troubleshooting.",
+        "seedPaths": [
+          ".zerofactory/precommit.sh",
+          "README.md",
+          "__init__.py",
+          "docs/DEBUGGING.md"
+        ],
+        "relatedPages": [
+          "/openwiki/conventions.md",
+          "/openwiki/quickstart.md"
+        ],
+        "instructions": [],
+        "status": "pending"
+      },
+      {
+        "id": "591e9980-4ae2-485b-a968-d42807322938",
+        "path": "/openwiki/quickstart.md",
+        "title": "Repository quickstart",
+        "purpose": "Entry point routing agents to operational, architecture, and development knowledge; preserve actionable onboarding and CLI workflows.",
+        "seedPaths": [
+          "README.md",
+          "__init__.py",
+          "plugin.yaml"
+        ],
+        "relatedPages": [
+          "/openwiki/architecture/overview.md",
+          "/openwiki/architecture/task-lifecycle.md",
+          "/openwiki/conventions.md",
+          "/openwiki/operations/development.md"
+        ],
+        "instructions": [],
+        "status": "pending"
+      }
+    ],
+    "deletePages": [],
+    "deferredClaimPages": []
   }
 }
