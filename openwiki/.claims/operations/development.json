@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:8ea9b95a888d606e714cc48ea74867ebed947ae98fe5b95317808c8ab9c751bd",
+  "claims": [
+    {
+      "id": "claim_aa9692bbf1684f01afcf60b0757f362c",
+      "statement": "The repository precommit script's default sequence runs format, build, and tests, while also allowing each phase to run independently.",
+      "evidence": [
+        {
+          "resource": "repo://.zerofactory/precommit.sh#L143-L152",
+          "version": "repo-lines-v1:sha256:651d6da612e3734fa2b1517b3d865b60e18fc17e89b30cffbf0eb52f9ebd1eac:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2ZTU2OGNmYWEyMGNjMjk0YzU1MmY1M2VhYTNiM2U3OTM1NjVmNzI4MzE3NDdiMjQ0ZmQzNTRiMGE2Zjg0NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmMzA0NjhlNTliZjc3YTVlZGQ5ZWVjMzQzNGQ1ODU0MTU3MDg1ZmU0MmViYzExMmUzOWNiYzk5OWFiOWVlZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhMzhiMjJiZGM2NGYxMDZiMTQwYzE4ODcyZDMzMzg3NzQwOTU3ZDgzODMxZTdmMDgwNjUyYTFiOWIwOTBiZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyYjJjMjgxZjkxOTdhN2Y0MGI0NThlODE1MmRmNTdhYTU4YzQ1MWM1YTZmZTQxNTc4ZTJhMDUxYmVmM2I3Y2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fa256d5b1eab41998507d7e4163c650c",
+      "statement": "The dashboard package defines npm build scripts for the Vite bundle and Tailwind stylesheet, separate from the Python precommit gate.",
+      "evidence": [
+        {
+          "resource": "repo://package.json#L6-L17",
+          "version": "repo-lines-v1:sha256:68d59dfa095c744d83ef5b4b37169b67290c64ed009a66b346aab1bc89182e76:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0ODMzZDU5NDljMDNhNDBjYTk1MjQ5MTYxMGE2NjU5NjQ0YjNhYTQ2NjM2MmY3OTkwMjBkYmYxOTgxNTQ3ZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzNGU3NjRjMDMxNjZjNjc3NmU2MWU5MzRkNTkzOTRhNzI4YTdjOGMyNmYzMTM0MWI2MTIxNmVlYmEzMGJmMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5YzFkN2UzMzgwOWVlMzBiMjM1NGU5YjVhNWMwNzJlMjdlZjczNzU4MzQ5NzFkNGEzMjkwZDhjMGEzMTNjMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmNzM5YTA2YzFjYmIxMjQ0ZTMzNjNkMzhiY2Y5ZmE1MGNlODRmZWQzOTljMjE5M2EzYzdmMDhkNTk5MThiMmEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-22T19:30:17.111Z"
+  }
+}

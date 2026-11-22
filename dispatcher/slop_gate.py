@@ -498,11 +498,13 @@ def analyze_workspace_diff(
 
     merge_base = _resolve_merge_base(workspace_path, target_branch=target_branch)
     diff_ref = merge_base if include_working_tree else f"{merge_base}..HEAD"
+    # Do not let diff.mnemonicPrefix rewrite the standard b/<path> header;
+    # the parser below relies on that stable format for worktree paths.
     diff_cmd = [
         "git",
+        "-c",
+        "diff.mnemonicPrefix=false",
         "diff",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
         "-U0",
         diff_ref,
         "--",
