@@ -317,6 +317,15 @@ def ensure_plugin_symlinks() -> dict[str, Any]:
 
     linked: list[str] = []
 
+    def _link_to(path: Path, target: Path) -> None:
+        """symlink_to on POSIX; directory junction on Windows (no privilege required)."""
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(path))
+        else:
+            path.symlink_to(target, target_is_directory=True)
+
     def _link_in_dir(target_plugins_dir: Path):
         target_plugins_dir.mkdir(parents=True, exist_ok=True)
         link_path = target_plugins_dir / "zerofactory"
@@ -328,23 +337,23 @@ def ensure_plugin_symlinks() -> dict[str, Any]:
                         # If existing symlink points to a transient worktree or is broken, unlink it
                         if "-worktrees" in str(cur_target) or not cur_target.exists():
                             link_path.unlink()
-                            link_path.symlink_to(plugin_root, target_is_directory=True)
+                            _link_to(link_path, plugin_root)
                         elif cur_target == plugin_root.resolve():
                             pass
                         else:
                             link_path.unlink()
-                            link_path.symlink_to(plugin_root, target_is_directory=True)
+                            _link_to(link_path, plugin_root)
                     except Exception:
                         link_path.unlink()
-                        link_path.symlink_to(plugin_root, target_is_directory=True)
+                        _link_to(link_path, plugin_root)
                 elif link_path.is_dir():
                     shutil.rmtree(link_path)
-                    link_path.symlink_to(plugin_root, target_is_directory=True)
+                    _link_to(link_path, plugin_root)
                 else:
                     link_path.unlink()
-                    link_path.symlink_to(plugin_root, target_is_directory=True)
+                    _link_to(link_path, plugin_root)
             else:
-                link_path.symlink_to(plugin_root, target_is_directory=True)
+                _link_to(link_path, plugin_root)
             linked.append(str(link_path))
         except Exception as e:
             _log.warning("Could not link plugin in %s: %s", target_plugins_dir, e)
