@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1094,7 +1095,19 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
         pass
 
     timeout = int(os.environ.get("ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS", "300"))
-    env = {**os.environ, "CI": "1", "ZEROFACTORY_PRECOMMIT": "1"}
+    # Hermetic gate: drop interpreter-path overrides leaked from the host
+    # process (e.g. hermes runtime PYTHONPATH). The precommit script's own
+    # dependency check would otherwise pass via the leaked paths while the
+    # test suite's subprocesses (which reset PYTHONPATH) fail to import deps.
+    env = {
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("PYTHONPATH", "PYTHONHOME")
+        },
+        "CI": "1",
+        "ZEROFACTORY_PRECOMMIT": "1",
+    }
 
     try:
         res = subprocess.run(
@@ -1108,6 +1121,18 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
         out = res.stdout or ""
         if res.stderr:
             out += "\n" + res.stderr if out else res.stderr
+        # Diagnostic: persist the full precommit output so repeated gate
+        # failures can be root-caused (DB fields truncate the output).
+        try:
+            task_root = workspace_path.parent
+            log_path = task_root / f"precommit-gate-{int(time.time())}.log"
+            hdr = (
+                f"# task_root={task_root}\n# returncode={res.returncode}\n"
+                f"# CI={env.get('CI')} ZEROFACTORY_PRECOMMIT={env.get('ZEROFACTORY_PRECOMMIT')}\n\n"
+            )
+            log_path.write_text(hdr + out, encoding="utf-8")
+        except Exception:
+            pass
         if res.returncode == 0:
             return True, out.strip(), 0
         return (
