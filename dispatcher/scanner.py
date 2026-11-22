@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -30,7 +29,12 @@ from .process_manager import (
 from .worker_spawner import build_minimal_child_env, is_unattended_approvals_enabled
 
 try:
-    from zf_wincompat import IS_WINDOWS, detached_popen_kwargs, kill_tree, resolve_hermes_bin
+    from zf_wincompat import (
+        IS_WINDOWS,
+        detached_popen_kwargs,
+        kill_tree,
+        resolve_hermes_bin,
+    )
 except ImportError:  # package-mode import without plugin root on sys.path
     from ..zf_wincompat import (  # type: ignore
         IS_WINDOWS,
