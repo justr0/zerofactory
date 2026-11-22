@@ -14,6 +14,7 @@ from dispatcher.git_ops import (
     check_unresolved_conflicts_safe,
     clean_stale_git_locks,
     get_default_branch,
+    get_status_files,
     pull_and_merge_main,
     sync_repo_main,
 )
@@ -51,6 +52,21 @@ def _proc_result(rc=0, stdout=""):
 
 def _merge_cmds(rec):
     return [c for c in rec.calls if c[:2] == ("git", "merge")]
+
+
+def test_status_file_helpers_parse_porcelain_paths():
+    rec = _ProcRecorder(
+        default_stdout="UU conflicted.txt\n M modified.txt\n?? untracked.txt\n"
+    )
+    with patch("dispatcher.git_ops.subprocess.run", new=rec):
+        modified, unmerged = get_status_files(Path("/tmp/fake_repo"))
+        assert unmerged == ["conflicted.txt"]
+        assert modified == [
+            "conflicted.txt",
+            "modified.txt",
+            "untracked.txt",
+        ]
+    assert rec.calls == [("git", "status", "--porcelain")]
 
 
 # --- 1. Conflict Marker Unit Logic ---

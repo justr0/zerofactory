@@ -156,40 +156,10 @@ def check_files_for_conflict_markers(
     return sorted(conflicted)
 
 
-def get_unmerged_status_files(workspace_path: Path) -> list[str]:
-    """Return files that have unmerged git status codes (UU, AA, UD, DU, DD, AU, UA)."""
-    unmerged = []
-    try:
-        status_res = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(workspace_path),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if status_res.returncode == 0:
-            for line in status_res.stdout.splitlines():
-                if len(line) >= 3 and line[:2] in (
-                    "UU",
-                    "AA",
-                    "UD",
-                    "DU",
-                    "DD",
-                    "AU",
-                    "UA",
-                ):
-                    f = line[3:].strip()
-                    if " -> " in f:
-                        f = f.split(" -> ")[-1].strip()
-                    unmerged.append(f)
-    except Exception:
-        pass
-    return sorted(unmerged)
-
-
-def get_modified_status_files(workspace_path: Path) -> list[str]:
-    """Return all modified/unmerged/untracked file paths from git status --porcelain."""
+def get_status_files(workspace_path: Path) -> tuple[list[str], list[str]]:
+    """Return modified and unmerged paths from one porcelain status snapshot."""
     files = set()
+    unmerged = []
     try:
         status_res = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -205,9 +175,21 @@ def get_modified_status_files(workspace_path: Path) -> list[str]:
                     if " -> " in f:
                         f = f.split(" -> ")[-1].strip()
                     files.add(f)
+                    if line[:2] in ("UU", "AA", "UD", "DU", "DD", "AU", "UA"):
+                        unmerged.append(f)
     except Exception:
         pass
-    return sorted(list(files))
+    return sorted(files), sorted(unmerged)
+
+
+def get_unmerged_status_files(workspace_path: Path) -> list[str]:
+    """Return files that have unmerged git status codes (UU, AA, UD, DU, DD, AU, UA)."""
+    return get_status_files(workspace_path)[1]
+
+
+def get_modified_status_files(workspace_path: Path) -> list[str]:
+    """Return all modified/unmerged/untracked file paths from git status --porcelain."""
+    return get_status_files(workspace_path)[0]
 
 
 class GitConflictCheckError(Exception):
