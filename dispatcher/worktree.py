@@ -1101,9 +1101,7 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
     # test suite's subprocesses (which reset PYTHONPATH) fail to import deps.
     env = {
         **{
-            k: v
-            for k, v in os.environ.items()
-            if k not in ("PYTHONPATH", "PYTHONHOME")
+            k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")
         },
         "CI": "1",
         "ZEROFACTORY_PRECOMMIT": "1",
