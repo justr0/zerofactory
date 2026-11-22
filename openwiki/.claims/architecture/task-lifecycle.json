@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:66c17cff53c399ad3a76f0fa1044ca12a6e4d82a0145b4a3a32f475acdcba234",
+  "claims": [
+    {
+      "id": "claim_01c9ea9ae7694c308fd811871dd21a5e",
+      "statement": "The state machine defines five canonical statuses and explicitly constrains automated status transitions through a transition map.",
+      "evidence": [
+        {
+          "resource": "repo://dispatcher/state_machine.py#L15-L21",
+          "version": "repo-lines-v1:sha256:a428db820135b0dffc142284dcb7e742d2aea88ce56298bfd8edb101cd87a774:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWM5YWUwNGY5MzdkYTMzYjMwMjcyN2EyODZiNzFlY2UyODYyNjczZTBhZmJjMmM4MTg2N2U2YWNmMzY5YTQ1YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWFmNzE1ODg4MTBiN2Q1OWFkNWY1MTljZjI1NzI3ZDAwYTc4ZjExN2YzZmZlZTY5ZmY0YWM3ZjIzMGM1NTIxYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTkzYTA4Y2ExODQ1MjQ0ZDIxZjEwOWE4YjM0MjBkMzMzNGExNmU1YmM4MTIyMjUzMzg0NzVhZjg5MGMyOGM0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWIwZjlkN2I1YmQ1NTM2YjY5NTA5NzYxMzJiMWQ1MzM0ZGVkMGNiODE4ZTQ2MWFiMjllNDlmZTczODEwODZjMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_c6777673ec474a279e86ad753489d468",
+      "statement": "When an automated transition exits running, the state machine tears down worker resources before applying the task state update.",
+      "evidence": [
+        {
+          "resource": "repo://dispatcher/state_machine.py#L46-L54",
+          "version": "repo-lines-v1:sha256:989debe14716b806c9484abae2e190d59f9d3f7350cd2078aa3c2728261cc871:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmYwMzQ0NGFlN2M1MmIxMGVkNzk2NDlhNGQ5YTA0ZDgyNTA3ODc3ZWFhZDJjMTljODBhZjQ5Y2VlZWEwMzQxOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTZhNzE1MjU3MmVlODRmMTA5MDZjNzRiOWYyYTkyNDM0ZGRhYjBlM2M0MjgxM2IwNGU1OTdlZmNlYzk1MWIyNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWY3MjUzZWU2NGI0NmUxZGYyZTU5NDMyMTY2NjE5MWMyZjhkNzI1OWZjZWEwMzNkOGY5MzE1NzNmNmU3NDUzMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjg3Mzc1YmExMjlkZmVkMmI0NmVlYjg4NjMyOTFlZmFlYmE1ZGY2MTkxYzdjMjdlMmNkNjViY2Y2NDBkNDAwNiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-22T19:30:17.111Z"
+  }
+}
