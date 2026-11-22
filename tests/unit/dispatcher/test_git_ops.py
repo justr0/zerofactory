@@ -252,6 +252,36 @@ def test_check_unresolved_conflicts_fail_closed(tmp_path: Path):
         assert "could not verify" in err
 
 
+def test_check_unresolved_conflicts_reuses_status_for_marker_scan(tmp_path: Path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    rec = _ProcRecorder(
+        {
+            ("git", "diff", "--name-only", "--diff-filter=U"): _proc_result(),
+            ("git", "status", "--porcelain"): _proc_result(0, " M changed.txt\n"),
+            (
+                "git",
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD",
+            ): _proc_result(),
+        }
+    )
+    with (
+        patch("dispatcher.git_ops.subprocess.run", new=rec),
+        patch("dispatcher.git_ops._d") as mock_d,
+    ):
+        mock_d.return_value.check_files_for_conflict_markers.return_value = []
+        assert check_unresolved_conflicts(wt) == []
+
+    assert rec.calls.count(("git", "status", "--porcelain")) == 1
+    mock_d.return_value.check_files_for_conflict_markers.assert_called_once_with(
+        wt, {"changed.txt"}
+    )
+
+
 # --- 5. Stale Lock File Cleanup ---
 
 

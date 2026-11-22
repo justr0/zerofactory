@@ -260,7 +260,8 @@ def check_unresolved_conflicts(workspace_path: Path) -> list[str]:
             f"could not verify unmerged index (git diff --diff-filter=U) in {workspace_path}: {e}"
         ) from e
 
-    # 2. Check git status porcelain for unmerged status codes
+    # 2. Check git status porcelain for unmerged status codes and changed paths
+    status_output = ""
     try:
         status_res = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -269,8 +270,9 @@ def check_unresolved_conflicts(workspace_path: Path) -> list[str]:
             text=True,
             timeout=5,
         )
+        status_output = status_res.stdout
         if status_res.returncode == 0:
-            for line in status_res.stdout.splitlines():
+            for line in status_output.splitlines():
                 if len(line) >= 3 and line[:2] in (
                     "UU",
                     "AA",
@@ -293,21 +295,13 @@ def check_unresolved_conflicts(workspace_path: Path) -> list[str]:
 
     # 3. Check modified, untracked, or conflicted text files for leftover conflict markers
     try:
-        status_files = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(workspace_path),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
         files_to_check = set()
-        if status_files.returncode == 0:
-            for line in status_files.stdout.splitlines():
-                if len(line) >= 3:
-                    f = line[3:].strip()
-                    if " -> " in f:
-                        f = f.split(" -> ")[-1].strip()
-                    files_to_check.add(f)
+        for line in status_output.splitlines():
+            if len(line) >= 3:
+                f = line[3:].strip()
+                if " -> " in f:
+                    f = f.split(" -> ")[-1].strip()
+                files_to_check.add(f)
 
         # Also check files modified in the last commit
         diff_head = subprocess.run(
