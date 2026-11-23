@@ -280,8 +280,30 @@ def trigger_builtin_job(job_id: str) -> Dict[str, Any]:
         return {"ok": True, "message": "Daily stats triggered"}
 
     if job_id.startswith("zero-factory-openwiki-update-"):
-        slug = job_id.replace("zero-factory-openwiki-update-", "")
-        return {"ok": True, "message": f"OpenWiki sync triggered for board '{slug}'"}
+        prefix = "zero-factory-openwiki-update-"
+        slug = job_id[len(prefix) :]
+        if not slug:
+            return {"ok": False, "error": "OpenWiki job is missing a board slug"}
+        if not resolve_task_repo_path:
+            return {"ok": False, "error": "Cannot resolve repository for OpenWiki gate"}
+        try:
+            with get_db_conn() as conn:
+                repo_path = resolve_task_repo_path(conn.cursor(), slug, None)
+            if not repo_path:
+                return {
+                    "ok": False,
+                    "error": f"Cannot resolve repository for OpenWiki board '{slug}'",
+                }
+            from scripts.zf_openwiki_gate import check_openwiki_gate
+
+            wake, reason = check_openwiki_gate(Path(repo_path), board_slug=slug)
+            return {
+                "ok": True,
+                "message": reason,
+                "wakeAgent": wake,
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"OpenWiki gate error: {e}"}
 
     return {"ok": False, "error": f"Unknown job '{job_id}'"}
 
