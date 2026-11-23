@@ -149,7 +149,7 @@ def get_orchestrator_scan_activities(
                         "created_at": ts,
                         "task_title": "Codebase Improvement Scanner",
                         "board_slug": b_slug,
-                        "task_status": "completed",
+                        "task_status": r["status"],
                         "task_priority": "P0",
                         "task_assignee": "zf-orchestrator",
                     }
