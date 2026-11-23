@@ -76,6 +76,50 @@ def test_delete_board(api_client: TestClient):
     assert not any(b["slug"] == "delete-org-repo-del" for b in boards)
 
 
+def test_delete_board_cleans_up_scanner(api_client: TestClient, monkeypatch):
+    """Deleting a board terminates its scanner and removes scanner settings."""
+    from dashboard.db import get_db_conn
+    from dashboard.routes import cron as cron_routes
+
+    monkeypatch.delenv("ZEROFACTORY_SKIP_CRON_SYNC", raising=False)
+    slug = "delete-scanner-board"
+    api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"git_url": "https://github.com/delete-scanner/board.git", "slug": slug},
+    )
+    scanner_job_id = f"zero-factory-improvement-scanner-{slug}"
+    with get_db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, 0)",
+            [
+                (f"cron_enabled_{scanner_job_id}", "true"),
+                (f"scan_on_idle_{slug}", "true"),
+                (f"idle_scan_cooldown_minutes_{slug}", "30"),
+                (f"idle_scan_max_todo_{slug}", "5"),
+            ],
+        )
+    killed = []
+    monkeypatch.setattr(
+        cron_routes, "kill_board_scanner", lambda board: killed.append(board)
+    )
+
+    response = api_client.delete(f"/api/plugins/zerofactory/boards/{slug}")
+
+    assert response.status_code == 200
+    assert killed == [slug]
+    with get_db_conn() as conn:
+        remaining = conn.execute(
+            "SELECT key FROM settings WHERE key IN (?, ?, ?, ?)",
+            (
+                f"cron_enabled_{scanner_job_id}",
+                f"scan_on_idle_{slug}",
+                f"idle_scan_cooldown_minutes_{slug}",
+                f"idle_scan_max_todo_{slug}",
+            ),
+        ).fetchall()
+    assert remaining == []
+
+
 def test_board_precommit_endpoints(api_client: TestClient):
     """Verify precommit-status and setup-precommit API endpoints."""
     # Create board without auto setup
