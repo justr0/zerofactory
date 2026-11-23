@@ -103,10 +103,13 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
     try:
         cmdline_path = Path(f"/proc/{pid}/cmdline")
         if cmdline_path.exists():
-            cmd_data = cmdline_path.read_bytes().decode("utf-8", errors="replace")
-            return any(token in cmd_data for token in ("hermes", task_id, "zf-runner"))
+            cmd_data = cmdline_path.read_bytes()
+            if cmd_data:
+                return f"worker_{task_id}.exit".encode() in cmd_data
     except Exception:
         pass
+    # On platforms without /proc (or when procfs is unavailable), retain the
+    # existing best-effort behavior.
     return True
 
 

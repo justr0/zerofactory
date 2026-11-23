@@ -15,6 +15,7 @@ from dispatcher.process_manager import (
     get_exit_file_path,
     get_process_exit_code,
     is_pid_alive,
+    process_matches_identity,
     stop_task_worker,
     terminate_process_group,
     terminate_task_worker,
@@ -109,6 +110,37 @@ def test_build_shell_wrapper():
     assert wrapped[3] == "zf-runner"
     assert wrapped[4] == exit_prefix
     assert wrapped[5:] == cmd
+
+
+def test_process_matches_identity_rejects_generic_hermes_process():
+    """A generic Hermes command is not evidence that a persisted PID is ours."""
+    with (
+        patch("dispatcher.process_manager.Path.exists", return_value=True),
+        patch(
+            "dispatcher.process_manager.Path.read_bytes",
+            return_value=b"/usr/bin/hermes\0-p\0zf-orchestrator\0",
+        ),
+    ):
+        assert process_matches_identity(1234, "scanner_board-a") is False
+
+
+def test_process_matches_identity_accepts_wrapped_scanner():
+    """The shell wrapper's exit path carries the scanner-specific identity."""
+    cmdline = (
+        b"sh\0-c\0trap ...\0zf-runner\0/home/test/.hermes/logs/"
+        b"worker_scanner_board-a.exit\0/usr/bin/hermes\0"
+    )
+    with (
+        patch("dispatcher.process_manager.Path.exists", return_value=True),
+        patch("dispatcher.process_manager.Path.read_bytes", return_value=cmdline),
+    ):
+        assert process_matches_identity(1234, "scanner_board-a") is True
+
+
+def test_process_matches_identity_preserves_non_proc_fallback():
+    """Platforms without accessible procfs retain best-effort acceptance."""
+    with patch("dispatcher.process_manager.Path.exists", return_value=False):
+        assert process_matches_identity(1234, "scanner_board-a") is True
 
 
 def test_get_process_exit_code_completed(tmp_path):
