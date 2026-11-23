@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from .base import BaseIssueClient, ExternalIssue
+from .base import ExternalIssue
 
 _log = logging.getLogger("zerofactory.issues.github")
 
@@ -96,7 +96,7 @@ def parse_github_issue_ref(
     )
 
 
-class GitHubIssueClient(BaseIssueClient):
+class GitHubIssueClient:
     """Client for fetching and parsing issues from GitHub via `gh` CLI."""
 
     def __init__(self, default_repo: str | None = None):
