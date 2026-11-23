@@ -425,10 +425,6 @@ def toggle_cron_scheduler(req: CronToggleRequest | None = None):
         "ok": True,
         "scheduler_enabled": enabled,
     }
-    return {
-        "ok": True,
-        "scheduler_enabled": enabled,
-    }
 
 
 @router.post("/cron/sync")
