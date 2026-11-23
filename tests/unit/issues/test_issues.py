@@ -315,6 +315,26 @@ class TestImporterIdempotencyAndDeterminism:
         self.board_slug = b_res["slug"]
         self.db_path = db_file
 
+    def test_import_rejects_unknown_explicit_board(self):
+        issue = ExternalIssue(
+            source="github",
+            id="45",
+            key="#45",
+            title="Unlinked repository issue",
+            repo_or_project="unlinked/repository",
+        )
+
+        with pytest.raises(ValueError, match="Unknown board 'typo-board'"):
+            import_external_issue(issue, board_slug="typo-board", db_path=self.db_path)
+
+    def test_resolve_board_without_explicit_slug_discovers_repository(self):
+        assert (
+            resolve_board_for_issue(
+                repo_or_project="hotcode-dev/zerofactory", db_path=self.db_path
+            )
+            == self.board_slug
+        )
+
     def test_import_issue_deterministic_and_idempotent(self):
         issue = ExternalIssue(
             source="github",

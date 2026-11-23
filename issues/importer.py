@@ -36,18 +36,25 @@ def resolve_board_for_issue(
         db_path = get_db_path()
 
     if not db_path.exists():
+        if board_slug:
+            raise ValueError(
+                f"Unknown board '{board_slug}': cannot validate it because the board database does not exist."
+            )
         return board_slug
 
     with sqlite3.connect(str(db_path), timeout=5.0) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # 1. If explicit board_slug provided and valid, return it
+        # 1. An explicit board selection must never fall through to discovery.
         if board_slug:
             cursor.execute("SELECT slug FROM boards WHERE slug = ?", (board_slug,))
             row = cursor.fetchone()
             if row:
                 return str(row["slug"])
+            raise ValueError(
+                f"Unknown board '{board_slug}'. Select a configured board."
+            )
 
         # 2. Try matching repo_or_project to git_url, repo_alias, or slug in boards
         if repo_or_project:
