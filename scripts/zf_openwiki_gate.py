@@ -244,12 +244,9 @@ def resolve_repo_path(
 
     # 1. Local path if git_url is an existing directory
     if git_url:
-        try:
-            local_p = Path(git_url)
-            if local_p.is_dir() and (local_p / ".git").exists():
-                return local_p.resolve()
-        except Exception:
-            pass
+        local_checkout = paths.resolve_local_git_checkout(git_url)
+        if local_checkout:
+            return local_checkout
 
     # 2. Check ~/.zerofactory/workspaces/<board_slug>/repos/<alias>
     b_repos = paths.get_board_repos_dir(board_slug)

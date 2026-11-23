@@ -77,6 +77,17 @@ def repository_name_from_git_url(git_url: str) -> str:
     return Path(git_url.strip().rstrip("/").removesuffix(".git").replace(":", "/")).name
 
 
+def resolve_local_git_checkout(path: str | Path) -> Path | None:
+    """Return the resolved path when ``path`` is a local Git checkout."""
+    try:
+        candidate = Path(path)
+        if candidate.is_dir() and (candidate / ".git").exists():
+            return candidate.resolve()
+    except Exception:
+        pass
+    return None
+
+
 def normalize_assignee(assignee: str | None) -> str:
     """Normalize an assignee onto a canonical ``zf-*`` profile, ``"human"``, or ``"unassigned"``.
 
