@@ -37,6 +37,30 @@ def test_get_cron_jobs(api_client: TestClient, default_board: str):
     assert scanner["enabled"] is False
 
 
+def test_cron_flags_accept_trimmed_boolean_settings(api_client: TestClient):
+    """Persisted cron flags keep accepting values padded with whitespace."""
+    from dashboard.db import get_db_conn
+
+    with get_db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, 0)",
+            [
+                ("cron_enabled_zero-factory-task-queue-check", " true "),
+                ("enable_cron_scheduler", " yes "),
+            ],
+        )
+
+    response = api_client.get("/api/plugins/zerofactory/cron")
+
+    assert response.status_code == 200
+    data = response.json()
+    watchdog = next(
+        job for job in data["jobs"] if job["id"] == "zero-factory-task-queue-check"
+    )
+    assert watchdog["enabled"] is True
+    assert data["scheduler_enabled"] is True
+
+
 def test_get_cron_jobs_scanner_config_error_falls_back(
     api_client: TestClient, default_board: str, monkeypatch
 ):
