@@ -18,8 +18,8 @@ def test_get_scanner_cron_config_falls_back_for_invalid_numeric_settings():
         def fetchall(self):
             return [
                 ("scan_on_idle", "true"),
-                ("idle_scan_cooldown_minutes", "not-a-number"),
-                ("idle_scan_max_todo", "stale-value"),
+                ("idle_scan_cooldown_minutes_board-a", "not-a-number"),
+                ("idle_scan_max_todo_board-a", "stale-value"),
             ]
 
     config = scanner.get_scanner_cron_config("board-a", cursor=SettingsCursor())
