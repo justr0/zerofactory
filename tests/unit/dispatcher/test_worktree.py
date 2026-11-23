@@ -11,6 +11,7 @@ from dispatcher.worktree import (
     _delete_remote_branch,
     _handle_local_merge_conflict,
     _remove_worktree,
+    resolve_board_repo_path,
     resolve_task_repo_path,
     setup_worktree,
 )
@@ -71,6 +72,21 @@ def _init_tasks_db(conn: sqlite3.Connection):
 
 
 # --- 1. resolve_task_repo_path ---
+
+
+def test_resolve_board_repo_path_uses_repository_name_from_git_url(tmp_path: Path):
+    repo_dir = tmp_path / "widgets"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    with patch("paths.get_board_repos_dir", return_value=tmp_path):
+        resolved = resolve_board_repo_path(
+            {
+                "slug": "team-board",
+                "repo_alias": "widget-service",
+                "git_url": "git@github.com:team/widgets.git/",
+            }
+        )
+    assert resolved == repo_dir.resolve()
 
 
 def test_resolve_task_repo_path_from_board_git_url(tmp_path: Path):

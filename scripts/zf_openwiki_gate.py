@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -44,23 +43,23 @@ candidate_roots = [
 if os.environ.get("ZEROFACTORY_ROOT"):
     candidate_roots.insert(0, Path(os.environ["ZEROFACTORY_ROOT"]))
 
-for candidate in candidate_roots:
+for candidate in reversed(candidate_roots):
     try:
         resolved = candidate.resolve()
-        if resolved.is_dir() and str(resolved) not in sys.path:
+        if resolved.is_dir():
             sys.path.insert(0, str(resolved))
     except Exception:
         pass
 
-from paths import get_hermes_home, get_zerofactory_db_path  # noqa: E402
+import paths  # noqa: E402
 
 
 def _get_state_file() -> Path:
-    return get_hermes_home() / "openwiki_state.json"
+    return paths.get_hermes_home() / "openwiki_state.json"
 
 
 def _get_db_path() -> Path:
-    return get_zerofactory_db_path()
+    return paths.get_zerofactory_db_path()
 
 
 def create_openwiki_task(
@@ -278,11 +277,8 @@ def resolve_repo_path(
     ]
 
     if git_url:
-        cleaned_url = re.sub(r"\.git$", "", git_url.strip().rstrip("/"))
-        parts = cleaned_url.replace(":", "/").split("/")
-        if len(parts) >= 1:
-            repo_name = parts[-1]
-            candidates.append(b_repos / repo_name)
+        repo_name = paths.repository_name_from_git_url(git_url)
+        candidates.append(b_repos / repo_name)
 
     for cand in candidates:
         if cand.is_dir() and (cand / ".git").exists():
