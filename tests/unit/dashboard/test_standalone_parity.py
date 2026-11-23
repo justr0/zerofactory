@@ -199,6 +199,54 @@ def test_standalone_legacy_root_tasks_contract_and_static_assets():
     assert not re.search(r"[ \t]+$", script, re.MULTILINE)
 
 
+def test_standalone_ui_create_task_invokes_api_and_renders_result(
+    initialized_db, default_board
+):
+    sync_api = __import__("pytest").importorskip("playwright.sync_api")
+    from tests.e2e.test_dashboard_ui_playwright import (
+        _find_chromium_executable,
+        _start_http_bridge,
+    )
+    from dashboard.standalone import app
+
+    httpd, thread, port = _start_http_bridge(app)
+    try:
+        with sync_api.sync_playwright() as playwright:
+            launch_options = {"headless": True}
+            chromium = _find_chromium_executable()
+            if chromium:
+                launch_options["executable_path"] = chromium
+            browser = playwright.chromium.launch(**launch_options)
+            page = browser.new_page()
+            requests = []
+            page.on(
+                "request",
+                lambda request: (
+                    requests.append((request.method, request.url, request.post_data))
+                    if "/api/plugins/zerofactory/tasks" in request.url
+                    else None
+                ),
+            )
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.get_by_role("button", name="+ New Task").click()
+            page.get_by_placeholder("e.g. Implement caching layer for Redis").fill(
+                "Standalone UI behavior"
+            )
+            page.get_by_role("button", name="Create Task").click()
+            page.get_by_text("Standalone UI behavior").wait_for(timeout=10000)
+
+            create = next((entry for entry in requests if entry[0] == "POST"), None)
+            assert create is not None
+            assert create[1].endswith("/api/plugins/zerofactory/tasks")
+            assert '"title":"Standalone UI behavior"' in (create[2] or "")
+            assert default_board in (create[2] or "")
+            browser.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 def test_standalone_cli_smoke_without_external_network(initialized_db):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
