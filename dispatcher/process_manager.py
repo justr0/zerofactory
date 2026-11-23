@@ -100,14 +100,34 @@ def is_pid_alive(pid: int | None) -> bool:
 
 def process_matches_identity(pid: int, task_id: str) -> bool:
     """Check whether a live process still belongs to the given worker task."""
+    if not isinstance(pid, int) or pid <= 0 or not task_id:
+        return False
     try:
-        cmdline_path = Path(f"/proc/{pid}/cmdline")
-        if cmdline_path.exists():
+        if IS_WINDOWS:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode != 0:
+                return False
+            cmd_data = result.stdout
+        else:
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
+            if not cmdline_path.is_file():
+                return False
             cmd_data = cmdline_path.read_bytes().decode("utf-8", errors="replace")
-            return any(token in cmd_data for token in ("hermes", task_id, "zf-runner"))
+        return f"worker_{task_id}.exit" in cmd_data
     except Exception:
-        pass
-    return True
+        return False
 
 
 def get_process_exit_code(
