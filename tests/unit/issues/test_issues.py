@@ -374,6 +374,27 @@ class TestImporterIdempotencyAndDeterminism:
             == exact_board["slug"]
         )
 
+    @patch("issues.importer.subprocess.run")
+    def test_resolve_board_matches_cwd_remote_across_url_formats(self, mock_run):
+        target_board = create_board(
+            BoardCreate(
+                slug="target-board",
+                repositories=[
+                    BoardRepoCreate(
+                        repo_alias="app", git_url="https://github.com/acme/app.git"
+                    )
+                ],
+            )
+        )
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="git@github.com:acme/app.git\n", stderr=""
+        )
+
+        assert (
+            resolve_board_for_issue(repo_or_project=None, db_path=self.db_path)
+            == target_board["slug"]
+        )
+
     def test_import_issue_deterministic_and_idempotent(self):
         issue = ExternalIssue(
             source="github",

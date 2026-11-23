@@ -100,21 +100,16 @@ def resolve_board_for_issue(
             )
             if cwd_remote.returncode == 0:
                 cwd_url = cwd_remote.stdout.strip()
-                cleaned_cwd = re.sub(r"\.git$", "", cwd_url).strip().rstrip("/")
-                cursor.execute(
-                    "SELECT b.slug, br.git_url FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug ORDER BY b.created_at ASC"
-                )
-                for row in cursor.fetchall():
-                    slug = str(row["slug"])
-                    git_url = str(row["git_url"] or "")
-                    cleaned_board_url = (
-                        re.sub(r"\.git$", "", git_url).strip().rstrip("/")
+                cwd_identity = _repo_identity(cwd_url)
+                if cwd_identity != "/":
+                    cursor.execute(
+                        "SELECT b.slug, br.git_url FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug ORDER BY b.created_at ASC"
                     )
-                    if (
-                        cleaned_board_url
-                        and cleaned_board_url.lower() == cleaned_cwd.lower()
-                    ):
-                        return slug
+                    for row in cursor.fetchall():
+                        slug = str(row["slug"])
+                        git_url = str(row["git_url"] or "")
+                        if git_url and _repo_identity(git_url) == cwd_identity:
+                            return slug
         except Exception:
             pass
 
