@@ -341,7 +341,6 @@ class TestPathsResolution(unittest.TestCase):
         import os
         import dispatcher.config as disp_cfg
         import migrations.runner as mig_runner
-        import scripts.zf_daily_stats as daily_stats
         import scripts.zf_openwiki_gate as ow_gate
         import dashboard.routes.stats as stats_route
 
@@ -356,12 +355,11 @@ class TestPathsResolution(unittest.TestCase):
                 expected_db = hermes_home.resolve() / "zerofactory.db"
                 self.assertEqual(disp_cfg.get_db_path(), expected_db)
                 self.assertEqual(mig_runner._resolve_default_db_path(), expected_db)
-                self.assertEqual(ow_gate._get_db_path(), expected_db)
+                self.assertEqual(P.get_zerofactory_db_path(), expected_db)
                 self.assertEqual(
                     ow_gate._get_state_file(),
                     hermes_home.resolve() / "openwiki_state.json",
                 )
-                self.assertEqual(daily_stats._get_db_path(), expected_db)
                 self.assertEqual(
                     stats_route._get_orchestrator_executions_db_path(),
                     str(
