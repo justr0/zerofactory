@@ -3,6 +3,9 @@
 import json
 
 from fastapi.testclient import TestClient
+import pytest
+
+from dashboard.db import get_db_conn
 
 
 def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
@@ -69,6 +72,52 @@ def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
     assert list_res.status_code == 200
     filtered_tasks = list_res.json()["tasks"]
     assert any(t["id"] == task_id for t in filtered_tasks)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_progress"),
+    [
+        (
+            json.dumps(
+                {
+                    "session_id": "session-1",
+                    "sessions": [
+                        {
+                            "session_id": "session-1",
+                            "status": "ongoing",
+                            "turn_count": 2,
+                            "message_count": 3,
+                        }
+                    ],
+                }
+            ),
+            True,
+        ),
+        ("{invalid", False),
+        (json.dumps(["not", "an", "object"]), False),
+    ],
+    ids=["dict-metadata", "invalid-metadata", "non-object-metadata"],
+)
+def test_list_tasks_normalizes_metadata_for_session_progress(
+    api_client: TestClient, default_board: str, metadata: str, expected_progress: bool
+):
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={"title": "Metadata listing regression", "board_slug": default_board},
+    ).json()["id"]
+    with get_db_conn() as conn:
+        conn.execute("UPDATE tasks SET metadata = ? WHERE id = ?", (metadata, task_id))
+        conn.commit()
+
+    response = api_client.get("/api/plugins/zerofactory/tasks")
+
+    assert response.status_code == 200
+    task = next(task for task in response.json()["tasks"] if task["id"] == task_id)
+    if expected_progress:
+        assert task["session_progress"]["has_session"] is True
+        assert task["session_progress"]["sessions"][0]["turn_count"] == 2
+    else:
+        assert "session_progress" not in task
 
 
 def test_task_dependencies(api_client: TestClient, default_board: str):
@@ -187,6 +236,21 @@ def test_task_grill_with_docs_triage_and_interview_reply(
         f"/api/plugins/zerofactory/tasks/{task_id}/comments",
         json={"author": "zf-orchestrator", "body": question_body},
     )
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET metadata = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "awaiting_interview": True,
+                        "blocked_reason": "stale",
+                        "blocked_reason_type": "human-gate",
+                    }
+                ),
+                task_id,
+            ),
+        )
+        conn.commit()
 
     # 4. Human replies via interactive interview endpoint
     reply_res = api_client.post(
@@ -209,6 +273,49 @@ def test_task_grill_with_docs_triage_and_interview_reply(
     assert any("[Grill-with-Docs Human Response]" in c["body"] for c in comments)
     assert any("Option A" in c["body"] for c in comments)
     assert any("consistent hashing" in c["body"] for c in comments)
+    assert "awaiting_interview" not in task_after["metadata"]
+    assert "blocked_reason" not in task_after["metadata"]
+    assert "blocked_reason_type" not in task_after["metadata"]
+
+
+@pytest.mark.parametrize("status", ["done", "running", "triage"])
+def test_interview_reply_rejects_non_pending_task_without_mutation(
+    api_client: TestClient, default_board: str, status: str
+):
+    """Replies are accepted only while a triage task explicitly awaits input."""
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Not awaiting interview",
+            "board_slug": default_board,
+            "status": status,
+            "assignee": "zf-builder",
+        },
+    ).json()["id"]
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET metadata = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {"blocked_reason": "keep", "blocked_reason_type": "human-gate"}
+                ),
+                task_id,
+            ),
+        )
+        conn.commit()
+
+    before = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    reply_res = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/interview-reply",
+        json={"selection": "Option A", "advance": False},
+    )
+    assert reply_res.status_code == 400
+    after = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert after["status"] == before["status"]
+    assert after["assignee"] == before["assignee"]
+    assert after["metadata"] == before["metadata"]
+    assert after["comments"] == before["comments"]
+    assert after["activity"] == before["activity"]
 
 
 def test_move_done_semantics_human_terminal_vs_agent_awaiting_pr(
