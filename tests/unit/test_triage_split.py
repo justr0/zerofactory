@@ -3,7 +3,9 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -88,6 +90,124 @@ class TestTriageSplit(unittest.TestCase):
                         "SELECT board_slug FROM tasks WHERE id = ?", (res["id"],)
                     ).fetchone()
                 self.assertEqual(row[0], "test-board")
+
+    def test_idle_scanner_can_create_only_remaining_todo_capacity(self):
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('idle_scan_max_todo_test-board', '2', 1)"
+            )
+            conn.commit()
+        create_task(
+            TaskCreate(
+                title="Existing queued task", board_slug="test-board", status="todo"
+            )
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_IDLE_SCAN": "1",
+                "ZEROFACTORY_IDLE_SCAN_BOARD": "test-board",
+            },
+        ):
+            created = create_task(
+                TaskCreate(
+                    title="Scanner queued task", board_slug="test-board", status="todo"
+                )
+            )
+            self.assertTrue(created["ok"])
+            with self.assertRaises(HTTPException) as exc:
+                create_task(
+                    TaskCreate(
+                        title="Scanner over-cap task",
+                        board_slug="test-board",
+                        status="todo",
+                    )
+                )
+
+        self.assertEqual(exc.exception.status_code, 409)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE board_slug = 'test-board' AND status = 'todo'"
+                ).fetchone()[0],
+                2,
+            )
+
+    def test_idle_scanner_zero_cap_and_manual_creation(self):
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('idle_scan_max_todo_test-board', '0', 1)"
+            )
+            conn.commit()
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_IDLE_SCAN": "1",
+                "ZEROFACTORY_IDLE_SCAN_BOARD": "test-board",
+            },
+        ):
+            with self.assertRaises(HTTPException) as exc:
+                create_task(
+                    TaskCreate(
+                        title="Scanner task at zero cap",
+                        board_slug="test-board",
+                        status="todo",
+                    )
+                )
+        self.assertEqual(exc.exception.status_code, 409)
+
+        # Ordinary/manual task creation is not subject to scanner backlog policy.
+        with patch.dict(
+            os.environ,
+            {"ZEROFACTORY_IDLE_SCAN": "0", "ZEROFACTORY_IDLE_SCAN_BOARD": "test-board"},
+        ):
+            manual = create_task(
+                TaskCreate(
+                    title="Manual queued task", board_slug="test-board", status="todo"
+                )
+            )
+        self.assertTrue(manual["ok"])
+
+    def test_concurrent_idle_scanner_creations_share_capacity(self):
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('idle_scan_max_todo_test-board', '1', 1)"
+            )
+            conn.commit()
+
+        def create_scanner_task(index):
+            try:
+                return create_task(
+                    TaskCreate(
+                        title=f"Concurrent scanner task {index}",
+                        board_slug="test-board",
+                        status="todo",
+                    )
+                )
+            except HTTPException as exc:
+                return exc.status_code
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_IDLE_SCAN": "1",
+                "ZEROFACTORY_IDLE_SCAN_BOARD": "test-board",
+            },
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(create_scanner_task, (1, 2)))
+
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        self.assertEqual(sum(result == 409 for result in results), 1)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE board_slug = 'test-board' AND status = 'todo'"
+                ).fetchone()[0],
+                1,
+            )
 
     def test_split_triage_task_into_todo_tasks(self):
         # 1. Create parent triage task
