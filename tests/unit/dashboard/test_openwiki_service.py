@@ -1,13 +1,16 @@
 """Unit tests for dashboard/openwiki_service.py."""
 
+import json
 import subprocess
 from pathlib import Path
 
+from dashboard import openwiki_service
 from dashboard.openwiki_service import (
     OPENWIKI_RELATIVE_DIR,
     build_openwiki_setup_task_prompt,
     check_board_openwiki_status,
     create_openwiki_setup_task,
+    sync_board_openwiki_workspace,
 )
 from dashboard.plugin_api import BoardCreate, create_board
 
@@ -170,3 +173,53 @@ def test_openwiki_status_check_does_not_auto_clone(initialized_db: Path, monkeyp
     clones = [c for c in calls if len(c) >= 2 and c[1] == "clone"]
     assert not clones, f"status check triggered git clone: {clones}"
     assert not (Path.home() / "git" / "no-clone-org").exists()
+
+
+def test_openwiki_workspace_ids_do_not_collide_for_normalized_board_slugs(
+    tmp_path: Path, monkeypatch
+):
+    openwiki_home = tmp_path / "openwiki-home"
+    monkeypatch.setattr(
+        openwiki_service, "get_openwiki_home_dir", lambda: openwiki_home
+    )
+    repos = {}
+    for board, alias in (("ops_team", "team-repo"), ("ops-team", "service-repo")):
+        repo = tmp_path / board
+        repo.mkdir()
+        repos[board] = [{"path": repo, "alias": alias}]
+    monkeypatch.setattr(
+        openwiki_service,
+        "get_board_linked_repos",
+        lambda board_slug, db_path=None: repos[board_slug],
+    )
+
+    team_result = sync_board_openwiki_workspace("ops_team")
+    service_result = sync_board_openwiki_workspace("ops-team")
+    repeated_result = sync_board_openwiki_workspace("ops_team")
+
+    assert team_result["workspace_id"] != service_result["workspace_id"]
+    assert repeated_result["workspace_id"] == team_result["workspace_id"]
+    registry = json.loads((openwiki_home / "wiki-workspaces.json").read_text())
+    workspaces = {workspace["name"]: workspace for workspace in registry["workspaces"]}
+    assert set(workspaces) == {"ops_team", "ops-team"}
+    team_wikis = {
+        wiki["id"] for wiki in registry["wikis"] if wiki["name"] == "team-repo"
+    }
+    service_wikis = {
+        wiki["id"] for wiki in registry["wikis"] if wiki["name"] == "service-repo"
+    }
+    assert workspaces["ops_team"]["wikis"] == list(team_wikis)
+    assert workspaces["ops-team"]["wikis"] == list(service_wikis)
+    assert not (team_wikis & service_wikis)
+    active_workspace = {
+        entry["wiki"]: entry["workspace"] for entry in registry["active"]
+    }
+    assert {active_workspace[wiki] for wiki in team_wikis} == {
+        team_result["workspace_id"]
+    }
+    assert {active_workspace[wiki] for wiki in service_wikis} == {
+        service_result["workspace_id"]
+    }
+    assert len(registry["workspaces"]) == 2
+    assert len(registry["wikis"]) == 2
+    assert len(registry["active"]) == 2
