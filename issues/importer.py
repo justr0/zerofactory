@@ -109,6 +109,34 @@ def resolve_board_for_issue(
     return board_slug
 
 
+def _resolve_repo_alias(
+    repo_or_project: str | None, board_slug: str | None, db_path: Path | None
+) -> str | None:
+    """Return the linked repository alias matching an external repo identity."""
+    if not repo_or_project or not board_slug:
+        return None
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return None
+
+    def repo_identity(value: str) -> str:
+        cleaned = re.sub(r"\.git$", "", value.strip()).rstrip("/")
+        parts = re.split(r"[/ :]", cleaned)
+        return "/".join(parts[-2:]).casefold()
+
+    identity = repo_identity(repo_or_project)
+    with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+        rows = conn.execute(
+            "SELECT repo_alias, git_url FROM board_repositories WHERE board_slug = ?",
+            (board_slug,),
+        ).fetchall()
+    for repo_alias, git_url in rows:
+        if git_url and repo_identity(str(git_url)) == identity:
+            return str(repo_alias)
+    return None
+
+
 def import_external_issue(
     issue: ExternalIssue,
     board_slug: str | None = None,
@@ -139,6 +167,7 @@ def import_external_issue(
         board_slug=board_slug,
         db_path=db_path,
     )
+    repo_alias = _resolve_repo_alias(issue.repo_or_project, effective_board, db_path)
 
     task_id = issue.to_task_id(effective_board)
     dedup_key = issue.to_dedup_key()
@@ -199,6 +228,7 @@ def import_external_issue(
         title=title,
         description=description,
         board_slug=effective_board,
+        repo_alias=repo_alias,
         status=status,
         assignee=effective_assignee,
         priority=effective_priority,

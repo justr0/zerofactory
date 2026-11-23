@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dashboard.plugin_api import create_board, BoardCreate
+from dashboard.models import BoardRepoCreate
 from issues.base import ExternalIssue
 from issues.github import GitHubIssueClient, parse_github_issue_ref
 from issues.importer import import_external_issue, resolve_board_for_issue
@@ -379,6 +380,38 @@ class TestImporterIdempotencyAndDeterminism:
         assert res["title"] == "[Triage] [Feature] [#43] Add dark mode support"
         assert res["category"] == "feature"
         assert res["assignee"] == "human"
+
+    def test_import_issue_targets_matching_repository_on_multi_repo_board(self):
+        board = create_board(
+            BoardCreate(
+                slug="multi-repo-board",
+                repositories=[
+                    BoardRepoCreate(
+                        repo_alias="frontend",
+                        git_url="https://github.com/example/frontend.git",
+                    ),
+                    BoardRepoCreate(
+                        repo_alias="backend",
+                        git_url="https://github.com/example/backend.git",
+                    ),
+                ],
+            )
+        )
+        issue = ExternalIssue(
+            source="github",
+            id="44",
+            key="#44",
+            title="Backend issue",
+            repo_or_project="example/backend",
+        )
+
+        result = import_external_issue(issue, board_slug=board["slug"])
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT repo_alias FROM tasks WHERE id = ?", (result["id"],)
+            ).fetchone()
+        assert row == ("backend",)
 
 
 class TestCliImportGhIssue:
