@@ -41,7 +41,7 @@ def test_process_matches_identity_requires_task_specific_marker():
     """A generic Hermes command is not enough to validate a persisted PID."""
     with (
         patch("dispatcher.process_manager.IS_WINDOWS", False),
-        patch("pathlib.Path.is_file", return_value=True),
+        patch("pathlib.Path.exists", return_value=True),
         patch(
             "pathlib.Path.read_bytes",
             return_value=b"hermes -p zf-builder chat unrelated worker",
@@ -55,22 +55,13 @@ def test_process_matches_identity_accepts_matching_worker_or_scanner():
     for task_id in ("task-123", "scanner_board-a"):
         with (
             patch("dispatcher.process_manager.IS_WINDOWS", False),
-            patch("pathlib.Path.is_file", return_value=True),
+            patch("pathlib.Path.exists", return_value=True),
             patch(
                 "pathlib.Path.read_bytes",
                 return_value=f"hermes -q prompt worker_{task_id}.exit".encode(),
             ),
         ):
             assert process_matches_identity(1234, task_id) is True
-
-
-def test_process_matches_identity_fails_closed_without_proc_cmdline():
-    """Do not accept a PID when the platform cannot provide its command line."""
-    with (
-        patch("dispatcher.process_manager.IS_WINDOWS", False),
-        patch("pathlib.Path.is_file", return_value=False),
-    ):
-        assert process_matches_identity(1234, "scanner_board-a") is False
 
 
 def test_process_matches_identity_reads_windows_command_line():
@@ -156,6 +147,59 @@ def test_build_shell_wrapper():
     assert wrapped[3] == "zf-runner"
     assert wrapped[4] == exit_prefix
     assert wrapped[5:] == cmd
+
+
+def test_process_matches_identity_rejects_generic_hermes_process():
+    """A generic Hermes command is not evidence that a persisted PID is ours."""
+    with (
+        patch("dispatcher.process_manager.Path.exists", return_value=True),
+        patch(
+            "dispatcher.process_manager.Path.read_bytes",
+            return_value=b"/usr/bin/hermes\0-p\0zf-orchestrator\0",
+        ),
+    ):
+        assert process_matches_identity(1234, "scanner_board-a") is False
+
+
+def test_process_matches_identity_accepts_wrapped_scanner():
+    """The shell wrapper's exit path carries the scanner-specific identity."""
+    cmdline = (
+        b"sh\0-c\0trap ...\0zf-runner\0/home/test/.hermes/logs/"
+        b"worker_scanner_board-a.exit\0/usr/bin/hermes\0"
+    )
+    with (
+        patch("dispatcher.process_manager.Path.exists", return_value=True),
+        patch("dispatcher.process_manager.Path.read_bytes", return_value=cmdline),
+    ):
+        assert process_matches_identity(1234, "scanner_board-a") is True
+
+
+def test_process_matches_identity_preserves_non_proc_fallback():
+    """Platforms with confirmed-absent procfs retain best-effort acceptance."""
+    with patch("dispatcher.process_manager.Path.stat", side_effect=FileNotFoundError):
+        assert process_matches_identity(1234, "scanner_board-a") is True
+
+
+def test_process_matches_identity_rejects_inaccessible_procfs():
+    """An error checking procfs must not be mistaken for an absent procfs."""
+    with patch("dispatcher.process_manager.Path.stat", side_effect=PermissionError):
+        assert process_matches_identity(1234, "scanner_board-a") is False
+
+
+def test_process_matches_identity_rejects_unavailable_proc_command_line():
+    """Missing, empty, or unreadable per-PID cmdline data fails closed."""
+    with (
+        patch(
+            "dispatcher.process_manager.Path.stat",
+            return_value=MagicMock(st_mode=0o040755),
+        ),
+        patch(
+            "dispatcher.process_manager.Path.read_bytes",
+            side_effect=[FileNotFoundError, b"", PermissionError],
+        ),
+    ):
+        for _ in range(3):
+            assert process_matches_identity(1234, "scanner_board-a") is False
 
 
 def test_get_process_exit_code_completed(tmp_path):

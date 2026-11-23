@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -121,12 +122,25 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
                 return False
             cmd_data = result.stdout
         else:
-            cmdline_path = Path(f"/proc/{pid}/cmdline")
-            if not cmdline_path.is_file():
+            procfs_path = Path("/proc")
+            try:
+                procfs_mode = procfs_path.stat().st_mode
+            except FileNotFoundError:
+                # Keep best-effort behavior only when procfs is confirmed absent.
+                return True
+            except OSError:
+                # An inaccessible procfs does not establish that it is absent.
                 return False
-            cmd_data = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+            if not stat.S_ISDIR(procfs_mode):
+                return False
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
+            cmd_data = cmdline_path.read_bytes()
+            if not cmd_data:
+                return False
+            return f"worker_{task_id}.exit".encode() in cmd_data
         return f"worker_{task_id}.exit" in cmd_data
     except Exception:
+        # Fail closed if procfs exists but this PID's command line is unavailable.
         return False
 
 
