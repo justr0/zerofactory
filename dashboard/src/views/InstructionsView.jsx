@@ -1141,10 +1141,10 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
         {
           id: "zero-factory-improvement-scanner-{slug}",
           title: "Codebase Improvement Scanner (zf-orchestrator)",
-          interval: "On Idle (Active < 2)",
+          interval: "On Idle (Configured Capacity Gate)",
           tokens: "0 Tokens when Busy / Cooldown",
-          desc: "Executed autonomously by zf-orchestrator inside the codebase workdir with wake-gate change detection (scripts/zf_scanner_gate.py) and independent sessions (continuity: false). When the pipeline is busy (running >= 2 or todo >= 2) or during the 15-minute cooldown, it emits {'wakeAgent': false} (0 tokens). When the board is idle, it wakes zf-orchestrator to audit the codebase for tech debt, refactoring, or missing tests, creating at most 1 actionable TODO task on the board assigned to zf-builder.",
-          badge: "Wake-Gate • zf-orchestrator"
+          desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
+          badge: "Dispatcher-Gated • zf-orchestrator"
         },
         {
           id: "zero-factory-openwiki-update-{slug}",

@@ -362,15 +362,14 @@ Zero Factory automatically captures repository insights during developer and age
 
 ## Built-in Automation & Token-Efficient Cron Architecture
 
-Zero Factory is architected to drastically minimize LLM token consumption (up to 95% token savings) across periodic automation cycles using Hermes Agent's **No-Agent Mode (`no_agent: true`)**, **Wake-Gate Change Detection (`{"wakeAgent": false}`)**, and **Chained LLM Jobs (`context_from`)**:
+Zero Factory minimizes LLM token consumption across periodic automation with dispatcher-owned Python gates and Hermes **No-Agent Mode (`no_agent: true`)** / **Wake-Gate (`{"wakeAgent": false}`)** jobs where applicable:
 
 - **Dispatcher Loop & Reaper** (every 30s in background thread, **0 Tokens when Idle**):
   - Runs purely in Python (consuming 0 LLM tokens). Audits running workers, reaps stuck subprocesses, recovers orphaned tasks back to `Todo`, repairs any invalid `(status, assignee)` pairs, and claims queued `Todo` tasks.
   - Routes 3× failure-exhausted tasks (worker crashes/timeouts, precommit failures, or merge conflicts) into the `recovery` stage (`status="todo"`, `assignee="zf-orchestrator"`, `triage_phase="recovery"`) for one autonomous diagnostic recovery attempt before escalating to `Human` (`blocked`).
-- **`zero-factory-improvement-scanner-{board_slug}`** (on idle when active workers < 2, **0 Tokens when Busy / Cooldown**):
-  - Exactly **1 cron job per board**, executed by **`zf-orchestrator`** with wake-gate change detection via `scripts/zf_scanner_gate.py` (`continuity: false`).
-  - Evaluates all peer repositories on the board in a single pass. If all repositories are unchanged, or if the board is busy (`running >= 2` or `todo >= 2`) or in cooldown, suppresses execution with `{"wakeAgent": false}` (0 LLM tokens).
-  - When updates exist (or on capacity-driven idle round-robin), wakes `zf-orchestrator` targeting the selected repository with pre-digested git context, diffstat, code markers, and instructions to file at most 1 actionable `Todo` task (`--board <slug> --repo <alias>`).
+- **`zero-factory-improvement-scanner-{board_slug}`** (on idle when configured board and global capacity gates permit, **0 Tokens when Busy / Cooldown**):
+  - The dispatcher checks scanner settings, global LLM capacity, per-board running/todo limits, active scanner processes, and cooldown before spawning `zf-orchestrator` in the selected repository (`dispatcher/scheduler.py` and `dispatcher/scanner.py`).
+  - The scanner is an agent process, not a cron wake-gate script; it audits the repository when spawned and may file an actionable `Todo` task for `zf-builder`.
 - **`zero-factory-openwiki-update-{board_slug}`** (daily, **0 Tokens - No-Agent Mode**):
   - Exactly **1 cron job per board** via `scripts/zf_openwiki_gate.py`.
   - Synchronizes OpenWiki workspace links (`~/.openwiki/wiki-workspaces.json`) across all sibling repositories on the board and evaluates commit drift against `openwiki/` documentation across all board repositories in a single pass.
@@ -484,10 +483,10 @@ zerofactory/
 │   ├── unit/                    # Unit tests for paths, settings, scripts, cron, dispatcher, etc.
 │   ├── integration/             # FastAPI dashboard REST API route integration tests
 │   └── e2e/                     # Hermetic end-to-end workflow & resilience tests (20 tests)
-├── scripts/                     # No-Agent Mode scripts & LLM context pre-processors
-│   ├── zf_queue_watchdog.py     # Autonomous worker reaper & queue monitor (0 tokens)
-│   ├── zf_scanner_gate.py       # Codebase diff pre-screen & wake-gate
-│   └── zf_daily_stats.py        # Deterministic 24h metrics & velocity calculator
+├── scripts/                     # Tracked automation and reporting scripts
+│   ├── setup_gh_issues.py       # GitHub issue setup helper
+│   ├── zf_daily_stats.py        # Deterministic 24h metrics & velocity calculator
+│   └── zf_openwiki_gate.py      # OpenWiki drift detection and update-task gate
 ├── dashboard/                   # Embedded web dashboard UI (/zerofactory)
 │   ├── manifest.json            # Gateway route declaration
 │   ├── plugin_api.py            # FastAPI REST backend
