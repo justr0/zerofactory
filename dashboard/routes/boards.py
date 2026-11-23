@@ -595,7 +595,7 @@ def update_board(slug: str, req: BoardUpdate):
                 r["additional_reviewer_usernames"] = json.loads(
                     r.get("additional_reviewer_usernames") or "[]"
                 )
-            except Exception:
+            except json.JSONDecodeError:
                 r["additional_reviewer_usernames"] = []
         board_data["repositories"] = repos
         if repos:
@@ -651,7 +651,7 @@ def get_board_repositories(slug: str):
                 r["additional_reviewer_usernames"] = json.loads(
                     r.get("additional_reviewer_usernames") or "[]"
                 )
-            except Exception:
+            except json.JSONDecodeError:
                 r["additional_reviewer_usernames"] = []
         return {"ok": True, "repositories": repos}
 
@@ -705,7 +705,7 @@ def add_board_repository(slug: str, req: BoardRepoCreate):
             row["additional_reviewer_usernames"] = json.loads(
                 row.get("additional_reviewer_usernames") or "[]"
             )
-        except Exception:
+        except json.JSONDecodeError:
             row["additional_reviewer_usernames"] = []
         return {"ok": True, "repository": row}
 
@@ -767,7 +767,7 @@ def update_board_repository(slug: str, repo_alias: str, req: BoardRepoUpdate):
             row["additional_reviewer_usernames"] = json.loads(
                 row.get("additional_reviewer_usernames") or "[]"
             )
-        except Exception:
+        except json.JSONDecodeError:
             row["additional_reviewer_usernames"] = []
         return {"ok": True, "repository": row}
 
