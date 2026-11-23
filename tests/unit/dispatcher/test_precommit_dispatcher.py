@@ -29,6 +29,23 @@ def test_precommit_script_rejects_unsupported_phase():
     assert "▶ Zero Factory precommit:" not in result.stdout
 
 
+def test_precommit_script_rejects_extra_arguments():
+    """An extra argument prints usage and exits before running any checks."""
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / ".zerofactory" / "precommit.sh"
+
+    result = subprocess.run(
+        ["bash", str(script), "format", "typo"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Usage:" in result.stderr
+    assert "▶ Zero Factory precommit:" not in result.stdout
+
+
 def test_run_precommit_missing_script(tmp_path: Path):
     """When .zerofactory/precommit.sh does not exist, precommit passes silently."""
     passed, msg, code = run_deterministic_precommit(tmp_path)

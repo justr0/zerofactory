@@ -140,6 +140,11 @@ install_hook() {
   echo "✓ Linked .zerofactory/precommit.sh -> $HOOK_DIR/pre-commit"
 }
 
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [all|format|build|test|install-hook]" >&2
+  exit 2
+fi
+
 case "${1:-all}" in
   all)
     run_format
