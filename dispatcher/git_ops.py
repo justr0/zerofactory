@@ -165,16 +165,6 @@ def get_status_files(workspace_path: Path) -> tuple[list[str], list[str]]:
     return sorted(files), sorted(unmerged)
 
 
-def get_unmerged_status_files(workspace_path: Path) -> list[str]:
-    """Return files that have unmerged git status codes (UU, AA, UD, DU, DD, AU, UA)."""
-    return get_status_files(workspace_path)[1]
-
-
-def get_modified_status_files(workspace_path: Path) -> list[str]:
-    """Return all modified/unmerged/untracked file paths from git status --porcelain."""
-    return get_status_files(workspace_path)[0]
-
-
 class GitConflictCheckError(Exception):
     """Raised when a git-backed conflict check could not be verified.
 

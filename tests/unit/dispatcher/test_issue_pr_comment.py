@@ -94,7 +94,7 @@ def _run_cycle(db_path: Path, fake_run):
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run),
         patch.object(dispatcher, "clean_stale_git_locks"),
         patch.object(dispatcher, "get_git_dir", return_value=None),
-        patch.object(dispatcher, "get_unmerged_status_files", return_value=[]),
+        patch.object(dispatcher, "get_status_files", return_value=([], [])),
         patch.object(
             dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
         ),
