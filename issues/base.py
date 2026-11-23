@@ -7,7 +7,6 @@ trackers (GitHub, Jira, etc.) into Zero Factory Kanban tasks.
 from __future__ import annotations
 
 import re
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -232,17 +231,3 @@ class ExternalIssue:
             "assignees": list(self.assignees),
             "repo_or_project": self.repo_or_project,
         }
-
-
-class BaseIssueClient(ABC):
-    """Abstract interface for fetching issues from an external tracker."""
-
-    @abstractmethod
-    def fetch_issue(self, issue_ref: str, **kwargs: Any) -> ExternalIssue:
-        """Fetch and normalize an issue by its reference (number, key, or URL)."""
-        pass
-
-    @abstractmethod
-    def test_connection(self) -> bool:
-        """Test whether the issue tracker CLI/API is available and authenticated."""
-        pass
