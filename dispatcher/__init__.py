@@ -118,9 +118,7 @@ from .git_ops import (
     clean_stale_git_locks,
     get_default_branch,
     get_git_dir,
-    get_modified_status_files,
     get_status_files,
-    get_unmerged_status_files,
     pull_and_merge_main,
     sync_repo_main,
 )
@@ -240,8 +238,6 @@ __all__ = [
     "sync_repo_main",
     "_has_unresolved_conflict_markers",
     "check_files_for_conflict_markers",
-    "get_unmerged_status_files",
-    "get_modified_status_files",
     "get_status_files",
     "check_unresolved_conflicts",
     "check_unresolved_conflicts_safe",
