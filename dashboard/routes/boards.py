@@ -945,7 +945,6 @@ def sync_board_gh_issues_endpoint(
     slug: str,
     repo_alias: str | None = None,
     label: str = "zerofactory",
-    force: bool = False,
 ):
     """Scan and import open GitHub issues requested for AI investigation into human-gated Triage tasks."""
     init_db()
