@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -176,8 +178,37 @@ def import_external_issue(
     )
     repo_alias = _resolve_repo_alias(issue.repo_or_project, effective_board, db_path)
 
-    task_id = issue.to_task_id(effective_board)
     dedup_key = issue.to_dedup_key()
+    task_id = issue.to_task_id(effective_board)
+    database_path = db_path or get_db_path()
+    if database_path.exists():
+        with sqlite3.connect(str(database_path), timeout=5.0) as conn:
+            rows = conn.execute(
+                "SELECT id, metadata, board_slug FROM tasks",
+            ).fetchall()
+        for existing_id, raw_metadata, existing_board in rows:
+            try:
+                existing_metadata = json.loads(raw_metadata or "{}")
+            except (TypeError, json.JSONDecodeError):
+                existing_metadata = {}
+            if (
+                existing_board == effective_board
+                and existing_metadata.get("dedup_key") == dedup_key
+            ):
+                task_id = str(existing_id)
+                break
+        else:
+            conflicting_id = next(
+                (
+                    str(existing_id)
+                    for existing_id, _, _ in rows
+                    if existing_id == task_id
+                ),
+                None,
+            )
+            if conflicting_id:
+                repo = issue.repo_or_project.strip().lower()
+                task_id = f"{task_id}-{hashlib.sha256(repo.encode()).hexdigest()[:8]}"
     effective_priority = priority or issue.infer_priority()
     category = issue.infer_category()
 

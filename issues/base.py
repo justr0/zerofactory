@@ -6,7 +6,6 @@ trackers (GitHub, Jira, etc.) into Zero Factory Kanban tasks.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -108,13 +107,9 @@ class ExternalIssue:
         prefix = "gh" if self.source == "github" else (self.source[:2].lower() or "ex")
         sanitized_id = re.sub(r"[^a-zA-Z0-9]", "", self.id).lower()
 
-        repo = self.repo_or_project.strip().lower()
-        repo_suffix = (
-            f"-{hashlib.sha256(repo.encode()).hexdigest()[:8]}" if repo else ""
-        )
         if board_code:
-            return f"zf-{board_code}-{prefix}{sanitized_id}{repo_suffix}"
-        return f"zf-{prefix}{sanitized_id}{repo_suffix}"
+            return f"zf-{board_code}-{prefix}{sanitized_id}"
+        return f"zf-{prefix}{sanitized_id}"
 
     def infer_issue_type(self) -> Literal["bug", "feature", "task"]:
         """Deterministically infer issue type ('bug' or 'feature') from labels, title, or raw metadata."""
