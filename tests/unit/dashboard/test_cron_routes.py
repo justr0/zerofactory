@@ -119,6 +119,31 @@ def test_cron_job_update_and_reset(api_client: TestClient, default_board: str):
     assert res_reset.json()["ok"] is True
 
 
+def test_scanner_update_accepts_zero_and_rejects_negative(
+    api_client: TestClient, default_board: str
+):
+    """Zero disables the todo cap; negative values remain invalid."""
+    job_id = f"zero-factory-improvement-scanner-{default_board}"
+    url = f"/api/plugins/zerofactory/cron/{job_id}"
+
+    for value in (0, 3):
+        res = api_client.put(url, json={"idle_scan_max_todo": value})
+        assert res.status_code == 200
+        assert res.json()["ok"] is True
+
+        jobs_res = api_client.get("/api/plugins/zerofactory/cron")
+        assert jobs_res.status_code == 200
+        scanner = next(job for job in jobs_res.json()["jobs"] if job["id"] == job_id)
+        assert scanner["idle_scan_max_todo"] == value
+
+    negative_res = api_client.put(url, json={"idle_scan_max_todo": -1})
+    assert negative_res.status_code == 422
+
+    jobs_res = api_client.get("/api/plugins/zerofactory/cron")
+    scanner = next(job for job in jobs_res.json()["jobs"] if job["id"] == job_id)
+    assert scanner["idle_scan_max_todo"] == 3
+
+
 def test_cron_run_job(api_client: TestClient, default_board: str):
     """Verify triggering an immediate run of a cron job."""
     res = api_client.post(
