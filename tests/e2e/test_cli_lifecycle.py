@@ -100,6 +100,12 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         out_sync = self._run_cli(["sync-profiles"])
         self.assertIn("Zero Factory Profiles Synced", out_sync)
 
+    def test_cli_migrate_status(self):
+        """Migration status uses the module-level time import in cmd_run."""
+        out = self._run_cli(["migrate", "--status"])
+        self.assertIn("Zero Factory Migration Status:", out)
+        self.assertIn("Applied At", out)
+
     def test_02_cli_board_crud(self):
         """CLI board create, list, and delete workflow."""
         # Create board
