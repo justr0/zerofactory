@@ -146,8 +146,8 @@ def _coerce_task_metadata(metadata: dict[str, Any] | str | None) -> dict[str, An
         try:
             parsed = json.loads(metadata)
             return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            pass
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 

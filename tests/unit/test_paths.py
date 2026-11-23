@@ -274,6 +274,9 @@ class TestPathsResolution(unittest.TestCase):
                     P.derive_task_stage("todo", "zf-orchestrator", metadata=metadata),
                     expected_stage,
                 )
+        self.assertEqual(
+            P.derive_task_stage("done", "zf-builder", metadata="{invalid"), "done"
+        )
 
     def test_dispatcher_and_dashboard_agree(self):
         """The dispatcher's spawn-path resolver and dashboard's get_profile_state_db agree."""
