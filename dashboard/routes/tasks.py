@@ -21,9 +21,9 @@ if _DASHBOARD_ROOT not in sys.path:
 from fastapi import APIRouter, HTTPException, Query
 
 try:
-    from ...paths import get_active_profile
+    from ...paths import AGENT_ROLES, get_active_profile, resolve_profile_state_db
 except (ImportError, ValueError):
-    from paths import get_active_profile  # type: ignore
+    from paths import AGENT_ROLES, get_active_profile, resolve_profile_state_db  # type: ignore
 
 try:
     from ...zf_wincompat import IS_WINDOWS, kill_tree
@@ -672,29 +672,21 @@ def stop_task_session(task_id: str, to_status: str | None = "blocked"):
 
         # Mark ended_at in profile state.db if session_id is active
         if active_sid:
-            for prof in ["zf-builder", "zf-reviewer", "zf-orchestrator"]:
-                try:
-                    from ...paths import resolve_profile_state_db
-                except Exception:
+            for prof in AGENT_ROLES:
+                sdb = resolve_profile_state_db(prof)
+                if sdb and sdb.exists():
                     try:
-                        from paths import resolve_profile_state_db  # type: ignore
-                    except Exception:
-                        resolve_profile_state_db = None
-                if resolve_profile_state_db:
-                    sdb = resolve_profile_state_db(prof)
-                    if sdb and sdb.exists():
-                        try:
-                            import sqlite3 as _sqlite3
+                        import sqlite3 as _sqlite3
 
-                            with _sqlite3.connect(str(sdb), timeout=2.0) as pconn:
-                                pcur = pconn.cursor()
-                                pcur.execute(
-                                    "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
-                                    (now, active_sid),
-                                )
-                                pconn.commit()
-                        except Exception:
-                            pass
+                        with _sqlite3.connect(str(sdb), timeout=2.0) as pconn:
+                            pcur = pconn.cursor()
+                            pcur.execute(
+                                "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+                                (now, active_sid),
+                            )
+                            pconn.commit()
+                    except Exception:
+                        pass
 
         conn.commit()
 
