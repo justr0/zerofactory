@@ -90,33 +90,51 @@ def test_cron_sync(api_client: TestClient):
 
 
 def test_cron_job_update_and_reset(api_client: TestClient, default_board: str):
-    """Verify updating and resetting a board scanner job."""
+    """Scanner settings are isolated per board and reset to board defaults."""
     job_id = f"zero-factory-improvement-scanner-{default_board}"
-
-    # Update cooldown and max todo
-    res = api_client.put(
-        f"/api/plugins/zerofactory/cron/{job_id}",
-        json={
-            "idle_scan_cooldown_minutes": 30,
-            "idle_scan_max_todo": 5,
-            "scan_on_idle": False,
-        },
+    second_board_res = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"git_url": "https://github.com/example/second-board.git"},
     )
-    assert res.status_code == 200
-    assert res.json()["ok"] is True
+    assert second_board_res.status_code == 200
+    second_board = second_board_res.json()["slug"]
+    second_job_id = f"zero-factory-improvement-scanner-{second_board}"
 
-    # Toggle job
-    res_toggle = api_client.post(
-        f"/api/plugins/zerofactory/cron/{job_id}/toggle",
-        json={"enabled": True},
-    )
-    assert res_toggle.status_code == 200
-    assert res_toggle.json()["enabled"] is True
+    for target_job_id, cooldown, max_todo in (
+        (job_id, 30, 5),
+        (second_job_id, 45, 7),
+    ):
+        res = api_client.put(
+            f"/api/plugins/zerofactory/cron/{target_job_id}",
+            json={
+                "idle_scan_cooldown_minutes": cooldown,
+                "idle_scan_max_todo": max_todo,
+            },
+        )
+        assert res.status_code == 200
 
-    # Reset job
+    jobs = api_client.get("/api/plugins/zerofactory/cron").json()["jobs"]
+    scanners = {job["id"]: job for job in jobs}
+    assert scanners[job_id]["idle_scan_cooldown_minutes"] == 30
+    assert scanners[job_id]["idle_scan_max_todo"] == 5
+    assert scanners[second_job_id]["idle_scan_cooldown_minutes"] == 45
+    assert scanners[second_job_id]["idle_scan_max_todo"] == 7
+
     res_reset = api_client.post(f"/api/plugins/zerofactory/cron/{job_id}/reset")
     assert res_reset.status_code == 200
     assert res_reset.json()["ok"] is True
+
+    jobs = api_client.get("/api/plugins/zerofactory/cron").json()["jobs"]
+    scanners = {job["id"]: job for job in jobs}
+    assert (
+        scanners[job_id]["idle_scan_cooldown_minutes"]
+        == cron_routes.DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
+    )
+    assert (
+        scanners[job_id]["idle_scan_max_todo"] == cron_routes.DEFAULT_IDLE_SCAN_MAX_TODO
+    )
+    assert scanners[second_job_id]["idle_scan_cooldown_minutes"] == 45
+    assert scanners[second_job_id]["idle_scan_max_todo"] == 7
 
 
 def test_scanner_update_accepts_zero_and_rejects_negative(

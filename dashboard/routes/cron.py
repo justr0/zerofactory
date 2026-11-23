@@ -338,7 +338,7 @@ def update_builtin_job(job_id: str, update_data: Dict[str, Any]) -> Dict[str, An
                 conn.execute(
                     "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
                     (
-                        "idle_scan_cooldown_minutes",
+                        f"idle_scan_cooldown_minutes_{slug}",
                         str(int(update_data["idle_scan_cooldown_minutes"])),
                         now,
                     ),
@@ -350,7 +350,7 @@ def update_builtin_job(job_id: str, update_data: Dict[str, Any]) -> Dict[str, An
                 conn.execute(
                     "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
                     (
-                        "idle_scan_max_todo",
+                        f"idle_scan_max_todo_{slug}",
                         str(int(update_data["idle_scan_max_todo"])),
                         now,
                     ),
@@ -371,6 +371,13 @@ def reset_builtin_job(job_id: str) -> Dict[str, Any]:
             conn.execute(
                 "DELETE FROM settings WHERE key = ?",
                 (f"scan_on_idle_{slug}",),
+            )
+            conn.execute(
+                "DELETE FROM settings WHERE key IN (?, ?)",
+                (
+                    f"idle_scan_cooldown_minutes_{slug}",
+                    f"idle_scan_max_todo_{slug}",
+                ),
             )
         conn.commit()
     return {"ok": True, "id": job_id, "reset": True}

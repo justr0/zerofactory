@@ -187,13 +187,15 @@ def get_scanner_cron_config(board_slug: str, cursor: Any = None) -> dict[str, An
         "enabled": scan_on_idle,
         "scan_on_idle": scan_on_idle,
         "idle_scan_cooldown_minutes": _clamp_int(
-            raw_settings.get("idle_scan_cooldown_minutes"), 1
+            raw_settings.get(f"idle_scan_cooldown_minutes_{board_slug}"), 1
         )
         or DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
         "idle_scan_max_todo": (
             parsed_max_todo
             if (
-                parsed_max_todo := _clamp_int(raw_settings.get("idle_scan_max_todo"), 0)
+                parsed_max_todo := _clamp_int(
+                    raw_settings.get(f"idle_scan_max_todo_{board_slug}"), 0
+                )
             )
             is not None
             else DEFAULT_IDLE_SCAN_MAX_TODO
