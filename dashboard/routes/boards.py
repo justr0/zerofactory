@@ -49,6 +49,16 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _normalize_repository_response(repository: dict[str, Any]) -> dict[str, Any]:
+    try:
+        repository["additional_reviewer_usernames"] = json.loads(
+            repository.get("additional_reviewer_usernames") or "[]"
+        )
+    except json.JSONDecodeError:
+        repository["additional_reviewer_usernames"] = []
+    return repository
+
+
 def _shape_board_response(cursor, board: dict[str, Any]) -> None:
     board["architecture"] = (board.get("architecture") or "").strip()
     board["auto_record_memory"] = bool(board.get("auto_record_memory", 1))
@@ -58,14 +68,7 @@ def _shape_board_response(cursor, board: dict[str, Any]) -> None:
         "FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
         (board["slug"],),
     )
-    repos = [dict(row) for row in cursor.fetchall()]
-    for repo in repos:
-        try:
-            repo["additional_reviewer_usernames"] = json.loads(
-                repo.get("additional_reviewer_usernames") or "[]"
-            )
-        except json.JSONDecodeError:
-            repo["additional_reviewer_usernames"] = []
+    repos = [_normalize_repository_response(dict(row)) for row in cursor.fetchall()]
     board["repositories"] = repos
     board["git_url"] = repos[0]["git_url"] if repos else ""
     board["target_branch"] = repos[0]["target_branch"] if repos else "main"
@@ -579,7 +582,7 @@ def update_board(slug: str, req: BoardUpdate):
 
         cursor.execute("SELECT * FROM boards WHERE slug = ?", (slug,))
         row = cursor.fetchone()
-        board_data = dict(row) if row else {"slug": slug}
+        board_data: dict[str, Any] = dict(row) if row else {"slug": slug}
         board_data["architecture"] = (board_data.get("architecture") or "").strip()
         board_data["auto_record_memory"] = bool(board_data.get("auto_record_memory", 1))
         board_data["automerge"] = bool(board_data.get("automerge", 0))
@@ -589,14 +592,7 @@ def update_board(slug: str, req: BoardUpdate):
                FROM board_repositories WHERE board_slug = ? ORDER BY id ASC""",
             (slug,),
         )
-        repos = [dict(r) for r in cursor.fetchall()]
-        for r in repos:
-            try:
-                r["additional_reviewer_usernames"] = json.loads(
-                    r.get("additional_reviewer_usernames") or "[]"
-                )
-            except json.JSONDecodeError:
-                r["additional_reviewer_usernames"] = []
+        repos = [_normalize_repository_response(dict(r)) for r in cursor.fetchall()]
         board_data["repositories"] = repos
         if repos:
             board_data["git_url"] = repos[0]["git_url"]
@@ -645,14 +641,7 @@ def get_board_repositories(slug: str):
                FROM board_repositories WHERE board_slug = ? ORDER BY id ASC""",
             (slug,),
         )
-        repos = [dict(r) for r in cursor.fetchall()]
-        for r in repos:
-            try:
-                r["additional_reviewer_usernames"] = json.loads(
-                    r.get("additional_reviewer_usernames") or "[]"
-                )
-            except json.JSONDecodeError:
-                r["additional_reviewer_usernames"] = []
+        repos = [_normalize_repository_response(dict(r)) for r in cursor.fetchall()]
         return {"ok": True, "repositories": repos}
 
 
@@ -700,13 +689,7 @@ def add_board_repository(slug: str, req: BoardRepoCreate):
             "SELECT id, board_slug, repo_alias, git_url, target_branch, additional_reviewer_usernames, created_at, updated_at FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
             (slug, r_alias),
         )
-        row = dict(cursor.fetchone())
-        try:
-            row["additional_reviewer_usernames"] = json.loads(
-                row.get("additional_reviewer_usernames") or "[]"
-            )
-        except json.JSONDecodeError:
-            row["additional_reviewer_usernames"] = []
+        row = _normalize_repository_response(dict(cursor.fetchone()))
         return {"ok": True, "repository": row}
 
 
@@ -762,13 +745,7 @@ def update_board_repository(slug: str, repo_alias: str, req: BoardRepoUpdate):
             "SELECT id, board_slug, repo_alias, git_url, target_branch, additional_reviewer_usernames, created_at, updated_at FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
             (slug, repo_alias),
         )
-        row = dict(cursor.fetchone())
-        try:
-            row["additional_reviewer_usernames"] = json.loads(
-                row.get("additional_reviewer_usernames") or "[]"
-            )
-        except json.JSONDecodeError:
-            row["additional_reviewer_usernames"] = []
+        row = _normalize_repository_response(dict(cursor.fetchone()))
         return {"ok": True, "repository": row}
 
 

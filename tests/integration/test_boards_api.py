@@ -5,6 +5,20 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from dashboard.routes.boards import _normalize_repository_response
+
+
+def test_repository_response_normalizes_reviewer_json_with_malformed_fallback():
+    assert _normalize_repository_response(
+        {"additional_reviewer_usernames": '["reviewer"]'}
+    )["additional_reviewer_usernames"] == ["reviewer"]
+    assert (
+        _normalize_repository_response({"additional_reviewer_usernames": "not-json"})[
+            "additional_reviewer_usernames"
+        ]
+        == []
+    )
+
 
 def test_create_and_list_boards(api_client: TestClient):
     """Verify creating a board and listing boards via API."""
