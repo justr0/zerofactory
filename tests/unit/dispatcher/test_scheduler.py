@@ -655,7 +655,7 @@ def test_run_dispatch_cycle_awaiting_pr_handles_conflicting_pr(tmp_path: Path):
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
         patch.object(dispatcher, "clean_stale_git_locks"),
         patch.object(dispatcher, "get_git_dir", return_value=None),
-        patch.object(dispatcher, "get_unmerged_status_files", return_value=[]),
+        patch.object(dispatcher, "get_status_files", return_value=([], [])),
         patch.object(
             dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
         ),
