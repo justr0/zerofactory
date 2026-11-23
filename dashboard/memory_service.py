@@ -294,74 +294,6 @@ def compute_dedup_key(
     return f"{','.join(sorted_files)}:{cat}"
 
 
-def mem0_add_memory(
-    board_slug: str,
-    content: str,
-    category: str = "general",
-    task_id: str | None = None,
-    author: str = "user",
-    tags: list[str] | None = None,
-    db_conn: sqlite3.Connection | None = None,
-) -> str:
-    """Store memory in both Mem0 vector store and SQLite board_memories table."""
-    mem_id = f"mem-{secrets.token_hex(4)}"
-    clean_content = content.strip()
-    now = int(time.time())
-    tags_list = tags or []
-    tags_json = json.dumps(tags_list)
-
-    # 1. Index in Mem0 vector store
-    try:
-        client = get_mem0_client(db_conn)
-        if client:
-            client.add(
-                clean_content,
-                user_id=board_slug,
-                metadata={
-                    "memory_id": mem_id,
-                    "category": category,
-                    "task_id": task_id or "",
-                    "author": author,
-                    "tags": tags_list,
-                },
-                infer=False,
-            )
-    except Exception as e:
-        _log.debug("Mem0 add failed for board '%s': %s", board_slug, e)
-
-    # 2. Persist to SQLite table for UI rendering and CLI commands
-    def _insert_db(conn: sqlite3.Connection):
-        conn.execute(
-            """
-            INSERT INTO board_memories (id, board_slug, task_id, category, content, tags, author, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mem_id,
-                board_slug,
-                task_id,
-                category,
-                clean_content,
-                tags_json,
-                author,
-                now,
-                now,
-            ),
-        )
-
-    if db_conn is not None:
-        _insert_db(db_conn)
-    else:
-        try:
-            with get_db_conn() as conn:
-                _insert_db(conn)
-                conn.commit()
-        except Exception as e:
-            _log.debug("SQLite memory insert failed: %s", e)
-
-    return mem_id
-
-
 def search_board_memories(
     board_slug: str,
     query: str | None = None,
@@ -454,24 +386,6 @@ def search_board_memories(
         _log.debug("SQLite memory fallback failed: %s", e)
 
     return results
-
-
-def mem0_delete_memory(memory_id: str, board_slug: str | None = None) -> bool:
-    """Delete memory from Mem0 vector index and SQLite board_memories table."""
-    try:
-        client = get_mem0_client()
-        if client:
-            client.delete(memory_id)
-    except Exception as e:
-        _log.debug("Mem0 delete failed for %s: %s", memory_id, e)
-
-    try:
-        with get_db_conn() as conn:
-            conn.execute("DELETE FROM board_memories WHERE id = ?", (memory_id,))
-            conn.commit()
-            return True
-    except Exception:
-        return False
 
 
 def extract_and_record_memory(

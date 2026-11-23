@@ -11,7 +11,7 @@ _PLUGIN_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 try:
     from ..paths import (  # type: ignore
@@ -73,6 +73,15 @@ ACTIVITY_ACTORS: list[str] = [
 VALID_REPO_ROLES = {"library", "gateway", "service", "worker", "docs", "other"}
 
 
+def _validate_path_component(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+        raise ValueError("must be a single safe path component")
+    return value
+
+
 class BoardRepoCreate(BaseModel):
     repo_alias: str = Field(
         ...,
@@ -80,6 +89,12 @@ class BoardRepoCreate(BaseModel):
         max_length=128,
         description="Friendly alias (e.g. common-lib, order-service)",
     )
+
+    @field_validator("repo_alias")
+    @classmethod
+    def validate_repo_alias(cls, value: str) -> str:
+        return _validate_path_component(value) or value
+
     git_url: str = Field(..., min_length=1, description="Remote Git URL")
     target_branch: str | None = Field(default="main", description="Target base branch")
     additional_reviewer_usernames: list[str] | None = Field(
@@ -163,6 +178,11 @@ class BoardCreate(BaseModel):
         description="List of linked repositories for this board",
     )
 
+    @field_validator("slug")
+    @classmethod
+    def validate_slug(cls, value: str | None) -> str | None:
+        return _validate_path_component(value)
+
     @model_validator(mode="after")
     def validate_repositories_or_git_url(self):
         has_git_url = bool(self.git_url and self.git_url.strip())
@@ -214,6 +234,11 @@ class BoardTestClone(BaseModel):
     repo_alias: str | None = Field(
         default=None, description="Optional repository alias"
     )
+
+    @field_validator("slug", "repo_alias")
+    @classmethod
+    def validate_path_components(cls, value: str | None) -> str | None:
+        return _validate_path_component(value)
 
 
 class TaskCreate(BaseModel):
