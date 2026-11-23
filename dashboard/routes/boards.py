@@ -49,6 +49,40 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _shape_board_response(cursor, board: dict[str, Any]) -> None:
+    board["architecture"] = (board.get("architecture") or "").strip()
+    board["auto_record_memory"] = bool(board.get("auto_record_memory", 1))
+    board["automerge"] = bool(board.get("automerge", 0))
+    cursor.execute(
+        "SELECT id, board_slug, repo_alias, git_url, target_branch, additional_reviewer_usernames, created_at, updated_at "
+        "FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
+        (board["slug"],),
+    )
+    repos = [dict(row) for row in cursor.fetchall()]
+    for repo in repos:
+        try:
+            repo["additional_reviewer_usernames"] = json.loads(
+                repo.get("additional_reviewer_usernames") or "[]"
+            )
+        except Exception:
+            repo["additional_reviewer_usernames"] = []
+    board["repositories"] = repos
+    board["git_url"] = repos[0]["git_url"] if repos else ""
+    board["target_branch"] = repos[0]["target_branch"] if repos else "main"
+    board["additional_reviewer_usernames"] = (
+        repos[0]["additional_reviewer_usernames"] if repos else []
+    )
+    cursor.execute(
+        "SELECT COUNT(*) as count FROM tasks WHERE board_slug = ?", (board["slug"],)
+    )
+    board["task_count"] = cursor.fetchone()["count"]
+    cursor.execute(
+        "SELECT COUNT(*) as count FROM tasks WHERE board_slug = ? AND status = 'running'",
+        (board["slug"],),
+    )
+    board["running_count"] = cursor.fetchone()["count"]
+
+
 def _get_cron_helpers():
     """Return cron helper functions from dashboard/routes/cron.py."""
     try:
@@ -96,43 +130,7 @@ def list_boards():
         boards = [dict(row) for row in cursor.fetchall()]
 
         for b in boards:
-            b["architecture"] = (b.get("architecture") or "").strip()
-            b["auto_record_memory"] = bool(b.get("auto_record_memory", 1))
-            b["automerge"] = bool(b.get("automerge", 0))
-            cursor.execute(
-                "SELECT id, board_slug, repo_alias, git_url, target_branch, additional_reviewer_usernames, created_at, updated_at "
-                "FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
-                (b["slug"],),
-            )
-            repos = [dict(r) for r in cursor.fetchall()]
-            for r in repos:
-                try:
-                    r["additional_reviewer_usernames"] = json.loads(
-                        r.get("additional_reviewer_usernames") or "[]"
-                    )
-                except Exception:
-                    r["additional_reviewer_usernames"] = []
-            b["repositories"] = repos
-            if repos:
-                b["git_url"] = repos[0]["git_url"]
-                b["target_branch"] = repos[0]["target_branch"]
-                b["additional_reviewer_usernames"] = repos[0][
-                    "additional_reviewer_usernames"
-                ]
-            else:
-                b["git_url"] = ""
-                b["target_branch"] = "main"
-                b["additional_reviewer_usernames"] = []
-
-            cursor.execute(
-                "SELECT COUNT(*) as count FROM tasks WHERE board_slug = ?", (b["slug"],)
-            )
-            b["task_count"] = cursor.fetchone()["count"]
-            cursor.execute(
-                "SELECT COUNT(*) as count FROM tasks WHERE board_slug = ? AND status = 'running'",
-                (b["slug"],),
-            )
-            b["running_count"] = cursor.fetchone()["count"]
+            _shape_board_response(cursor, b)
         return {"ok": True, "boards": boards}
 
 
@@ -147,43 +145,7 @@ def get_board(slug: str):
         if not row:
             raise HTTPException(status_code=404, detail=f"Board '{slug}' not found")
         b = dict(row)
-        b["architecture"] = (b.get("architecture") or "").strip()
-        b["auto_record_memory"] = bool(b.get("auto_record_memory", 1))
-        b["automerge"] = bool(b.get("automerge", 0))
-        cursor.execute(
-            "SELECT id, board_slug, repo_alias, git_url, target_branch, additional_reviewer_usernames, created_at, updated_at "
-            "FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
-            (slug,),
-        )
-        repos = [dict(r) for r in cursor.fetchall()]
-        for r in repos:
-            try:
-                r["additional_reviewer_usernames"] = json.loads(
-                    r.get("additional_reviewer_usernames") or "[]"
-                )
-            except Exception:
-                r["additional_reviewer_usernames"] = []
-        b["repositories"] = repos
-        if repos:
-            b["git_url"] = repos[0]["git_url"]
-            b["target_branch"] = repos[0]["target_branch"]
-            b["additional_reviewer_usernames"] = repos[0][
-                "additional_reviewer_usernames"
-            ]
-        else:
-            b["git_url"] = ""
-            b["target_branch"] = "main"
-            b["additional_reviewer_usernames"] = []
-
-        cursor.execute(
-            "SELECT COUNT(*) as count FROM tasks WHERE board_slug = ?", (slug,)
-        )
-        b["task_count"] = cursor.fetchone()["count"]
-        cursor.execute(
-            "SELECT COUNT(*) as count FROM tasks WHERE board_slug = ? AND status = 'running'",
-            (slug,),
-        )
-        b["running_count"] = cursor.fetchone()["count"]
+        _shape_board_response(cursor, b)
         return {"ok": True, "board": b}
 
 

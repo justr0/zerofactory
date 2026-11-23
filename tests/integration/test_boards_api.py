@@ -33,6 +33,64 @@ def test_create_and_list_boards(api_client: TestClient):
     assert matching[0]["max_concurrent_running"] == 2
 
 
+def test_board_list_and_detail_share_response_fields(api_client: TestClient):
+    created = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={
+            "slug": "response-shaping",
+            "repositories": [
+                {
+                    "repo_alias": "api",
+                    "git_url": "https://github.com/example/api.git",
+                    "target_branch": "release",
+                    "additional_reviewer_usernames": ["reviewer"],
+                }
+            ],
+            "architecture": "  architecture notes  ",
+        },
+    )
+    assert created.status_code == 200
+    slug = created.json()["slug"]
+
+    listed = next(
+        board
+        for board in api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
+        if board["slug"] == slug
+    )
+    detail = api_client.get(f"/api/plugins/zerofactory/boards/{slug}").json()["board"]
+    expected = {
+        "architecture": "architecture notes",
+        "auto_record_memory": True,
+        "automerge": False,
+        "git_url": "https://github.com/example/api.git",
+        "target_branch": "release",
+        "additional_reviewer_usernames": ["reviewer"],
+        "task_count": 0,
+        "running_count": 0,
+    }
+    for key, value in expected.items():
+        assert listed[key] == detail[key] == value
+    assert listed["repositories"] == detail["repositories"]
+
+    removed = api_client.delete(
+        f"/api/plugins/zerofactory/boards/{slug}/repositories/api"
+    )
+    assert removed.status_code == 200
+    listed_without_repos = next(
+        board
+        for board in api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
+        if board["slug"] == slug
+    )
+    detail_without_repos = api_client.get(
+        f"/api/plugins/zerofactory/boards/{slug}"
+    ).json()["board"]
+    for board in (listed_without_repos, detail_without_repos):
+        assert board["repositories"] == []
+        assert board["git_url"] == ""
+        assert board["target_branch"] == "main"
+        assert board["additional_reviewer_usernames"] == []
+
+
 def test_create_board_rejects_unsafe_slug_and_preserves_custom_slug(
     api_client: TestClient,
 ):
