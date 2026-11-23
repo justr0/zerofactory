@@ -51,7 +51,7 @@ def get_active_scanner_pids() -> dict[str, int]:
     logs_dir = get_hermes_home() / "logs"
     if logs_dir.exists():
         for pf in logs_dir.glob("scanner_*.pid"):
-            slug = pf.stem.replace("scanner_", "")
+            slug = pf.stem.removeprefix("scanner_")
             try:
                 pid = int(pf.read_text().strip())
                 if is_pid_alive(pid):
@@ -122,7 +122,7 @@ def reap_active_scanners() -> int:
     # Also reap dead PID files from other processes
     if logs_dir.exists():
         for pf in logs_dir.glob("scanner_*.pid"):
-            slug = pf.stem.replace("scanner_", "")
+            slug = pf.stem.removeprefix("scanner_")
             if slug not in _active_scanners:
                 try:
                     pid = int(pf.read_text().strip())
