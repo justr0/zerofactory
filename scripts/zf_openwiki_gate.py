@@ -194,17 +194,6 @@ def load_state() -> dict[str, Any]:
     return {}
 
 
-def save_state(state: dict[str, Any]) -> None:
-    sf = get_state_file()
-    try:
-        sf.parent.mkdir(parents=True, exist_ok=True)
-        tmp = sf.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        tmp.replace(sf)
-    except Exception:
-        pass
-
-
 def resolve_board_slug(repo_dir: Path) -> str:
     """Infer board slug from argv or database."""
     for arg in sys.argv[1:]:
