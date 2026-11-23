@@ -1056,20 +1056,19 @@ def move_task(task_id: str, req: TaskMove):
             if "last_worker_failure" in meta:
                 meta.pop("last_worker_failure", None)
                 meta_updated = True
-            if req.status in ("todo", "running", "done"):
-                if "permanently_blocked" in meta:
-                    meta.pop("permanently_blocked", None)
-                    meta_updated = True
-                if "worker_failure_retries" in meta:
-                    meta.pop("worker_failure_retries", None)
-                    meta_updated = True
-                if "blocked_reason" in meta or "blocked_reason_type" in meta:
-                    meta.pop("blocked_reason", None)
-                    meta.pop("blocked_reason_type", None)
-                    meta_updated = True
-                if "conflict_retries" in meta:
-                    meta.pop("conflict_retries", None)
-                    meta_updated = True
+            if "permanently_blocked" in meta:
+                meta.pop("permanently_blocked", None)
+                meta_updated = True
+            if "worker_failure_retries" in meta:
+                meta.pop("worker_failure_retries", None)
+                meta_updated = True
+            if "blocked_reason" in meta or "blocked_reason_type" in meta:
+                meta.pop("blocked_reason", None)
+                meta.pop("blocked_reason_type", None)
+                meta_updated = True
+            if "conflict_retries" in meta:
+                meta.pop("conflict_retries", None)
+                meta_updated = True
             if req.status == "todo" or (req.status == "done" and not is_agent_actor):
                 prev_worker_pid = meta.get("worker_pid")
                 if "worker_pid" in meta or "session_id" in meta or "started_at" in meta:
