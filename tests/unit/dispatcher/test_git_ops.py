@@ -295,6 +295,33 @@ def test_check_unresolved_conflicts_fail_closed(tmp_path: Path):
         assert "could not verify" in err
 
 
+@pytest.mark.parametrize(
+    "failed_command",
+    [
+        ("git", "diff", "--name-only", "--diff-filter=U"),
+        ("git", "status", "--porcelain"),
+    ],
+)
+def test_check_unresolved_conflicts_nonzero_exit_fails_closed(
+    tmp_path: Path, failed_command: tuple[str, ...]
+):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    rec = _ProcRecorder(
+        {
+            failed_command: _proc_result(128, ""),
+        }
+    )
+
+    with patch("dispatcher.git_ops.subprocess.run", new=rec):
+        verified, conflicts, error = check_unresolved_conflicts_safe(wt)
+
+    assert verified is False
+    assert conflicts == []
+    assert "could not verify" in error
+    assert "status 128" in error
+
+
 def test_check_unresolved_conflicts_reuses_status_for_marker_scan(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()

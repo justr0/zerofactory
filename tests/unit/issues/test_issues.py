@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dashboard.plugin_api import create_board, BoardCreate
+from dashboard.models import BoardRepoCreate
 from issues.base import ExternalIssue
 from issues.github import GitHubIssueClient, parse_github_issue_ref
 from issues.importer import import_external_issue, resolve_board_for_issue
@@ -219,6 +220,8 @@ class TestGitHubParserAndClient:
         assert issue.author == "devuser"
         assert issue.labels == ["bug", "p0", "zerofactory"]
         assert issue.assignees == ["alice"]
+        assert issue.repo_or_project == "my-org/my-repo"
+        assert issue.raw == fake_data
         assert issue.infer_priority() == "P0"
         assert issue.issue_type == "bug"
         assert issue.has_ai_request_label()
@@ -247,6 +250,45 @@ class TestGitHubParserAndClient:
         assert issues[0].key == "#10"
         assert issues[0].issue_type == "feature"
         assert issues[0].has_ai_request_label()
+        assert issues[0].raw == fake_list[0]
+        assert issues[0].repo_or_project == "my-org/my-repo"
+
+    @patch("subprocess.run")
+    def test_fetch_issue_fallback_number_and_url(self, mock_run):
+        payload = {"title": "  [BUG] Missing response fields  "}
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+
+        issue = GitHubIssueClient(default_repo="default/repo").fetch_issue(
+            "42", repo="explicit/repo"
+        )
+
+        assert issue.id == "42"
+        assert issue.key == "#42"
+        assert issue.url == "https://github.com/explicit/repo/issues/42"
+        assert issue.repo_or_project == "explicit/repo"
+        assert issue.title == "[BUG] Missing response fields"
+        assert issue.issue_type == "bug"
+        assert issue.raw == payload
+
+    @patch("subprocess.run")
+    def test_fetch_investigation_issue_fallback_number_and_url(self, mock_run):
+        payload = [{"title": "Enhancement without a number", "labels": ["enhancement"]}]
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+
+        issue = GitHubIssueClient(
+            default_repo="default/repo"
+        ).fetch_investigation_issues(repo="explicit/repo")[0]
+
+        assert issue.id == ""
+        assert issue.key == "#"
+        assert issue.url == "https://github.com/explicit/repo/issues/"
+        assert issue.repo_or_project == "explicit/repo"
+        assert issue.issue_type == "feature"
+        assert issue.raw == payload[0]
 
     @patch("subprocess.run")
     def test_fetch_issue_gh_error(self, mock_run):
@@ -272,6 +314,26 @@ class TestImporterIdempotencyAndDeterminism:
         )
         self.board_slug = b_res["slug"]
         self.db_path = db_file
+
+    def test_import_rejects_unknown_explicit_board(self):
+        issue = ExternalIssue(
+            source="github",
+            id="45",
+            key="#45",
+            title="Unlinked repository issue",
+            repo_or_project="unlinked/repository",
+        )
+
+        with pytest.raises(ValueError, match="Unknown board 'typo-board'"):
+            import_external_issue(issue, board_slug="typo-board", db_path=self.db_path)
+
+    def test_resolve_board_without_explicit_slug_discovers_repository(self):
+        assert (
+            resolve_board_for_issue(
+                repo_or_project="hotcode-dev/zerofactory", db_path=self.db_path
+            )
+            == self.board_slug
+        )
 
     def test_import_issue_deterministic_and_idempotent(self):
         issue = ExternalIssue(
@@ -338,6 +400,38 @@ class TestImporterIdempotencyAndDeterminism:
         assert res["title"] == "[Triage] [Feature] [#43] Add dark mode support"
         assert res["category"] == "feature"
         assert res["assignee"] == "human"
+
+    def test_import_issue_targets_matching_repository_on_multi_repo_board(self):
+        board = create_board(
+            BoardCreate(
+                slug="multi-repo-board",
+                repositories=[
+                    BoardRepoCreate(
+                        repo_alias="frontend",
+                        git_url="https://github.com/example/frontend.git",
+                    ),
+                    BoardRepoCreate(
+                        repo_alias="backend",
+                        git_url="https://github.com/example/backend.git",
+                    ),
+                ],
+            )
+        )
+        issue = ExternalIssue(
+            source="github",
+            id="44",
+            key="#44",
+            title="Backend issue",
+            repo_or_project="example/backend",
+        )
+
+        result = import_external_issue(issue, board_slug=board["slug"])
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT repo_alias FROM tasks WHERE id = ?", (result["id"],)
+            ).fetchone()
+        assert row == ("backend",)
 
 
 class TestCliImportGhIssue:

@@ -36,18 +36,25 @@ def resolve_board_for_issue(
         db_path = get_db_path()
 
     if not db_path.exists():
+        if board_slug:
+            raise ValueError(
+                f"Unknown board '{board_slug}': cannot validate it because the board database does not exist."
+            )
         return board_slug
 
     with sqlite3.connect(str(db_path), timeout=5.0) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # 1. If explicit board_slug provided and valid, return it
+        # 1. An explicit board selection must never fall through to discovery.
         if board_slug:
             cursor.execute("SELECT slug FROM boards WHERE slug = ?", (board_slug,))
             row = cursor.fetchone()
             if row:
                 return str(row["slug"])
+            raise ValueError(
+                f"Unknown board '{board_slug}'. Select a configured board."
+            )
 
         # 2. Try matching repo_or_project to git_url, repo_alias, or slug in boards
         if repo_or_project:
@@ -109,6 +116,34 @@ def resolve_board_for_issue(
     return board_slug
 
 
+def _resolve_repo_alias(
+    repo_or_project: str | None, board_slug: str | None, db_path: Path | None
+) -> str | None:
+    """Return the linked repository alias matching an external repo identity."""
+    if not repo_or_project or not board_slug:
+        return None
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return None
+
+    def repo_identity(value: str) -> str:
+        cleaned = re.sub(r"\.git$", "", value.strip()).rstrip("/")
+        parts = re.split(r"[/ :]", cleaned)
+        return "/".join(parts[-2:]).casefold()
+
+    identity = repo_identity(repo_or_project)
+    with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+        rows = conn.execute(
+            "SELECT repo_alias, git_url FROM board_repositories WHERE board_slug = ?",
+            (board_slug,),
+        ).fetchall()
+    for repo_alias, git_url in rows:
+        if git_url and repo_identity(str(git_url)) == identity:
+            return str(repo_alias)
+    return None
+
+
 def import_external_issue(
     issue: ExternalIssue,
     board_slug: str | None = None,
@@ -139,6 +174,7 @@ def import_external_issue(
         board_slug=board_slug,
         db_path=db_path,
     )
+    repo_alias = _resolve_repo_alias(issue.repo_or_project, effective_board, db_path)
 
     task_id = issue.to_task_id(effective_board)
     dedup_key = issue.to_dedup_key()
@@ -199,6 +235,7 @@ def import_external_issue(
         title=title,
         description=description,
         board_slug=effective_board,
+        repo_alias=repo_alias,
         status=status,
         assignee=effective_assignee,
         priority=effective_priority,

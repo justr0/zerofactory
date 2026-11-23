@@ -73,6 +73,10 @@ HUMAN = "human"
 VALID_ASSIGNEES = {UNASSIGNED, HUMAN, *PROFILE_MAP}
 
 
+def repository_name_from_git_url(git_url: str) -> str:
+    return Path(git_url.strip().rstrip("/").removesuffix(".git").replace(":", "/")).name
+
+
 def normalize_assignee(assignee: str | None) -> str:
     """Normalize an assignee onto a canonical ``zf-*`` profile, ``"human"``, or ``"unassigned"``.
 

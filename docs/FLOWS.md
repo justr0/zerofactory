@@ -192,7 +192,7 @@ flowchart TD
     ST -->|review feedback| REVIEW["review routing:<br/>reroute to builder or escalate"] --> S4
     ST -->|approved| HUMAN["blocked + human<br/>awaiting merge"] --> S4
     ST -->|open / no PR| PACK["packaging fallback:<br/>precommit -> commit -> merge -><br/>push -> gh pr create -> todo + zf-reviewer<br/>post_issue_pr_comment"] --> S4
-    S4["Step 4 — idle improvement scanner gate<br/>capacity + cooldown + wake-gate"] --> R["return counters<br/>unblocked/promoted/dispatched/prs_opened/..."]
+    S4["Step 4 — idle improvement scanner gate<br/>capacity + board limits + cooldown"] --> R["return counters<br/>unblocked/promoted/dispatched/prs_opened/..."]
 ```
 
 ### Step 1 — Dependency unblock
@@ -238,9 +238,11 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
    **issue reply** (§10). No diff vs base ("No commits between") → `done` directly.
 
 ### Step 4 — Idle improvement scanner gate
-Spawns the per-board improvement scanner only when the board has spare capacity
-(`running < max`, `todo < idle_scan_max_todo`), past a 15-minute cooldown, and LLM capacity
-remains. Otherwise the cron wake-gate suppresses it at 0 token cost (§11).
+The dispatcher spawns the per-board improvement scanner only when scanning is enabled,
+the board has spare capacity (`running < max`, `todo < idle_scan_max_todo`), no scanner is
+already active, the cooldown has elapsed, and global LLM capacity remains. Otherwise it
+does not spawn an agent, so the gate costs 0 tokens. The spawned scanner runs as
+`zf-orchestrator` in the selected repository; it is not gated by a scanner cron script.
 
 ---
 
@@ -476,25 +478,22 @@ When packaging successfully opens a PR for a task with `metadata.external_issue`
 
 ```mermaid
 flowchart TD
-    subgraph ZERO["0-token gate scripts (pure Python)"]
-        W1["zf_queue_watchdog.py"] 
-        W2["zf_scanner_gate.py"]
-        W3["zf_openwiki_gate.py"]
+    subgraph GATES["Dispatcher and no-agent gates"]
+        D["Dispatcher idle-scan gate<br/>scheduler.py"]
+        W["zf_openwiki_gate.py"]
     end
-    W1 -->|"healthy"| SUP1["emit {'wakeAgent': false} — silent exit"]
-    W1 -->|"stuck/bottleneck"| AL1["markdown alert to operator<br/>+ reaps + run_dispatch_cycle"]
-    W2 -->|"no git changes since last scan<br/>or capacity/cooldown guard"| SUP2["{'wakeAgent': false}"]
-    W2 -->|"new commits + spare capacity"| WAKE2["wakeAgent + pre-digested context"]
-    WAKE2 --> ORCH["zf-orchestrator session<br/>files at most 1 Todo task"]
-    W3 -->|"no doc-relevant changes / task queued"| SUP3["{'wakeAgent': false}"]
-    W3 -->|"stale docs"| WAKE3["creates 1 OpenWiki update task"]
+    D -->|"capacity, board limit, active scan,<br/>or cooldown prevents spawn"| SUP1["no scanner agent spawned<br/>(0 tokens)"]
+    D -->|"eligible board"| SCAN["spawn zf-orchestrator<br/>in selected repository"]
+    SCAN --> ORCH["audit repository;<br/>may file at most 1 Todo task"]
+    W -->|"docs current / task queued"| SUP2["emit {'wakeAgent': false}"]
+    W -->|"stale docs"| WAKE2["creates 1 OpenWiki update task"]
 ```
 
 | Job | Cadence | Mode | Suppression conditions | Action when awake |
 |---|---|---|---|---|
 | `zero-factory-task-queue-check` | 120m | **no-agent** (0 tokens) | healthy queue → `wakeAgent: false` | auto-sync GitHub issues, reap stuck workers, run dispatch cycle, emit stats/alert |
-| `zero-factory-improvement-scanner-{slug}` | on-idle / 60m | agent (`zf-orchestrator`, `continuity: false`) | all board repositories unchanged, `running >= 2`, `todo >= 2`, 15m cooldown | exactly **1 job per board** evaluates all peer repositories in `board_repositories`, selects most recently updated (or round-robin on idle), files **≤ 1** `Todo` task with `--board <slug> --repo <alias>` |
-| `zero-factory-openwiki-update-{slug}` | daily | **no-agent** (0 tokens) | docs fresh across all repos / task already queued | exactly **1 job per board** synchronizes OpenWiki workspace (`~/.openwiki/wiki-workspaces.json`), evaluates all repositories on board, files targeted OpenWiki refresh task |
+| Idle improvement scanner (per board) | dispatcher cycle / on idle | agent (`zf-orchestrator`) | scanning disabled, global capacity exhausted, board at running/todo limit, scanner already active, or cooldown active | dispatcher spawns the agent in the selected repository; it audits the codebase and may file a `Todo` task |
+| `zero-factory-openwiki-update-{slug}` | daily | **no-agent** (0 tokens) | docs fresh across all repos / task already queued | exactly **1 job per board** runs `scripts/zf_openwiki_gate.py` to synchronize the OpenWiki workspace, evaluate repositories, and file targeted refresh tasks |
 
 Global LLM capacity (`max_concurrent_llm_workers`) counts scanners and cron LLM jobs together
 with running tasks — busy boards suppress scans automatically. Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.

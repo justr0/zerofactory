@@ -22,11 +22,13 @@ if _DASHBOARD_ROOT not in sys.path:
 
 try:
     from ..paths import (  # type: ignore
+        AGENT_ROLES,
         normalize_assignee,
         resolve_profile_state_db,
     )
 except (ImportError, ValueError):
     from paths import (  # type: ignore
+        AGENT_ROLES,
         normalize_assignee,
         resolve_profile_state_db,
     )
@@ -203,7 +205,7 @@ def resolve_task_all_sessions(
     sessions_found = []
     seen_ids = set()
 
-    profile_roles = ["zf-builder", "zf-reviewer", "zf-orchestrator"]
+    profile_roles = AGENT_ROLES
 
     for prof in profile_roles:
         state_db_path = _resolve_profile_state_db_dyn(prof)
@@ -641,8 +643,8 @@ def list_all_sessions(
     limit: int = 15,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List recent and active AI agent sessions across Orchestrator, Builder, and Reviewer."""
-    profiles = ["zf-builder", "zf-reviewer", "zf-orchestrator"]
+    """List recent and active AI agent sessions across all specialist profiles."""
+    profiles = AGENT_ROLES
     if role and role in profiles:
         profiles = [role]
 
