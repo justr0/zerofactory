@@ -261,17 +261,7 @@ def resolve_repo_path(
             pass
 
     # 2. Check ~/.zerofactory/workspaces/<board_slug>/repos/<alias>
-    try:
-        from paths import get_board_repos_dir  # type: ignore
-    except Exception:
-        try:
-            from ..paths import get_board_repos_dir  # type: ignore
-        except Exception:
-            get_board_repos_dir = lambda b: (
-                Path.home() / ".zerofactory" / "workspaces" / b / "repos"
-            )  # type: ignore
-
-    b_repos = get_board_repos_dir(board_slug)
+    b_repos = paths.get_board_repos_dir(board_slug)
     candidates: list[Path] = [
         b_repos / repo_alias,
     ]
