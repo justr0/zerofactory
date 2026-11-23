@@ -130,7 +130,12 @@ class TestOpenWikiGate(unittest.TestCase):
             encoding="utf-8",
         )
         with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
-            with patch.object(self.gate, "_run_cmd") as mock_cmd:
+            with (
+                patch.object(self.gate, "_run_cmd") as mock_cmd,
+                patch(
+                    "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+                ) as create_task,
+            ):
 
                 def _fake_run(cmd, cwd=None):
                     if "status" in cmd:
@@ -149,10 +154,7 @@ class TestOpenWikiGate(unittest.TestCase):
                 self.assertIn("Detected 2 branch update(s)", reason)
                 self.assertIn("created task", reason)
                 self.assertIn("for zf-builder", reason)
-                with sqlite3.connect(str(db_file)) as conn:
-                    row = conn.execute("SELECT tags FROM tasks LIMIT 1").fetchone()
-                    self.assertIsNotNone(row)
-                    self.assertIn("automerge", json.loads(row[0]))
+                create_task.assert_called_once()
 
     def test_generated_task_uses_dispatcher_handoff_without_git_mutations(self):
         with patch(
@@ -174,6 +176,44 @@ class TestOpenWikiGate(unittest.TestCase):
         self.assertIn("hermes zerofactory move <task_id> done", description)
         self.assertIn("dispatcher handles packaging and PR creation", description)
 
+    def test_api_task_creation_failure_does_not_use_sqlite_fallback(self):
+        db_file = self.tmp / "zerofactory.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute(
+                "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
+            )
+
+        with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
+            with patch(
+                "dashboard.plugin_api.create_task",
+                side_effect=ValueError("unknown board"),
+            ):
+                task = self.gate.create_openwiki_task(
+                    "stale-board", "changes", self.tmp
+                )
+
+        self.assertIsNone(task)
+        with sqlite3.connect(str(db_file)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0
+            )
+
+    def test_sqlite_fallback_is_used_when_plugin_api_cannot_be_imported(self):
+        db_file = self.tmp / "zerofactory.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute(
+                "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
+            )
+
+        with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
+            with patch.dict("sys.modules", {"dashboard.plugin_api": None}):
+                task = self.gate.create_openwiki_task("test-board", "changes", self.tmp)
+
+        self.assertIsNotNone(task)
+        with sqlite3.connect(str(db_file)) as conn:
+            row = conn.execute("SELECT board_slug, status FROM tasks").fetchone()
+        self.assertEqual(row, ("test-board", "todo"))
+
     def test_code_commit_touching_openwiki_does_not_reset_sync_point(self):
         """A code commit that also edits openwiki/ must not count as a docs sync."""
         (self.tmp / ".git").mkdir()
@@ -191,7 +231,12 @@ class TestOpenWikiGate(unittest.TestCase):
             encoding="utf-8",
         )
         with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
-            with patch.object(self.gate, "_run_cmd") as mock_cmd:
+            with (
+                patch.object(self.gate, "_run_cmd") as mock_cmd,
+                patch(
+                    "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+                ),
+            ):
 
                 def _fake_run(cmd, cwd=None):
                     if "status" in cmd:
@@ -287,7 +332,12 @@ class TestOpenWikiGate(unittest.TestCase):
             encoding="utf-8",
         )
         with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
-            with patch.object(self.gate, "_run_cmd") as mock_cmd:
+            with (
+                patch.object(self.gate, "_run_cmd") as mock_cmd,
+                patch(
+                    "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+                ),
+            ):
 
                 def _fake_run(cmd, cwd=None):
                     if "status" in cmd:
@@ -361,7 +411,12 @@ class TestOpenWikiGate(unittest.TestCase):
         )
 
         with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
-            with patch.object(self.gate, "_run_cmd") as mock_cmd:
+            with (
+                patch.object(self.gate, "_run_cmd") as mock_cmd,
+                patch(
+                    "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+                ),
+            ):
 
                 def _fake_run(cmd, cwd=None):
                     if "status" in cmd:

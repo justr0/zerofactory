@@ -86,23 +86,8 @@ def create_openwiki_task(
     )
     try:
         from dashboard.plugin_api import TaskCreate, create_task
-
-        task = create_task(
-            TaskCreate(
-                board_slug=board_slug,
-                repo_alias=repo_alias,
-                title=task_title,
-                category="documentation",
-                priority="P2",
-                status="todo",
-                assignee="zf-builder",
-                description=task_desc,
-                tags=["automerge"],
-            )
-        )
-        return task
-    except Exception:
-        # Fallback to direct SQLite insertion if plugin_api unavailable
+    except ImportError:
+        # Fallback to direct SQLite insertion if plugin_api unavailable.
         db_path = paths.get_zerofactory_db_path()
         if db_path.exists():
             try:
@@ -156,7 +141,28 @@ def create_openwiki_task(
                     return {"id": task_id}
             except Exception:
                 pass
-    return None
+        return None
+
+    try:
+        return create_task(
+            TaskCreate(
+                board_slug=board_slug,
+                repo_alias=repo_alias,
+                title=task_title,
+                category="documentation",
+                priority="P2",
+                status="todo",
+                assignee="zf-builder",
+                description=task_desc,
+                tags=["automerge"],
+            )
+        )
+    except Exception as exc:
+        print(
+            f"Failed to create OpenWiki task on board '{board_slug}': {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str:
