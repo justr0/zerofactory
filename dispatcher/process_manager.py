@@ -121,18 +121,23 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
                 return False
             cmd_data = result.stdout
         else:
-            cmdline_path = Path(f"/proc/{pid}/cmdline")
-            if not cmdline_path.exists():
-                # Keep the legacy best-effort behavior where procfs is absent.
+            procfs_path = Path("/proc")
+            try:
+                if not procfs_path.is_dir():
+                    # Keep best-effort behavior on platforms without procfs.
+                    return True
+            except OSError:
+                # Procfs itself is unavailable; retain the legacy fallback.
                 return True
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
             cmd_data = cmdline_path.read_bytes()
             if not cmd_data:
-                return True
+                return False
             return f"worker_{task_id}.exit".encode() in cmd_data
         return f"worker_{task_id}.exit" in cmd_data
     except Exception:
-        # Preserve best-effort behavior on platforms without readable procfs.
-        return not IS_WINDOWS
+        # Fail closed if procfs exists but this PID's command line is unavailable.
+        return False
 
 
 def get_process_exit_code(
