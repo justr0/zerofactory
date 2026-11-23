@@ -26,35 +26,18 @@ def get_default_branch(repo_path: Path) -> str:
     except Exception:
         pass
 
-    for cand in ("main", "master"):
-        try:
-            res = subprocess.run(
-                [
-                    "git",
-                    "show-ref",
-                    "--verify",
-                    "--quiet",
-                    f"refs/remotes/origin/{cand}",
-                ],
-                cwd=str(repo_path),
-                timeout=5,
-            )
-            if res.returncode == 0:
-                return cand
-        except Exception:
-            pass
-
-    for cand in ("main", "master"):
-        try:
-            res = subprocess.run(
-                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{cand}"],
-                cwd=str(repo_path),
-                timeout=5,
-            )
-            if res.returncode == 0:
-                return cand
-        except Exception:
-            pass
+    for ref_prefix in ("refs/remotes/origin", "refs/heads"):
+        for cand in ("main", "master"):
+            try:
+                res = subprocess.run(
+                    ["git", "show-ref", "--verify", "--quiet", f"{ref_prefix}/{cand}"],
+                    cwd=str(repo_path),
+                    timeout=5,
+                )
+                if res.returncode == 0:
+                    return cand
+            except Exception:
+                pass
 
     return "main"
 
