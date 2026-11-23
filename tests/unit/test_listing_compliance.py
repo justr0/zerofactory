@@ -24,6 +24,37 @@ def test_get_hermes_home_does_not_strip_profiles(tmp_path, monkeypatch):
     assert profile_manager.get_hermes_home() == custom_profile_home.resolve()
 
 
+def test_profile_management_resolves_active_zf_profile_home(tmp_path, monkeypatch):
+    import paths
+    import profile_manager
+
+    hermes_root = tmp_path / "hermes"
+    active_home = hermes_root / "profiles" / "zf-orchestrator"
+    active_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+    profiles_root = hermes_root / "profiles"
+    assert paths.get_hermes_profiles_root() == profiles_root.resolve()
+    setup = profile_manager.ensure_zf_profiles()
+    assert set(setup["created"] + setup["existing"] + setup["updated"]) == set(
+        profile_manager.ZF_PROFILES
+    )
+    assert all(
+        (profiles_root / role / "config.yaml").is_file()
+        for role in profile_manager.ZF_PROFILES
+    )
+    assert not (active_home / "profiles").exists()
+
+    token_env = profiles_root / "zf-builder" / ".env"
+    token_env.write_text("GH_TOKEN=test-token\n", encoding="utf-8")
+    assert profile_manager.check_gh_auth_status(use_cache=False)
+
+    monkeypatch.setattr(profile_manager, "check_plugin_update", lambda **_kwargs: {})
+    status = profile_manager.check_setup_status(use_cache=False)
+    assert status["profiles_ready"]
+    assert status["missing_profiles"] == []
+
+
 def test_register_is_passive_and_never_creates_profiles_or_starts_dispatcher(
     tmp_path, monkeypatch
 ):

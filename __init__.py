@@ -888,11 +888,17 @@ def register(ctx: Any):
             force = getattr(args, "force", False)
             res = ensure_zf_profiles(force=force)
             try:
-                from .profile_manager import check_gh_auth_status, get_hermes_home
+                from .profile_manager import (
+                    check_gh_auth_status,
+                    get_hermes_profiles_root,
+                )
             except (ImportError, ValueError):
-                from profile_manager import check_gh_auth_status, get_hermes_home  # type: ignore
+                from profile_manager import (
+                    check_gh_auth_status,
+                    get_hermes_profiles_root,
+                )  # type: ignore
 
-            profiles_dir = get_hermes_home() / "profiles"
+            profiles_dir = get_hermes_profiles_root()
             print("\nZero Factory Profiles Setup:")
             if res["created"]:
                 print(f"  ✓ Created:  {', '.join(res['created'])}")
