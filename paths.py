@@ -134,6 +134,19 @@ HUMAN_STAGES = frozenset(
 )
 
 
+def _coerce_task_metadata(metadata: dict[str, Any] | str | None) -> dict[str, Any]:
+    """Return task metadata as an object, or an empty object for invalid input."""
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str) and metadata.strip():
+        try:
+            parsed = json.loads(metadata)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            pass
+    return {}
+
+
 def resolve_status_assignee(
     target_status: str,
     current_assignee: str | None = None,
@@ -143,16 +156,7 @@ def resolve_status_assignee(
     metadata: dict[str, Any] | str | None = None,
 ) -> str:
     """Deterministically derive the canonical assignee for a target Kanban status."""
-    meta: dict[str, Any] = {}
-    if isinstance(metadata, dict):
-        meta = metadata
-    elif isinstance(metadata, str) and metadata.strip():
-        try:
-            parsed = json.loads(metadata)
-            if isinstance(parsed, dict):
-                meta = parsed
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(metadata)
     t_phase = (
         triage_phase
         if triage_phase is not None
@@ -220,16 +224,7 @@ def derive_task_stage(
     if stat == "done":
         return "done"
 
-    meta: dict[str, Any] = {}
-    if isinstance(metadata, dict):
-        meta = metadata
-    elif isinstance(metadata, str) and metadata.strip():
-        try:
-            parsed = json.loads(metadata)
-            if isinstance(parsed, dict):
-                meta = parsed
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(metadata)
 
     asgn = normalize_assignee(assignee)
     t_phase = str(meta.get("triage_phase") or "").strip().lower()
