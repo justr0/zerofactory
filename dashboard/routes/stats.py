@@ -113,7 +113,7 @@ def _get_orchestrator_executions_db_path() -> str:
 
 
 def get_orchestrator_scan_activities(
-    board_slug: str | None = None, limit: int = 20
+    board_slug: str | None = None, limit: int | None = 20
 ) -> list[dict[str, Any]]:
     db_path = _get_orchestrator_executions_db_path()
     if not os.path.exists(db_path):
@@ -126,8 +126,10 @@ def get_orchestrator_scan_activities(
             if board_slug and board_slug != "all":
                 q += "AND job_id LIKE ? "
                 p.append(f"%{board_slug}%")
-            q += "ORDER BY claimed_at DESC LIMIT ?"
-            p.append(limit)
+            q += "ORDER BY claimed_at DESC"
+            if limit is not None:
+                q += " LIMIT ?"
+                p.append(limit)
             rows = conn.execute(q, p).fetchall()
             res = []
             for r in rows:
@@ -135,7 +137,8 @@ def get_orchestrator_scan_activities(
                     ts = int(datetime.fromisoformat(r["claimed_at"]).timestamp())
                 except Exception:
                     ts = int(time.time())
-                b_slug = r["job_id"].replace("zero-factory-improvement-scanner-", "")
+                scanner_prefix = "zero-factory-improvement-scanner-"
+                b_slug = r["job_id"][len(scanner_prefix) :]
                 res.append(
                     {
                         "id": f"scan-{r['id'][:8]}",
@@ -294,21 +297,34 @@ def get_activities(
         except Exception:
             actual_offset = 0
 
-        query_params = list(params) + [actual_limit, actual_offset]
+        query_params = list(params) + [actual_limit + actual_offset, 0]
         cursor.execute(query_sql, query_params)
         activities = [dict(r) for r in cursor.fetchall()]
 
         if (not actor or actor in ("all", "zf-orchestrator")) and (
             not action or action in ("all", "scan")
         ):
-            scan_acts = get_orchestrator_scan_activities(board_slug, limit=actual_limit)
+            scan_acts = get_orchestrator_scan_activities(board_slug, limit=None)
+            if assignee and assignee != "all" and assignee != "zf-orchestrator":
+                scan_acts = []
+            if search and search.strip():
+                term = search.strip().casefold()
+                scan_acts = [
+                    activity
+                    for activity in scan_acts
+                    if any(
+                        term in str(activity.get(field) or "").casefold()
+                        for field in ("details", "actor", "action", "task_title")
+                    )
+                ]
             if scan_acts:
+                total_count += len(scan_acts)
                 activities = sorted(
                     activities + scan_acts,
                     key=lambda x: x.get("created_at", 0),
                     reverse=True,
-                )[:actual_limit]
-                total_count += len(scan_acts)
+                )
+        activities = activities[actual_offset : actual_offset + actual_limit]
 
         cursor.execute(
             "SELECT DISTINCT action FROM task_activity WHERE action != '' ORDER BY action ASC"

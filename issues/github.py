@@ -20,6 +20,41 @@ _GH_REPO_ISSUE_RE = re.compile(r"^([^/]+)/([^/#]+)#(\d+)$")
 _GH_HASH_OR_NUM_RE = re.compile(r"^#?(\d+)$")
 
 
+def _normalize_issue(
+    data: dict[str, Any], fallback_issue_num: str, repository: str
+) -> ExternalIssue:
+    """Normalize a GitHub issue payload to the shared external issue model."""
+    author = data.get("author")
+    author_login = author.get("login") or "" if isinstance(author, dict) else ""
+    labels = [
+        label["name"] if isinstance(label, dict) else str(label)
+        for label in data.get("labels") or []
+        if label
+    ]
+    assignees = [
+        assignee["login"] if isinstance(assignee, dict) else str(assignee)
+        for assignee in data.get("assignees") or []
+        if assignee
+    ]
+    number = str(data.get("number", fallback_issue_num))
+    issue = ExternalIssue(
+        source="github",
+        id=number,
+        key=f"#{number}",
+        title=str(data.get("title") or "").strip(),
+        body=str(data.get("body") or ""),
+        url=str(data.get("url") or f"https://github.com/{repository}/issues/{number}"),
+        author=author_login,
+        state=str(data.get("state") or "OPEN").lower(),
+        labels=labels,
+        assignees=assignees,
+        repo_or_project=repository,
+        raw=data,
+    )
+    issue.issue_type = issue.infer_issue_type()
+    return issue
+
+
 def parse_github_issue_ref(
     issue_ref: str, default_repo: str | None = None
 ) -> tuple[str, str]:
@@ -135,42 +170,7 @@ class GitHubIssueClient(BaseIssueClient):
                 f"Failed to parse GitHub CLI response for #{issue_num}: {e}"
             )
 
-        author_login = ""
-        if isinstance(data.get("author"), dict):
-            author_login = data["author"].get("login") or ""
-
-        raw_labels = data.get("labels") or []
-        labels = [
-            lbl["name"] if isinstance(lbl, dict) else str(lbl)
-            for lbl in raw_labels
-            if lbl
-        ]
-
-        raw_assignees = data.get("assignees") or []
-        assignees = [
-            a["login"] if isinstance(a, dict) else str(a) for a in raw_assignees if a
-        ]
-
-        num_str = str(data.get("number", issue_num))
-        issue = ExternalIssue(
-            source="github",
-            id=num_str,
-            key=f"#{num_str}",
-            title=str(data.get("title") or "").strip(),
-            body=str(data.get("body") or ""),
-            url=str(
-                data.get("url")
-                or f"https://github.com/{effective_repo}/issues/{num_str}"
-            ),
-            author=author_login,
-            state=str(data.get("state") or "OPEN").lower(),
-            labels=labels,
-            assignees=assignees,
-            repo_or_project=effective_repo,
-            raw=data,
-        )
-        issue.issue_type = issue.infer_issue_type()
-        return issue
+        return _normalize_issue(data, str(issue_num), effective_repo)
 
     def fetch_investigation_issues(
         self,
@@ -233,45 +233,4 @@ class GitHubIssueClient(BaseIssueClient):
         except Exception as e:
             raise RuntimeError(f"Failed to parse GitHub CLI response: {e}")
 
-        issues = []
-        for item in data_list:
-            author_login = ""
-            if isinstance(item.get("author"), dict):
-                author_login = item["author"].get("login") or ""
-
-            raw_labels = item.get("labels") or []
-            labels = [
-                lbl["name"] if isinstance(lbl, dict) else str(lbl)
-                for lbl in raw_labels
-                if lbl
-            ]
-
-            raw_assignees = item.get("assignees") or []
-            assignees = [
-                a["login"] if isinstance(a, dict) else str(a)
-                for a in raw_assignees
-                if a
-            ]
-
-            num_str = str(item.get("number", ""))
-            iss = ExternalIssue(
-                source="github",
-                id=num_str,
-                key=f"#{num_str}",
-                title=str(item.get("title") or "").strip(),
-                body=str(item.get("body") or ""),
-                url=str(
-                    item.get("url")
-                    or f"https://github.com/{target_repo}/issues/{num_str}"
-                ),
-                author=author_login,
-                state=str(item.get("state") or "OPEN").lower(),
-                labels=labels,
-                assignees=assignees,
-                repo_or_project=target_repo,
-                raw=item,
-            )
-            iss.issue_type = iss.infer_issue_type()
-            issues.append(iss)
-
-        return issues
+        return [_normalize_issue(item, "", target_repo) for item in data_list]

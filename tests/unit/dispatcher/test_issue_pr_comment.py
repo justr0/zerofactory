@@ -10,6 +10,8 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dispatcher.scheduler import post_issue_pr_comment
 from dispatcher.scheduler import run_dispatch_cycle
 from tests.unit.dispatcher.test_scheduler import _init_test_db
@@ -322,7 +324,11 @@ def test_helper_dedup_marker_present_skips_comment():
     assert gh_calls == []
 
 
-def test_helper_posts_once_and_repo_fallback_from_board():
+@pytest.mark.parametrize(
+    "git_url",
+    ["https://github.com/foo/bar.git", "git@github.com:foo/bar.git"],
+)
+def test_helper_posts_once_and_repo_fallback_from_board_url(git_url: str):
     fake_run_calls: list[list[str]] = []
 
     def fake_run(cmd, *args, **kwargs):
@@ -339,15 +345,18 @@ def test_helper_posts_once_and_repo_fallback_from_board():
             TASK_ID,
             {"source": "github", "id": ISSUE_ID, "has_ai_request": True},
             PR_URL,
-            cursor=_BoardGitUrlCursor("https://github.com/foo/bar.git"),  # type: ignore[arg-type]
+            cursor=_BoardGitUrlCursor(git_url),  # type: ignore[arg-type]
             board_slug="b1",
         )
 
     assert ok is True
+    views = [c for c in fake_run_calls if "issue" in c and "view" in c]
     comments = [c for c in fake_run_calls if "issue" in c and "comment" in c]
+    assert len(views) == 1
     assert len(comments) == 1
-    # owner/repo fell back to the board git_url (repo_or_project missing)
-    assert "foo/bar" in comments[0]
+    # Both GitHub commands use normalized owner/repo, not the SSH remote.
+    for cmd in [*views, *comments]:
+        assert cmd[cmd.index("--repo") + 1] == "foo/bar"
 
 
 def test_helper_gates_no_gh_calls():

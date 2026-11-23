@@ -12,15 +12,11 @@ Both consumers call :func:`load_settings` instead of re-implementing the
 key-lookup + clamp + fallback pattern, so the defaults and the clamping
 semantics can no longer drift between the two modules.
 
-Idle-scan settings (NOT in the ``settings`` table)
---------------------------------------------------
-The idle-scan knobs (``scan_on_idle``, ``idle_scan_cooldown_minutes``,
-``idle_scan_active_threshold``, ``idle_scan_max_todo``) are **not** part of
-the global ``settings`` table and are **not** returned by
-:func:`load_settings`. They live in the per-board scanner cron job config
-(see ``cron/definitions.py``) and are read by the dispatcher via
-``get_scanner_cron_config()``. The ``DEFAULT_*`` constants in this module
-serve only as shared *defaults* for that fallback path.
+Idle-scan settings
+------------------
+Scanner configuration is read separately by the dispatcher via
+``get_scanner_cron_config()`` and is **not** returned by
+:func:`load_settings`. Cooldown and backlog defaults are defined below.
 
 Unit boundary
 -------------
@@ -50,11 +46,6 @@ DEFAULT_MAX_CONCURRENT_LLM_WORKERS = 10
 # Defaults to 1; customized per board via boards.max_concurrent_running.
 DEFAULT_MAX_CONCURRENT_WORKERS = 1
 
-# Automatically trigger idle improvement scans when running workers drop below threshold.
-DEFAULT_SCAN_ON_IDLE = True
-
-# Number of active running workers on a board below which an idle scan is considered.
-DEFAULT_IDLE_SCAN_ACTIVE_THRESHOLD = 2
 
 # Minimum cooldown between idle improvement scans for the same board, in MINUTES
 # (the DB storage unit). See DEFAULT_IDLE_SCAN_COOLDOWN_SECONDS for the seconds view.
@@ -197,10 +188,8 @@ def load_settings(conn_or_cursor: Any) -> dict[str, Any]:
     ``max(0, ...)``). Unknown keys in the table are ignored.
 
     Returns a dict with exactly the :data:`SETTING_KEYS` in their native
-    types. The idle-scan settings (``scan_on_idle``,
-    ``idle_scan_cooldown_minutes``, ``idle_scan_active_threshold``,
-    ``idle_scan_max_todo``) are **not** included — they live in the
-    per-board scanner cron job config, see the module docstring.
+    types. Scanner settings are **not** included — they are read separately
+    from scanner configuration by the dispatcher.
     """
     settings: dict[str, Any] = {
         "max_active_tasks": DEFAULT_MAX_ACTIVE_TASKS,
