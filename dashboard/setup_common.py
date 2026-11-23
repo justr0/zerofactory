@@ -172,7 +172,11 @@ def check_board_setup_status(
             os.environ["ZEROFACTORY_SKIP_CLONE"] = "1"
             try:
                 repo_path = resolver(
-                    {"slug": effective_alias, "git_url": target_repo.get("git_url", "")}
+                    {
+                        "slug": board_slug,
+                        "repo_alias": effective_alias,
+                        "git_url": target_repo.get("git_url", ""),
+                    }
                 )
             finally:
                 if prev is None:
@@ -279,7 +283,13 @@ def create_setup_task(
 
     resolver = get_repo_resolver()
     repo_path = (
-        resolver({"slug": effective_alias, "git_url": target_repo.get("git_url", "")})
+        resolver(
+            {
+                "slug": board_slug,
+                "repo_alias": effective_alias,
+                "git_url": target_repo.get("git_url", ""),
+            }
+        )
         if resolver
         else None
     )

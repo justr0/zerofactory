@@ -275,6 +275,85 @@ def test_check_status_happy_path_file_target(
     assert res["dedup_task_id"] is None
 
 
+def test_setup_resolves_remote_clone_from_board_workspace(
+    initialized_db: Path, tmp_path: Path, monkeypatch
+):
+    """A repo alias selects the clone beneath its board's workspace."""
+    board_slug = "team-board"
+    repo_alias = "widget-service"
+    now = 1_000_000_000
+    with sqlite3.connect(str(initialized_db)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, description, max_concurrent_running, "
+            "auto_record_memory, created_at, updated_at) "
+            "VALUES (?, '', 1, 1, ?, ?)",
+            (board_slug, now, now),
+        )
+        conn.execute(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, "
+            "target_branch, additional_reviewer_usernames, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'main', '[]', ?, ?)",
+            (board_slug, repo_alias, "https://example.com/widgets.git", now, now),
+        )
+        conn.commit()
+
+    workspace = tmp_path / "workspaces"
+    repo = workspace / board_slug / "repos" / repo_alias
+    repo.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (repo / ".zerofactory").mkdir()
+    (repo / ".zerofactory" / "precommit.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("ZEROFACTORY_WORKSPACES_DIR", str(workspace))
+
+    status = sc.check_board_setup_status(
+        board_slug,
+        repo_alias=repo_alias,
+        has_key=HAS_KEY,
+        path_key=PATH_KEY,
+        preview_key=PREVIEW_KEY,
+        target_relpath=".zerofactory/precommit.sh",
+        title_prefix="chore(repo): setup",
+        dedup_substring="setup:precommit",
+    )
+    assert status[HAS_KEY] is True
+    assert status[PATH_KEY] == str(repo / ".zerofactory/precommit.sh")
+
+    captured: dict = {}
+
+    def status_checker(slug, repo_alias=None):
+        assert slug == board_slug
+        assert repo_alias == "widget-service"
+        return {"dedup_task_id": None}
+
+    with mock.patch(
+        "dashboard.routes.tasks.create_task",
+        return_value={"ok": True, "id": "zf-board-repo-setup"},
+    ):
+        result = sc.create_setup_task(
+            board_slug,
+            repo_alias=repo_alias,
+            status_checker=status_checker,
+            title="chore(repo): setup precommit",
+            prompt_builder=lambda slug, repo_path=None, repo_alias=None: (
+                captured.update(
+                    board_slug=slug, repo_alias=repo_alias, repo_path=repo_path
+                )
+                or "setup prompt"
+            ),
+            files=[".zerofactory/precommit.sh"],
+            dedup_key="setup:precommit",
+            progress_label="Precommit",
+            created_label="precommit",
+        )
+
+    assert result["ok"] is True
+    assert captured == {
+        "board_slug": board_slug,
+        "repo_alias": repo_alias,
+        "repo_path": repo,
+    }
+
+
 def test_check_status_file_target_missing(
     initialized_db: Path, tmp_path: Path, monkeypatch
 ):
