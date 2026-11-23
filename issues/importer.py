@@ -17,10 +17,10 @@ if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
 try:
-    from ..dashboard.db import get_db_path
+    from ..dashboard.db import get_db_path, parse_git_url
     from ..dashboard.plugin_api import TaskCreate, create_task
 except (ImportError, ValueError):
-    from dashboard.db import get_db_path
+    from dashboard.db import get_db_path, parse_git_url
     from dashboard.plugin_api import TaskCreate, create_task
 
 from .base import ExternalIssue
@@ -30,11 +30,8 @@ _log = logging.getLogger("zerofactory.issues.importer")
 
 def _repo_identity(value: str) -> str:
     """Normalize a Git URL or owner/repository value to owner/repository."""
-    cleaned = value.strip().rstrip("/")
-    if cleaned.lower().endswith(".git"):
-        cleaned = cleaned[:-4].rstrip("/")
-    parts = re.split(r"[/ :]", cleaned)
-    return "/".join(parts[-2:]).casefold()
+    owner, repo, _ = parse_git_url(value)
+    return f"{owner}/{repo}".casefold()
 
 
 def resolve_board_for_issue(
