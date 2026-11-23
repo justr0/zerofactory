@@ -9,9 +9,16 @@ from unittest.mock import MagicMock, patch
 from dispatcher.reaper import (
     _compute_stuck_state,
     _mark_task_session_ended,
+    _parse_task_metadata,
     reap_active_workers,
     reap_stuck_tasks,
 )
+
+
+def test_parse_task_metadata_empty_or_malformed():
+    assert _parse_task_metadata(None) == {}
+    assert _parse_task_metadata("") == {}
+    assert _parse_task_metadata("not-json") == {}
 
 
 def test_compute_stuck_state_dead_worker(tmp_path: Path):
