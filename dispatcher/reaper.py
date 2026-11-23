@@ -30,6 +30,14 @@ def _worker_log_path(task_id: str) -> Path:
     return get_hermes_home() / "logs" / f"worker_{task_id}.log"
 
 
+def _parse_task_metadata(metadata: str | None) -> dict[str, Any]:
+    """Decode task metadata, returning an empty dict when it is empty or invalid."""
+    try:
+        return json.loads(metadata or "{}")
+    except Exception:
+        return {}
+
+
 _APPROVAL_FAILURE_MARKERS = (
     "approval required",
     "command requires approval",
@@ -168,11 +176,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
             if ("assignee" in row.keys() and row["assignee"])
             else ""
         )
-        meta = {}
-        try:
-            meta = json.loads(row["metadata"] or "{}")
-        except Exception:
-            pass
+        meta = _parse_task_metadata(row["metadata"])
 
         proc = _active_workers.get(task_id)
         pid = meta.get("worker_pid") or (proc.pid if proc else None)
@@ -725,11 +729,7 @@ def check_stuck_tasks(
                 else raw_row
             )
             task_id = str(row["id"])
-            meta = {}
-            try:
-                meta = json.loads(row["metadata"] or "{}")
-            except Exception:
-                pass
+            meta = _parse_task_metadata(row["metadata"])
 
             proc = _active_workers.get(task_id)
             pid = meta.get("worker_pid") or (proc.pid if proc else None)
@@ -823,11 +823,7 @@ def check_stuck_tasks(
                     else raw_row
                 )
                 task_id = str(row["id"])
-                meta = {}
-                try:
-                    meta = json.loads(row["metadata"] or "{}")
-                except Exception:
-                    meta = {}
+                meta = _parse_task_metadata(row["metadata"])
 
                 # State 4: Failure exhausted stuck tasks eligible for orchestrator recovery
                 b_type = str(meta.get("blocked_reason_type") or "").strip().lower()
@@ -921,15 +917,12 @@ def reap_stuck_tasks(
                                 item["stuck_reason"]
                                 or f"Manually reaped after running {item['running_seconds']}s"
                             )
-                            _meta = {}
                             _row = cursor.execute(
                                 "SELECT metadata FROM tasks WHERE id = ?", (t_id,)
                             ).fetchone()
-                            if _row is not None:
-                                try:
-                                    _meta = json.loads(_row["metadata"] or "{}")
-                                except Exception:
-                                    _meta = {}
+                            _meta = _parse_task_metadata(
+                                _row["metadata"] if _row is not None else None
+                            )
                             _meta["blocked_reason"] = reason
                             _meta["blocked_reason_type"] = "stuck"
                             _meta = _d()._mark_task_session_ended(
@@ -1024,11 +1017,7 @@ def build_stuck_task_context(
             result["status"] = t.get("status", "")
             result["assignee"] = t.get("assignee", "")
 
-            meta = {}
-            try:
-                meta = json.loads(t.get("metadata") or "{}")
-            except Exception:
-                meta = {}
+            meta = _parse_task_metadata(t.get("metadata"))
 
             result["stuck_reason"] = meta.get("blocked_reason") or ""
             result["worker_failure_retries"] = int(

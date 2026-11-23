@@ -1825,13 +1825,9 @@ def _package_and_open_pr(
             is_merging or int((meta or {}).get("conflict_retries") or 0) > 0
         )
 
-        unmerged_files = _disp.get_unmerged_status_files(Path(workspace_path))
+        modified_files, unmerged_files = _disp.get_status_files(Path(workspace_path))
         if is_merging or unmerged_files:
-            files_to_scan = (
-                unmerged_files
-                if unmerged_files
-                else _disp.get_modified_status_files(Path(workspace_path))
-            )
+            files_to_scan = unmerged_files if unmerged_files else modified_files
             markers = _disp.check_files_for_conflict_markers(
                 Path(workspace_path), files_to_scan
             )
