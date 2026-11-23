@@ -43,30 +43,23 @@ candidate_roots = [
 if os.environ.get("ZEROFACTORY_ROOT"):
     candidate_roots.insert(0, Path(os.environ["ZEROFACTORY_ROOT"]))
 
-for candidate in candidate_roots:
+for candidate in reversed(candidate_roots):
     try:
         resolved = candidate.resolve()
-        if resolved.is_dir() and str(resolved) not in sys.path:
+        if resolved.is_dir():
             sys.path.insert(0, str(resolved))
     except Exception:
         pass
 
-# Prefer the plugin tree containing this script over another installed copy.
-sys.path.insert(0, str(SCRIPT_DIR.parent.resolve()))
-
-from paths import (  # noqa: E402
-    get_hermes_home,
-    get_zerofactory_db_path,
-    repository_name_from_git_url,
-)
+import paths  # noqa: E402
 
 
 def _get_state_file() -> Path:
-    return get_hermes_home() / "openwiki_state.json"
+    return paths.get_hermes_home() / "openwiki_state.json"
 
 
 def _get_db_path() -> Path:
-    return get_zerofactory_db_path()
+    return paths.get_zerofactory_db_path()
 
 
 def create_openwiki_task(
@@ -284,7 +277,7 @@ def resolve_repo_path(
     ]
 
     if git_url:
-        repo_name = repository_name_from_git_url(git_url)
+        repo_name = paths.repository_name_from_git_url(git_url)
         candidates.append(b_repos / repo_name)
 
     for cand in candidates:
