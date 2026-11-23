@@ -26,6 +26,12 @@ from .base import ExternalIssue
 _log = logging.getLogger("zerofactory.issues.importer")
 
 
+def _repo_identity(value: str) -> str:
+    cleaned = re.sub(r"\.git$", "", value.strip()).rstrip("/")
+    parts = re.split(r"[/ :]", cleaned)
+    return "/".join(parts[-2:]).casefold()
+
+
 def resolve_board_for_issue(
     repo_or_project: str | None = None,
     board_slug: str | None = None,
@@ -49,30 +55,32 @@ def resolve_board_for_issue(
             if row:
                 return str(row["slug"])
 
-        # 2. Try matching repo_or_project to git_url, repo_alias, or slug in boards
+        # 2. Prefer exact normalized repository identity across every linked repo.
         if repo_or_project:
             cursor.execute(
                 "SELECT b.slug, br.git_url, br.repo_alias FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug ORDER BY b.created_at ASC"
             )
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            identity = _repo_identity(repo_or_project)
+            for row in rows:
+                git_url = str(row["git_url"] or "")
+                if git_url and _repo_identity(git_url) == identity:
+                    return str(row["slug"])
+
+            # 3. Explicitly weaker legacy fallback for aliases and board slugs.
+            for row in rows:
                 row_dict = dict(row)
                 slug = str(row_dict.get("slug") or "")
-                git_url = str(row_dict.get("git_url") or "")
                 repo_alias = str(row_dict.get("repo_alias") or "")
                 if repo_alias and repo_or_project.lower() in repo_alias.lower():
                     return slug
-                # Normalize git_url (strip .git, protocol)
-                cleaned_git = re.sub(r"\.git$", "", git_url).strip().rstrip("/")
-                if cleaned_git and repo_or_project.lower() in cleaned_git.lower():
-                    return slug
-                # Check slug match
                 norm_repo_slug = (
                     re.sub(r"[^a-zA-Z0-9]+", "-", repo_or_project).strip("-").lower()
                 )
                 if norm_repo_slug in slug.lower():
                     return slug
 
-        # 3. Try matching current working directory git remote
+        # 4. Try matching current working directory git remote
         try:
             cwd_remote = subprocess.run(
                 ["git", "remote", "get-url", "origin"],
@@ -100,7 +108,7 @@ def resolve_board_for_issue(
         except Exception:
             pass
 
-        # 4. Fallback to first available board
+        # 5. Fallback to first available board
         cursor.execute("SELECT slug FROM boards ORDER BY created_at ASC LIMIT 1")
         first_row = cursor.fetchone()
         if first_row:
@@ -120,19 +128,14 @@ def _resolve_repo_alias(
     if not db_path.exists():
         return None
 
-    def repo_identity(value: str) -> str:
-        cleaned = re.sub(r"\.git$", "", value.strip()).rstrip("/")
-        parts = re.split(r"[/ :]", cleaned)
-        return "/".join(parts[-2:]).casefold()
-
-    identity = repo_identity(repo_or_project)
+    identity = _repo_identity(repo_or_project)
     with sqlite3.connect(str(db_path), timeout=5.0) as conn:
         rows = conn.execute(
             "SELECT repo_alias, git_url FROM board_repositories WHERE board_slug = ?",
             (board_slug,),
         ).fetchall()
     for repo_alias, git_url in rows:
-        if git_url and repo_identity(str(git_url)) == identity:
+        if git_url and _repo_identity(str(git_url)) == identity:
             return str(repo_alias)
     return None
 

@@ -413,6 +413,29 @@ class TestImporterIdempotencyAndDeterminism:
             ).fetchone()
         assert row == ("backend",)
 
+    @pytest.mark.parametrize(
+        "repositories",
+        [
+            [("foobar-board", "org/foobar"), ("foo-board", "org/foo")],
+            [("foo-board", "org/foo"), ("foobar-board", "org/foobar")],
+        ],
+    )
+    def test_resolve_board_prefers_exact_repository_identity(self, repositories):
+        for slug, repository in repositories:
+            create_board(
+                BoardCreate(
+                    slug=slug,
+                    repositories=[
+                        BoardRepoCreate(
+                            repo_alias=repository.rsplit("/", 1)[-1],
+                            git_url=f"https://github.com/{repository}.git",
+                        )
+                    ],
+                )
+            )
+
+        assert resolve_board_for_issue("org/foo", db_path=self.db_path) == "foo-board"
+
 
 class TestCliImportGhIssue:
     @patch("issues.github.subprocess.run")
