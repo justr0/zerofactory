@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from paths import get_hermes_home
+from settings import _clamp_int
 
 from .config import (
     DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
@@ -185,13 +186,17 @@ def get_scanner_cron_config(board_slug: str, cursor: Any = None) -> dict[str, An
     return {
         "enabled": scan_on_idle,
         "scan_on_idle": scan_on_idle,
-        "idle_scan_cooldown_minutes": int(
-            raw_settings.get(
-                "idle_scan_cooldown_minutes", DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
+        "idle_scan_cooldown_minutes": _clamp_int(
+            raw_settings.get("idle_scan_cooldown_minutes"), 1
+        )
+        or DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
+        "idle_scan_max_todo": (
+            parsed_max_todo
+            if (
+                parsed_max_todo := _clamp_int(raw_settings.get("idle_scan_max_todo"), 0)
             )
-        ),
-        "idle_scan_max_todo": int(
-            raw_settings.get("idle_scan_max_todo", DEFAULT_IDLE_SCAN_MAX_TODO)
+            is not None
+            else DEFAULT_IDLE_SCAN_MAX_TODO
         ),
         "last_run_timestamp": _last_idle_scan_times.get(board_slug, 0),
     }
