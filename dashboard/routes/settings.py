@@ -50,6 +50,8 @@ def get_settings():
     """Retrieve global Zero Factory settings."""
     with get_db_conn() as conn:
         settings = load_settings(conn)
+    settings.pop("langfuse_secret_key", None)
+    settings.pop("mem0_api_key", None)
     return {"ok": True, "settings": settings}
 
 
