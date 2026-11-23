@@ -179,6 +179,64 @@ def _parse_bool(value: Any) -> bool:
     return str(value).lower() in ("true", "1", "yes")
 
 
+_INT_SETTING_MINIMUMS = {
+    "max_active_tasks": 1,
+    "max_concurrent_llm_workers": 1,
+    "activity_retention_days": 1,
+    "done_archive_days": 0,
+    "task_timeout_seconds": 1,
+    "inactivity_timeout_seconds": 1,
+}
+_BOOL_SETTING_KEYS = {
+    "enable_cron_scheduler",
+    "langfuse_enabled",
+    "auto_record_memory",
+    "mem0_enabled",
+    "auto_create_github_issues",
+    "allow_unattended_approvals",
+    "auto_start_dispatcher",
+}
+_STRIPPED_SETTING_KEYS = {
+    "langfuse_base_url",
+    "langfuse_public_key",
+    "langfuse_secret_key",
+    "mem0_base_url",
+    "mem0_api_key",
+}
+_NONEMPTY_SETTING_KEYS = {"langfuse_env", "mem0_model", "mem0_embedder_model"}
+_ENUM_SETTING_VALUES = {
+    "langfuse_capture_mode": {"sanitized", "metadata", "full"},
+    "mem0_embedder_provider": {"fastembed", "openai"},
+}
+
+
+def _setting_row_values(row: Any) -> tuple[Any, Any] | None:
+    try:
+        return row["key"], row["value"]
+    except Exception:
+        try:
+            return row[0], row[1]
+        except Exception:
+            return None
+
+
+def _apply_setting(settings: dict[str, Any], key: Any, value: Any) -> None:
+    if key in _INT_SETTING_MINIMUMS:
+        parsed = _clamp_int(value, _INT_SETTING_MINIMUMS[key])
+        if parsed is not None:
+            settings[key] = parsed
+    elif key in _BOOL_SETTING_KEYS:
+        settings[key] = _parse_bool(value)
+    elif key in _STRIPPED_SETTING_KEYS and value is not None:
+        settings[key] = str(value).strip()
+    elif key in _NONEMPTY_SETTING_KEYS and value is not None and str(value).strip():
+        settings[key] = str(value).strip()
+    elif key in _ENUM_SETTING_VALUES:
+        parsed = str(value).strip().lower() if value is not None else ""
+        if parsed in _ENUM_SETTING_VALUES[key]:
+            settings[key] = parsed
+
+
 def load_settings(conn_or_cursor: Any) -> dict[str, Any]:
     """Load all global settings from the ``settings`` table.
 
@@ -223,87 +281,10 @@ def load_settings(conn_or_cursor: Any) -> dict[str, Any]:
         return settings
 
     for row in rows:
-        try:
-            k, v = row["key"], row["value"]
-        except Exception:
-            # Tolerate non-Row cursors (index access fallback).
-            try:
-                k, v = row[0], row[1]
-            except Exception:
-                continue
-
-        if k == "max_active_tasks":
-            c = _clamp_int(v, 1)
-            if c is not None:
-                settings["max_active_tasks"] = c
-        elif k == "max_concurrent_llm_workers":
-            c = _clamp_int(v, 1)
-            if c is not None:
-                settings["max_concurrent_llm_workers"] = c
-        elif k == "activity_retention_days":
-            # Clamp to >= 1 so a stored "0"/garbage can never wipe the whole log;
-            # 0 only disables pruning when passed programmatically to prune_old_activity.
-            c = _clamp_int(v, 1)
-            if c is not None:
-                settings["activity_retention_days"] = c
-        elif k == "done_archive_days":
-            # 0 disables hiding older done tasks; positive values collapse them in UI without deletion.
-            c = _clamp_int(v, 0)
-            if c is not None:
-                settings["done_archive_days"] = c
-        elif k == "task_timeout_seconds":
-            c = _clamp_int(v, 1)
-            if c is not None:
-                settings["task_timeout_seconds"] = c
-        elif k == "inactivity_timeout_seconds":
-            c = _clamp_int(v, 1)
-            if c is not None:
-                settings["inactivity_timeout_seconds"] = c
-        elif k == "enable_cron_scheduler":
-            settings["enable_cron_scheduler"] = _parse_bool(v)
-        elif k == "langfuse_enabled":
-            settings["langfuse_enabled"] = _parse_bool(v)
-        elif k == "langfuse_base_url":
-            if v is not None:
-                settings["langfuse_base_url"] = str(v).strip()
-        elif k == "langfuse_public_key":
-            if v is not None:
-                settings["langfuse_public_key"] = str(v).strip()
-        elif k == "langfuse_secret_key":
-            if v is not None:
-                settings["langfuse_secret_key"] = str(v).strip()
-        elif k == "langfuse_capture_mode":
-            mode = str(v).strip().lower() if v is not None else ""
-            if mode in ("sanitized", "metadata", "full"):
-                settings["langfuse_capture_mode"] = mode
-        elif k == "langfuse_env":
-            if v is not None and str(v).strip():
-                settings["langfuse_env"] = str(v).strip()
-        elif k == "auto_record_memory":
-            settings["auto_record_memory"] = _parse_bool(v)
-        elif k == "mem0_enabled":
-            settings["mem0_enabled"] = _parse_bool(v)
-        elif k == "mem0_base_url":
-            if v is not None:
-                settings["mem0_base_url"] = str(v).strip()
-        elif k == "mem0_api_key":
-            if v is not None:
-                settings["mem0_api_key"] = str(v).strip()
-        elif k == "mem0_model":
-            if v is not None and str(v).strip():
-                settings["mem0_model"] = str(v).strip()
-        elif k == "mem0_embedder_provider":
-            prov = str(v).strip().lower() if v is not None else ""
-            if prov in ("fastembed", "openai"):
-                settings["mem0_embedder_provider"] = prov
-        elif k == "mem0_embedder_model":
-            if v is not None and str(v).strip():
-                settings["mem0_embedder_model"] = str(v).strip()
-        elif k == "auto_create_github_issues":
-            settings["auto_create_github_issues"] = _parse_bool(v)
-        elif k == "allow_unattended_approvals":
-            settings["allow_unattended_approvals"] = _parse_bool(v)
-        elif k == "auto_start_dispatcher":
-            settings["auto_start_dispatcher"] = _parse_bool(v)
+        values = _setting_row_values(row)
+        if values is None:
+            continue
+        k, v = values
+        _apply_setting(settings, k, v)
 
     return settings

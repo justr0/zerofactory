@@ -135,6 +135,36 @@ class TestSettingsUnit(unittest.TestCase):
         self.assertFalse(res["mem0_enabled"])
         conn.close()
 
+    def test_load_settings_invalid_values_and_row_compatibility(self):
+        """Invalid values retain defaults for both tuple and sqlite Row results."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+        conn.executemany(
+            "INSERT INTO settings VALUES (?, ?)",
+            [
+                ("max_active_tasks", "invalid"),
+                ("langfuse_capture_mode", "unsupported"),
+                ("mem0_model", "   "),
+                ("unknown_setting", "ignored"),
+            ],
+        )
+        conn.commit()
+
+        for load_from in (conn.cursor(), conn):
+            res = S.load_settings(load_from)
+            self.assertEqual(res["max_active_tasks"], S.DEFAULT_MAX_ACTIVE_TASKS)
+            self.assertEqual(
+                res["langfuse_capture_mode"], S.DEFAULT_LANGFUSE_CAPTURE_MODE
+            )
+            self.assertEqual(res["mem0_model"], S.DEFAULT_MEM0_MODEL)
+            self.assertNotIn("unknown_setting", res)
+
+        conn.row_factory = sqlite3.Row
+        res = S.load_settings(conn)
+        self.assertEqual(res["max_active_tasks"], S.DEFAULT_MAX_ACTIVE_TASKS)
+        self.assertEqual(res["langfuse_capture_mode"], S.DEFAULT_LANGFUSE_CAPTURE_MODE)
+        conn.close()
+
     def test_load_settings_langfuse_fields(self):
         """Langfuse configuration keys are loaded and validated."""
         conn = sqlite3.connect(":memory:")
