@@ -210,3 +210,73 @@ def test_cron_job_pause_persists_status(api_client: TestClient, default_board: s
     assert scanner2 is not None
     assert scanner2["enabled"] is True
     assert scanner2["state"] == "active"
+
+
+def test_scanner_job_preserves_embedded_prefix_in_board_slug(
+    api_client: TestClient, monkeypatch
+):
+    slug = "demo-zero-factory-improvement-scanner-lab"
+    created = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"slug": slug, "git_url": "https://github.com/example/scanner-lab.git"},
+    )
+    assert created.status_code == 200
+    job_id = f"zero-factory-improvement-scanner-{slug}"
+    resolved_slugs = []
+    killed_slugs = []
+    monkeypatch.setattr(
+        cron_routes,
+        "resolve_task_repo_path",
+        lambda cursor, board_slug, repo: resolved_slugs.append(board_slug) or None,
+    )
+    monkeypatch.setattr(
+        cron_routes, "spawn_board_scanner", lambda board_slug, path: 1234
+    )
+    monkeypatch.setattr(
+        cron_routes,
+        "kill_board_scanner",
+        lambda board_slug: killed_slugs.append(board_slug),
+    )
+
+    triggered = api_client.post(f"/api/plugins/zerofactory/cron/{job_id}/run")
+    assert triggered.status_code == 200
+    assert f"board '{slug}'" in triggered.json()["message"]
+    assert resolved_slugs == [slug]
+
+    updated = api_client.put(
+        f"/api/plugins/zerofactory/cron/{job_id}",
+        json={
+            "scan_on_idle": True,
+            "idle_scan_cooldown_minutes": 37,
+            "idle_scan_max_todo": 6,
+        },
+    )
+    assert updated.status_code == 200
+    scanner = next(
+        job
+        for job in api_client.get("/api/plugins/zerofactory/cron").json()["jobs"]
+        if job["id"] == job_id
+    )
+    assert scanner["scan_on_idle"] is True
+    assert scanner["idle_scan_cooldown_minutes"] == 37
+    assert scanner["idle_scan_max_todo"] == 6
+
+    toggled = api_client.post(
+        f"/api/plugins/zerofactory/cron/{job_id}/toggle", json={"enabled": False}
+    )
+    assert toggled.status_code == 200
+    assert killed_slugs == [slug]
+
+    reset = api_client.post(f"/api/plugins/zerofactory/cron/{job_id}/reset")
+    assert reset.status_code == 200
+    scanner = next(
+        job
+        for job in api_client.get("/api/plugins/zerofactory/cron").json()["jobs"]
+        if job["id"] == job_id
+    )
+    assert scanner["scan_on_idle"] is False
+    assert (
+        scanner["idle_scan_cooldown_minutes"]
+        == cron_routes.DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
+    )
+    assert scanner["idle_scan_max_todo"] == cron_routes.DEFAULT_IDLE_SCAN_MAX_TODO
