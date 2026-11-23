@@ -2,6 +2,8 @@
 
 from fastapi.testclient import TestClient
 
+from dashboard.routes import cron as cron_routes
+
 
 def test_get_cron_jobs(api_client: TestClient, default_board: str):
     """Verify listing cron jobs returns core watchdog and board scanners."""
@@ -33,6 +35,32 @@ def test_get_cron_jobs(api_client: TestClient, default_board: str):
     assert scanner["category"] == "scanner"
     assert scanner["scan_on_idle"] is False
     assert scanner["enabled"] is False
+
+
+def test_get_cron_jobs_scanner_config_error_falls_back(
+    api_client: TestClient, default_board: str, monkeypatch
+):
+    """Use disabled defaults when the scanner config provider raises."""
+
+    def raise_config_error(*args, **kwargs):
+        raise RuntimeError("scanner config unavailable")
+
+    monkeypatch.setattr(cron_routes, "get_scanner_cron_config", raise_config_error)
+
+    res = api_client.get("/api/plugins/zerofactory/cron")
+    assert res.status_code == 200
+    scanner = next(
+        job
+        for job in res.json()["jobs"]
+        if job["id"] == f"zero-factory-improvement-scanner-{default_board}"
+    )
+    assert scanner["enabled"] is False
+    assert scanner["scan_on_idle"] is False
+    assert (
+        scanner["idle_scan_cooldown_minutes"]
+        == cron_routes.DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
+    )
+    assert scanner["idle_scan_max_todo"] == cron_routes.DEFAULT_IDLE_SCAN_MAX_TODO
 
 
 def test_toggle_scheduler(api_client: TestClient):
