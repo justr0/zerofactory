@@ -16,6 +16,11 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+try:
+    from ..git_url import parse_git_url
+except (ImportError, ValueError):
+    from git_url import parse_git_url
+
 BUG_REPORT_TEMPLATE = """name: "🐛 Bug Report (Zero Factory)"
 description: Report a bug for Zero Factory AI to investigate, triage, and fix.
 title: "[Bug]: "
@@ -255,10 +260,10 @@ def detect_repo_from_git(cwd: Path) -> str | None:
         )
         if res.returncode == 0:
             url = res.stdout.strip()
-            # Match git@github.com:owner/repo.git or https://github.com/owner/repo.git
-            m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", url)
-            if m:
-                return f"{m.group(1)}/{m.group(2)}"
+            # Only auto-detect repositories hosted on GitHub.
+            if re.search(r"github\.com[:/]", url):
+                owner, repo, _ = parse_git_url(url)
+                return f"{owner}/{repo}" if owner and repo else None
     except Exception:
         pass
     return None

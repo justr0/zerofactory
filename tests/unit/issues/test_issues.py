@@ -706,6 +706,26 @@ class TestCliImportGhIssue:
 
 
 class TestSetupGhIssuesScript:
+    @pytest.mark.parametrize(
+        ("remote_url", "expected"),
+        [
+            ("https://github.com/owner/repo.v2.git", "owner/repo.v2"),
+            ("git@github.com:owner/repo.v2.git", "owner/repo.v2"),
+            ("https://github.com/owner/repo.git", "owner/repo"),
+            ("git@github.com:owner/repo.v2", "owner/repo.v2"),
+        ],
+    )
+    def test_detect_repo_from_git_supports_dotted_repo_names(
+        self, remote_url, expected
+    ):
+        from scripts.setup_gh_issues import detect_repo_from_git
+
+        with patch(
+            "scripts.setup_gh_issues.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, remote_url, ""),
+        ):
+            assert detect_repo_from_git(Path(".")) == expected
+
     def test_setup_github_issues_generates_templates(self, tmp_path):
         from scripts.setup_gh_issues import setup_github_issues
 
