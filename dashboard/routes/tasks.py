@@ -1618,6 +1618,17 @@ def reply_interview(task_id: str, req: InterviewReply):
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
         task = row_to_dict(task_row)
 
+        raw_meta = task.get("metadata") or "{}"
+        try:
+            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta)
+        except Exception:
+            meta = {}
+        if task.get("status") != "triage" or not meta.get("awaiting_interview"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task '{task_id}' does not have a pending interview",
+            )
+
         reply_lines = [
             f"🎯 **[Grill-with-Docs Human Response]**\n**Selection:** {req.selection.strip()}"
         ]
@@ -1633,33 +1644,30 @@ def reply_interview(task_id: str, req: InterviewReply):
             (task_id, author_val, comment_body, now),
         )
         comment_id = cursor.lastrowid
-        log_activity(
-            conn,
-            task_id,
-            author_val,
-            "interview_reply",
-            f"Submitted interview response: {req.selection[:60]}",
-        )
-
-        raw_meta = task.get("metadata") or "{}"
-        try:
-            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta)
-        except Exception:
-            meta = {}
-
         meta["last_interview_reply"] = {
             "selection": req.selection.strip(),
             "notes": (req.notes or "").strip(),
             "replied_at": now,
         }
-        meta.pop("blocked_reason", None)
-
+        meta.pop("awaiting_interview", None)
+        meta["awaiting_interview"] = None
         target_status = "triage"
-        assignee = "zf-orchestrator"
-        cursor.execute(
-            "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
-            (target_status, assignee, json.dumps(meta), now, task_id),
-        )
+        if transition_task:
+            transition_task(
+                conn,
+                task_id,
+                target_status,
+                target_assignee="zf-orchestrator",
+                metadata_patch=meta,
+                actor="human",
+            )
+        else:
+            meta.pop("blocked_reason", None)
+            meta.pop("blocked_reason_type", None)
+            cursor.execute(
+                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
+                (target_status, "zf-orchestrator", json.dumps(meta), now, task_id),
+            )
         conn.commit()
 
         if (
