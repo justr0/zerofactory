@@ -454,14 +454,22 @@ def test_get_task_timeout_seconds_db_fallback(tmp_path: Path, monkeypatch):
     # Call with conn
     assert get_task_timeout_seconds(conn) == 7200
     assert get_inactivity_timeout_seconds(conn) == 1800
+    assert get_task_timeout_seconds(conn.cursor()) == 7200
+    assert get_inactivity_timeout_seconds(conn.cursor()) == 1800
 
     # Call without conn (should open DB automatically)
     assert get_task_timeout_seconds() == 7200
     assert get_inactivity_timeout_seconds() == 1800
 
-    # Env var override takes precedence
+    # Valid environment overrides take precedence; invalid ones fall back to DB.
     monkeypatch.setenv("ZEROFACTORY_TASK_TIMEOUT_SECONDS", "9999")
+    monkeypatch.setenv("ZEROFACTORY_INACTIVITY_TIMEOUT_SECONDS", "999")
     assert get_task_timeout_seconds() == 9999
+    assert get_inactivity_timeout_seconds() == 999
+    monkeypatch.setenv("ZEROFACTORY_TASK_TIMEOUT_SECONDS", "invalid")
+    monkeypatch.setenv("ZEROFACTORY_INACTIVITY_TIMEOUT_SECONDS", "invalid")
+    assert get_task_timeout_seconds() == 7200
+    assert get_inactivity_timeout_seconds() == 1800
     conn.close()
 
 

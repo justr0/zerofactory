@@ -162,9 +162,10 @@ def get_spawn_grace_seconds() -> int:
     )
 
 
-def get_task_timeout_seconds(conn_or_cursor: Any = None) -> int:
-    """Return maximum allowed running duration before worker is considered stuck."""
-    env_val = os.environ.get("ZEROFACTORY_TASK_TIMEOUT_SECONDS")
+def _get_timeout_seconds(
+    env_key: str, setting_key: str, default: int, conn_or_cursor: Any = None
+) -> int:
+    env_val = os.environ.get(env_key)
     if env_val is not None:
         try:
             return max(1, int(env_val))
@@ -173,9 +174,7 @@ def get_task_timeout_seconds(conn_or_cursor: Any = None) -> int:
     if conn_or_cursor is not None:
         try:
             settings = load_settings(conn_or_cursor)
-            return int(
-                settings.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS)
-            )
+            return int(settings.get(setting_key, default))
         except Exception:
             pass
     else:
@@ -186,51 +185,30 @@ def get_task_timeout_seconds(conn_or_cursor: Any = None) -> int:
 
                 with sqlite3.connect(str(db_p), timeout=2.0) as conn:
                     settings = load_settings(conn)
-                    return int(
-                        settings.get(
-                            "task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS
-                        )
-                    )
+                    return int(settings.get(setting_key, default))
         except Exception:
             pass
-    return DEFAULT_TASK_TIMEOUT_SECONDS
+    return default
+
+
+def get_task_timeout_seconds(conn_or_cursor: Any = None) -> int:
+    """Return maximum allowed running duration before worker is considered stuck."""
+    return _get_timeout_seconds(
+        "ZEROFACTORY_TASK_TIMEOUT_SECONDS",
+        "task_timeout_seconds",
+        DEFAULT_TASK_TIMEOUT_SECONDS,
+        conn_or_cursor,
+    )
 
 
 def get_inactivity_timeout_seconds(conn_or_cursor: Any = None) -> int:
     """Return maximum allowed inactivity before worker is considered hung."""
-    env_val = os.environ.get("ZEROFACTORY_INACTIVITY_TIMEOUT_SECONDS")
-    if env_val is not None:
-        try:
-            return max(1, int(env_val))
-        except (ValueError, TypeError):
-            pass
-    if conn_or_cursor is not None:
-        try:
-            settings = load_settings(conn_or_cursor)
-            return int(
-                settings.get(
-                    "inactivity_timeout_seconds", DEFAULT_INACTIVITY_TIMEOUT_SECONDS
-                )
-            )
-        except Exception:
-            pass
-    else:
-        try:
-            db_p = get_db_path()
-            if db_p.exists():
-                import sqlite3
-
-                with sqlite3.connect(str(db_p), timeout=2.0) as conn:
-                    settings = load_settings(conn)
-                    return int(
-                        settings.get(
-                            "inactivity_timeout_seconds",
-                            DEFAULT_INACTIVITY_TIMEOUT_SECONDS,
-                        )
-                    )
-        except Exception:
-            pass
-    return DEFAULT_INACTIVITY_TIMEOUT_SECONDS
+    return _get_timeout_seconds(
+        "ZEROFACTORY_INACTIVITY_TIMEOUT_SECONDS",
+        "inactivity_timeout_seconds",
+        DEFAULT_INACTIVITY_TIMEOUT_SECONDS,
+        conn_or_cursor,
+    )
 
 
 def get_db_path() -> Path:
