@@ -462,7 +462,9 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
         patch.object(dispatcher, "clean_stale_git_locks"),
         patch.object(dispatcher, "get_git_dir", return_value=None),
-        patch.object(dispatcher, "get_unmerged_status_files", return_value=[]),
+        patch.object(
+            dispatcher, "get_status_files", return_value=([], [])
+        ) as mock_status_files,
         patch.object(
             dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
         ),
@@ -474,6 +476,7 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
         res = run_dispatch_cycle(db_path)
         assert res["ok"] is True
         assert res["prs_opened"] == 1
+        mock_status_files.assert_called_once_with(tmp_path)
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
