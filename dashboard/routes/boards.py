@@ -64,7 +64,7 @@ def _shape_board_response(cursor, board: dict[str, Any]) -> None:
             repo["additional_reviewer_usernames"] = json.loads(
                 repo.get("additional_reviewer_usernames") or "[]"
             )
-        except Exception:
+        except json.JSONDecodeError:
             repo["additional_reviewer_usernames"] = []
     board["repositories"] = repos
     board["git_url"] = repos[0]["git_url"] if repos else ""

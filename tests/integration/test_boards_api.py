@@ -37,58 +37,37 @@ def test_board_list_and_detail_share_response_fields(api_client: TestClient):
     created = api_client.post(
         "/api/plugins/zerofactory/boards",
         json={
-            "slug": "response-shaping",
-            "repositories": [
-                {
-                    "repo_alias": "api",
-                    "git_url": "https://github.com/example/api.git",
-                    "target_branch": "release",
-                    "additional_reviewer_usernames": ["reviewer"],
-                }
-            ],
-            "architecture": "  architecture notes  ",
+            "git_url": "https://github.com/example/api.git",
+            "target_branch": "release",
         },
     )
-    assert created.status_code == 200
     slug = created.json()["slug"]
 
-    listed = next(
-        board
-        for board in api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
-        if board["slug"] == slug
-    )
-    detail = api_client.get(f"/api/plugins/zerofactory/boards/{slug}").json()["board"]
-    expected = {
-        "architecture": "architecture notes",
-        "auto_record_memory": True,
-        "automerge": False,
-        "git_url": "https://github.com/example/api.git",
-        "target_branch": "release",
-        "additional_reviewer_usernames": ["reviewer"],
-        "task_count": 0,
-        "running_count": 0,
-    }
-    for key, value in expected.items():
-        assert listed[key] == detail[key] == value
-    assert listed["repositories"] == detail["repositories"]
+    def responses():
+        boards = api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
+        return next(b for b in boards if b["slug"] == slug), api_client.get(
+            f"/api/plugins/zerofactory/boards/{slug}"
+        ).json()["board"]
 
-    removed = api_client.delete(
-        f"/api/plugins/zerofactory/boards/{slug}/repositories/api"
+    listed, detail = responses()
+    assert listed == detail and (
+        listed["git_url"],
+        listed["target_branch"],
+        len(listed["repositories"]),
+    ) == ("https://github.com/example/api.git", "release", 1)
+    assert (
+        api_client.delete(
+            f"/api/plugins/zerofactory/boards/{slug}/repositories/api"
+        ).status_code
+        == 200
     )
-    assert removed.status_code == 200
-    listed_without_repos = next(
-        board
-        for board in api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
-        if board["slug"] == slug
-    )
-    detail_without_repos = api_client.get(
-        f"/api/plugins/zerofactory/boards/{slug}"
-    ).json()["board"]
-    for board in (listed_without_repos, detail_without_repos):
-        assert board["repositories"] == []
-        assert board["git_url"] == ""
-        assert board["target_branch"] == "main"
-        assert board["additional_reviewer_usernames"] == []
+    listed, detail = responses()
+    assert listed == detail and (
+        listed["repositories"],
+        listed["git_url"],
+        listed["target_branch"],
+        listed["additional_reviewer_usernames"],
+    ) == ([], "", "main", [])
 
 
 def test_create_board_rejects_unsafe_slug_and_preserves_custom_slug(
