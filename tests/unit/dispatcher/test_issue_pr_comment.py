@@ -325,10 +325,16 @@ def test_helper_dedup_marker_present_skips_comment():
 
 
 @pytest.mark.parametrize(
-    "git_url",
-    ["https://github.com/foo/bar.git", "git@github.com:foo/bar.git"],
+    ("git_url", "expected_repo"),
+    [
+        ("https://github.com/foo/bar.git", "foo/bar"),
+        ("git@github.com:foo/bar.git", "foo/bar"),
+        ("ssh://git@github.com/acme/widgets.git", "acme/widgets"),
+    ],
 )
-def test_helper_posts_once_and_repo_fallback_from_board_url(git_url: str):
+def test_helper_posts_once_and_repo_fallback_from_board_url(
+    git_url: str, expected_repo: str
+):
     fake_run_calls: list[list[str]] = []
 
     def fake_run(cmd, *args, **kwargs):
@@ -356,7 +362,7 @@ def test_helper_posts_once_and_repo_fallback_from_board_url(git_url: str):
     assert len(comments) == 1
     # Both GitHub commands use normalized owner/repo, not the SSH remote.
     for cmd in [*views, *comments]:
-        assert cmd[cmd.index("--repo") + 1] == "foo/bar"
+        assert cmd[cmd.index("--repo") + 1] == expected_repo
 
 
 def test_helper_gates_no_gh_calls():

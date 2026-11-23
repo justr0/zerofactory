@@ -507,7 +507,17 @@ class TestImporterIdempotencyAndDeterminism:
         assert res["category"] == "feature"
         assert res["assignee"] == "human"
 
-    def test_import_issue_targets_matching_repository_on_multi_repo_board(self):
+    @pytest.mark.parametrize(
+        "repo_or_project",
+        [
+            "example/backend",
+            "https://github.com/EXAMPLE/Backend.git",
+            "git@github.com:Example/Backend.git",
+        ],
+    )
+    def test_import_issue_targets_matching_repository_on_multi_repo_board(
+        self, repo_or_project
+    ):
         board = create_board(
             BoardCreate(
                 slug="multi-repo-board",
@@ -528,10 +538,11 @@ class TestImporterIdempotencyAndDeterminism:
             id="44",
             key="#44",
             title="Backend issue",
-            repo_or_project="example/backend",
+            repo_or_project=repo_or_project,
         )
 
-        result = import_external_issue(issue, board_slug=board["slug"])
+        result = import_external_issue(issue)
+        assert result["board_slug"] == board["slug"]
 
         with sqlite3.connect(str(self.db_path)) as conn:
             row = conn.execute(

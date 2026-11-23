@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 
 if os.name == "nt":
@@ -19,6 +18,11 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+
+try:
+    from ..git_url import parse_git_url
+except (ImportError, ValueError):
+    from git_url import parse_git_url
 
 from .config import (
     DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
@@ -884,12 +888,6 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                     pass
 
 
-_ZF_GITHUB_GIT_URL_RE = re.compile(
-    r"^(?:git\+)?https?://(?:[^@/]+@)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$"
-)
-_ZF_GITHUB_SSH_URL_RE = re.compile(r"^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$")
-
-
 def _zf_board_git_url(cursor: "sqlite3.Cursor | None", board_slug: str | None) -> str:
     """Best-effort board git_url used as owner/repo fallback for issue comments."""
     if not board_slug or cursor is None:
@@ -919,16 +917,8 @@ def _zf_board_owner_repo(
     git_url = _zf_board_git_url(cursor, board_slug).strip()
     if not git_url:
         return ""
-    match = _ZF_GITHUB_GIT_URL_RE.match(git_url)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
-    match = _ZF_GITHUB_SSH_URL_RE.match(git_url)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
-    parts = git_url.rstrip("/").split("/")
-    if len(parts) >= 2:
-        return f"{parts[-2]}/{parts[-1]}"
-    return ""
+    owner, repo, _ = parse_git_url(git_url)
+    return f"{owner}/{repo}" if owner and repo else ""
 
 
 def _zf_issue_has_pr_marker(issue_id: str, target_repo: str, marker: str) -> bool:
