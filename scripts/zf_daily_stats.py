@@ -83,7 +83,15 @@ def run_daily_stats() -> int:
 
             # Completed in last 24h
             cursor.execute(
-                "SELECT id, title, assignee, board_slug, updated_at FROM tasks WHERE status = 'done' AND updated_at >= ? ORDER BY updated_at DESC",
+                """
+                SELECT t.id, t.title, t.assignee, t.board_slug, a.created_at AS completed_at
+                FROM task_activity a
+                JOIN tasks t ON t.id = a.task_id
+                WHERE a.action = 'status_change'
+                  AND a.details LIKE '% -> done'
+                  AND a.created_at >= ?
+                ORDER BY a.created_at DESC
+                """,
                 (one_day_ago,),
             )
             completed_24h = [dict(r) for r in cursor.fetchall()]
