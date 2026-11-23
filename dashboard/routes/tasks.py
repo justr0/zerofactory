@@ -115,10 +115,9 @@ except (ImportError, ValueError):
     from settings import DEFAULT_IDLE_SCAN_MAX_TODO, load_settings  # type: ignore
 
 try:
-    from paths import ZEROFACTORY_REPO, ZEROFACTORY_ISSUES_URL
+    from paths import ZEROFACTORY_REPO
 except (ImportError, ValueError):
     ZEROFACTORY_REPO = "hotcode-dev/zerofactory"
-    ZEROFACTORY_ISSUES_URL = f"https://github.com/{ZEROFACTORY_REPO}/issues"
 
 _log = logging.getLogger(__name__)
 
