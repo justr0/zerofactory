@@ -38,6 +38,15 @@ class TestExternalIssueModel:
         assert issue_gh.to_task_id("hotcode-dev-zerofactory") == "zf-hdz-gh42"
         assert issue_gh.to_task_id(None) == "zf-gh42"
 
+    def test_legacy_task_id_is_preserved(self):
+        issue_a = ExternalIssue(
+            source="github", id="42", key="#42", title="Issue", repo_or_project="org/a"
+        )
+        issue_b = ExternalIssue(
+            source="github", id="42", key="#42", title="Issue", repo_or_project="org/b"
+        )
+        assert issue_a.to_task_id("shared-board") == issue_b.to_task_id("shared-board")
+
     def test_priority_inference(self):
         p0_issue = ExternalIssue(
             source="github", id="1", key="#1", title="Crash", labels=["bug", "critical"]
@@ -411,6 +420,73 @@ class TestImporterIdempotencyAndDeterminism:
             assert meta["external_issue"]["key"] == "#42"
             assert meta["external_issue"]["issue_type"] == "bug"
             assert meta["dedup_key"] == issue.to_dedup_key()
+
+    def test_same_issue_number_in_different_repositories(self):
+        board = create_board(
+            BoardCreate(
+                slug="issue-collision-board",
+                repositories=[
+                    BoardRepoCreate(
+                        repo_alias="first",
+                        git_url="https://github.com/hotcode-dev/zerofactory.git",
+                    ),
+                    BoardRepoCreate(
+                        repo_alias="second",
+                        git_url="https://github.com/hotcode-dev/other-repo.git",
+                    ),
+                ],
+            )
+        )
+
+        def issue(repo):
+            return ExternalIssue(
+                source="github",
+                id="42",
+                key="#42",
+                title="Same numbered issue",
+                url=f"https://github.com/{repo}/issues/42",
+                repo_or_project=repo,
+            )
+
+        first_issue = issue("hotcode-dev/zerofactory")
+        second_issue = issue("hotcode-dev/other-repo")
+        first = import_external_issue(first_issue, board_slug=board["slug"])
+        second = import_external_issue(second_issue, board_slug=board["slug"])
+
+        assert first["ok"] and not first["duplicate"]
+        assert second["ok"] and not second["duplicate"]
+        assert first["id"] != second["id"]
+
+        first_again = import_external_issue(first_issue, board_slug=board["slug"])
+        second_again = import_external_issue(second_issue, board_slug=board["slug"])
+        assert first_again["duplicate"] and first_again["id"] == first["id"]
+        assert second_again["duplicate"] and second_again["id"] == second["id"]
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id FROM tasks WHERE id IN (?, ?)", (first["id"], second["id"])
+            ).fetchall()
+        assert len(rows) == 2
+
+    def test_reimport_terminal_legacy_issue_returns_existing_task(self):
+        issue = ExternalIssue(
+            source="github",
+            id="46",
+            key="#46",
+            title="Previously imported issue",
+            repo_or_project="hotcode-dev/zerofactory",
+        )
+        original = import_external_issue(issue, board_slug=self.board_slug)
+        assert original["id"] == issue.to_task_id(self.board_slug)
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?", (original["id"],)
+            )
+
+        repeated = import_external_issue(issue, board_slug=self.board_slug)
+        assert repeated["duplicate"]
+        assert repeated["id"] == original["id"]
 
     def test_import_feature_issue(self):
         issue = ExternalIssue(
