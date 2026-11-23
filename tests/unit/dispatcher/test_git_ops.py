@@ -149,6 +149,33 @@ def test_get_default_branch_origin_master_showref():
         assert get_default_branch(Path("/tmp/fake_repo")) == "master"
 
 
+def test_get_default_branch_prefers_remote_to_local():
+    rec = _ProcRecorder(
+        {
+            ("git", "symbolic-ref", "refs/remotes/origin/HEAD"): _proc_result(1, ""),
+            (
+                "git",
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/main",
+            ): _proc_result(1, ""),
+            (
+                "git",
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/master",
+            ): _proc_result(0, ""),
+            ("git", "show-ref", "--verify", "--quiet", "refs/heads/main"): _proc_result(
+                0, ""
+            ),
+        }
+    )
+    with patch("dispatcher.git_ops.subprocess.run", new=rec):
+        assert get_default_branch(Path("/tmp/fake_repo")) == "master"
+
+
 def test_get_default_branch_fallback_main():
     rec = _ProcRecorder(
         {
