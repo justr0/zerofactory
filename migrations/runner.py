@@ -205,9 +205,32 @@ def run_migrations(
     applied_now: List[str] = []
 
     try:
+        has_migration_history = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone()
+            is not None
+        )
+        has_existing_tasks = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+            ).fetchone()
+            is not None
+        )
         ensure_migration_table(conn)
         applied = get_applied_migrations(conn)
         available = get_available_migrations(migrations_dir)
+
+        # Older databases predate migration tracking. Their existing task tables
+        # are the baseline schema; do not replay the initial schema migration.
+        if not has_migration_history and has_existing_tasks and available:
+            baseline = available[0].stem
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (baseline, int(time.time())),
+                )
+            applied[baseline] = int(time.time())
 
         for p in available:
             version = p.stem
