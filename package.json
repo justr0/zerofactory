@@ -4,7 +4,7 @@
   "private": true,
   "description": "Build tooling for the Zero Factory dashboard stylesheet. `npm install` then `node dashboard/build_css.mjs` regenerates dashboard/dist/style.css (Tailwind CSS v4) portably — no machine-specific paths.",
   "scripts": {
-    "build": "vite build && node dashboard/build_css.mjs",
+    "build": "vite build && vite build --config vite.standalone.config.mjs && node dashboard/build_css.mjs",
     "build:js": "vite build",
     "build:css": "node dashboard/build_css.mjs",
     "dev": "vite build --watch"
