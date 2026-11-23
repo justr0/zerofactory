@@ -33,6 +33,43 @@ def test_create_and_list_boards(api_client: TestClient):
     assert matching[0]["max_concurrent_running"] == 2
 
 
+def test_board_list_and_detail_share_response_fields(api_client: TestClient):
+    created = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={
+            "git_url": "https://github.com/example/api.git",
+            "target_branch": "release",
+        },
+    )
+    slug = created.json()["slug"]
+
+    def responses():
+        boards = api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
+        return next(b for b in boards if b["slug"] == slug), api_client.get(
+            f"/api/plugins/zerofactory/boards/{slug}"
+        ).json()["board"]
+
+    listed, detail = responses()
+    assert listed == detail and (
+        listed["git_url"],
+        listed["target_branch"],
+        len(listed["repositories"]),
+    ) == ("https://github.com/example/api.git", "release", 1)
+    assert (
+        api_client.delete(
+            f"/api/plugins/zerofactory/boards/{slug}/repositories/api"
+        ).status_code
+        == 200
+    )
+    listed, detail = responses()
+    assert listed == detail and (
+        listed["repositories"],
+        listed["git_url"],
+        listed["target_branch"],
+        listed["additional_reviewer_usernames"],
+    ) == ([], "", "main", [])
+
+
 def test_create_board_rejects_unsafe_slug_and_preserves_custom_slug(
     api_client: TestClient,
 ):
