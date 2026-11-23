@@ -1,6 +1,7 @@
 """Unit tests for deterministic precommit runner and failure handling in dispatcher."""
 
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -9,6 +10,23 @@ from dispatcher.worktree import (
     _handle_precommit_failure,
     run_deterministic_precommit,
 )
+
+
+def test_precommit_script_rejects_unsupported_phase():
+    """An invalid phase prints usage and exits before running any checks."""
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / ".zerofactory" / "precommit.sh"
+
+    result = subprocess.run(
+        ["bash", str(script), "formatty"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Usage:" in result.stderr
+    assert "▶ Zero Factory precommit:" not in result.stdout
 
 
 def test_run_precommit_missing_script(tmp_path: Path):

@@ -141,14 +141,18 @@ install_hook() {
 }
 
 case "${1:-all}" in
+  all)
+    run_format
+    run_build
+    run_test
+    ;;
   format)       run_format ;;
   build)        run_build ;;
   test)         run_test ;;
   install-hook) install_hook ;;
-  all|*)
-    run_format
-    run_build
-    run_test
+  *)
+    echo "Usage: $0 [all|format|build|test|install-hook]" >&2
+    exit 2
     ;;
 esac
 
