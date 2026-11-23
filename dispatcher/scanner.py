@@ -213,6 +213,13 @@ def get_scanner_cron_config(board_slug: str, cursor: Any = None) -> dict[str, An
 
 def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int | None:
     """Spawn an improvement scanner agent worker process for a specific board."""
+    if not repo_path or not repo_path.is_dir():
+        _log.warning(
+            "Skipping idle improvement scan for board '%s': repository path is unavailable",
+            board_slug,
+        )
+        return None
+
     if os.environ.get("ZEROFACTORY_SKIP_WORKER_SPAWN") or os.environ.get(
         "ZEROFACTORY_SKIP_SCANNER_SPAWN"
     ):
@@ -271,17 +278,16 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         }
     )
 
-    workdir = str(repo_path) if repo_path and repo_path.exists() else os.getcwd()
+    workdir = str(repo_path)
 
-    if repo_path and repo_path.is_dir():
-        try:
-            sync_repo_main(repo_path)
-        except Exception as e:
-            _log.debug(
-                "Auto-pull before idle scanner spawn failed for '%s': %s",
-                board_slug,
-                e,
-            )
+    try:
+        sync_repo_main(repo_path)
+    except Exception as e:
+        _log.debug(
+            "Auto-pull before idle scanner spawn failed for '%s': %s",
+            board_slug,
+            e,
+        )
 
     try:
         log_f = open(log_file_path, "ab")
