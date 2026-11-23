@@ -7,6 +7,8 @@ from dashboard.models import (
     MEMORY_CONTENT_MAX_LENGTH,
     VALID_STATUSES,
     BoardCreate,
+    BoardRepoCreate,
+    BoardTestClone,
     BoardUpdate,
     MemoryCreate,
     SettingsUpdate,
@@ -28,6 +30,12 @@ def test_board_create_validation():
     assert b.target_branch == "develop"
     assert b.max_concurrent_running == 2
     assert b.automerge is True
+    assert (
+        BoardCreate(
+            git_url="https://github.com/owner/repo.git", slug="custom_board.1"
+        ).slug
+        == "custom_board.1"
+    )
 
     # Empty git_url fails
     with pytest.raises(ValidationError):
@@ -38,6 +46,22 @@ def test_board_create_validation():
         BoardCreate(
             git_url="https://github.com/owner/repo.git", max_concurrent_running=0
         )
+
+
+@pytest.mark.parametrize("slug", ["../escape", "a/b", "a\\b", ".."])
+def test_board_path_components_reject_traversal(slug):
+    with pytest.raises(ValidationError):
+        BoardCreate(git_url="https://github.com/owner/repo.git", slug=slug)
+    with pytest.raises(ValidationError):
+        BoardTestClone(git_url="https://github.com/owner/repo.git", slug=slug)
+
+
+@pytest.mark.parametrize("alias", ["../escape", "a/b", "a\\b", ".."])
+def test_repo_alias_rejects_path_traversal(alias):
+    with pytest.raises(ValidationError):
+        BoardRepoCreate(repo_alias=alias, git_url="https://github.com/owner/repo.git")
+    with pytest.raises(ValidationError):
+        BoardTestClone(git_url="https://github.com/owner/repo.git", repo_alias=alias)
 
 
 def test_task_create_validation():
