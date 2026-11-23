@@ -57,6 +57,18 @@ def _find_checked_out_worktree(repo_path: Path, branch_name: str) -> Path | None
     return None
 
 
+def _get_board_repos_dir(board_slug: str) -> Path:
+    """Return a board's repository directory across package and flat imports."""
+    try:
+        from paths import get_board_repos_dir  # type: ignore
+    except Exception:
+        try:
+            from ..paths import get_board_repos_dir  # type: ignore
+        except Exception:
+            return Path.home() / ".zerofactory" / "workspaces" / board_slug / "repos"
+    return get_board_repos_dir(board_slug)
+
+
 def resolve_board_repo_path(board: dict[str, Any]) -> Path | None:
     """Resolve the local repository path for a given Kanban board."""
     slug = (board.get("slug") or "").strip()
@@ -95,19 +107,9 @@ def resolve_board_repo_path(board: dict[str, Any]) -> Path | None:
         except Exception:
             pass
 
-    try:
-        from paths import get_board_repos_dir  # type: ignore
-    except Exception:
-        try:
-            from ..paths import get_board_repos_dir  # type: ignore
-        except Exception:
-            get_board_repos_dir = lambda b: (  # type: ignore
-                Path.home() / ".zerofactory" / "workspaces" / b / "repos"
-            )
-
     candidates: list[Path] = []
     if slug:
-        board_repos_dir = get_board_repos_dir(slug)
+        board_repos_dir = _get_board_repos_dir(slug)
         for cname in candidate_names:
             candidates.append(board_repos_dir / cname)
 
@@ -182,18 +184,8 @@ def resolve_task_repo_path(
                 ):
                     return resolved_r
 
-                try:
-                    from paths import get_board_repos_dir  # type: ignore
-                except Exception:
-                    try:
-                        from ..paths import get_board_repos_dir  # type: ignore
-                    except Exception:
-                        get_board_repos_dir = lambda b: (
-                            Path.home() / ".zerofactory" / "workspaces" / b / "repos"
-                        )  # type: ignore
-
                 if board_slug and alias:
-                    w_repo = get_board_repos_dir(board_slug) / alias
+                    w_repo = _get_board_repos_dir(board_slug) / alias
                     if w_repo.exists() and (w_repo / ".git").exists():
                         return w_repo
         except Exception:
@@ -207,16 +199,7 @@ def resolve_task_repo_path(
 
     # 3. Check ~/.zerofactory/workspaces/<board_slug>/repos if board_slug provided
     if board_slug:
-        try:
-            from paths import get_board_repos_dir  # type: ignore
-        except Exception:
-            try:
-                from ..paths import get_board_repos_dir  # type: ignore
-            except Exception:
-                get_board_repos_dir = lambda b: (
-                    Path.home() / ".zerofactory" / "workspaces" / b / "repos"
-                )  # type: ignore
-        b_repos = get_board_repos_dir(board_slug)
+        b_repos = _get_board_repos_dir(board_slug)
         if repo_alias:
             w_repo = b_repos / repo_alias
             if w_repo.is_dir() and (w_repo / ".git").exists():
