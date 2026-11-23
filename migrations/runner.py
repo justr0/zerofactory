@@ -93,11 +93,29 @@ def get_migration_status(
     if conn is None:
         if db_path is None:
             db_path = _resolve_default_db_path()
-        conn = sqlite3.connect(str(db_path))
+        db_path = Path(db_path)
+        if not db_path.exists():
+            conn = None
+        else:
+            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
         should_close = True
 
     try:
-        applied = get_applied_migrations(conn)
+        has_tracking_table = (
+            conn is not None
+            and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone()
+            is not None
+        )
+        if has_tracking_table and conn:
+            applied = dict(
+                conn.execute(
+                    "SELECT version, applied_at FROM schema_migrations ORDER BY version ASC"
+                ).fetchall()
+            )
+        else:
+            applied = {}
         available = get_available_migrations(migrations_dir)
         status: List[Dict[str, Any]] = []
 
