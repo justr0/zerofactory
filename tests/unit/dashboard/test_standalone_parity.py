@@ -101,6 +101,7 @@ def test_standalone_ui_wires_every_management_surface(initialized_db, default_bo
             "description": "Exercise the live API",
             "priority": "P2",
             "assignee": "zf-builder",
+            "status": "todo",
             "board_slug": default_board,
             "labels": ["standalone"],
         },
@@ -109,6 +110,10 @@ def test_standalone_ui_wires_every_management_surface(initialized_db, default_bo
     task = created.json()
     task_id = task["id"]
     assert client.get(f"{api}/tasks").status_code == 200
+    created_detail = client.get(f"{api}/tasks/{task_id}").json()["task"]
+    assert created_detail["description"] == "Exercise the live API"
+    assert created_detail["priority"] == "P2"
+    assert created_detail["assignee"] == "zf-builder"
     assert (
         client.get(f"{api}/tasks/{task_id}").json()["task"]["title"]
         == "Standalone parity"
@@ -123,9 +128,35 @@ def test_standalone_ui_wires_every_management_surface(initialized_db, default_bo
         ).status_code
         == 200
     )
-    assert client.get(f"{api}/tasks/{task_id}/comments").status_code == 200
+    comments = client.get(f"{api}/tasks/{task_id}/comments")
+    assert comments.status_code == 200
+    assert any(
+        comment["body"] == "API wiring verified"
+        for comment in comments.json()["comments"]
+    )
     moved = client.post(f"{api}/tasks/{task_id}/move", json={"status": "todo"})
     assert moved.status_code == 200, moved.text
+    updated = client.patch(
+        f"{api}/tasks/{task_id}",
+        json={"description": "Updated from standalone", "priority": "P1"},
+    )
+    assert updated.status_code == 200, updated.text
+    detail = client.get(f"{api}/tasks/{task_id}").json()
+    assert detail["task"]["description"] == "Updated from standalone"
+    assert detail["task"]["priority"] == "P1"
+    assert detail["task"]["activity"]
+
+    # Exercise the guidance and reason payloads used by task lifecycle controls.
+    recovered = client.post(
+        f"{api}/tasks/{task_id}/recover", json={"guidance": "Retry after review"}
+    )
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["status"] == "todo"
+    blocked = client.post(
+        f"{api}/tasks/{task_id}/move",
+        json={"status": "blocked", "reason": "Needs operator input"},
+    )
+    assert blocked.status_code == 200, blocked.text
 
     # Exercise representative read surfaces using the same live board database.
     for endpoint in (
@@ -151,8 +182,13 @@ def test_standalone_legacy_root_tasks_contract_and_static_assets():
     from dashboard.standalone import app
 
     client = TestClient(app)
-    assert client.get("/").status_code == 200
-    assert client.get("/tasks").status_code == 404
+    root = client.get("/")
+    assert root.status_code == 200
+    assert 'id="root"' in root.text
+    # Keep the historical standalone path response unchanged (API is namespaced).
+    legacy_tasks = client.get("/tasks")
+    assert legacy_tasks.status_code == 404
+    assert legacy_tasks.json() == {"detail": "Not Found"}
     for asset in ("app.js", "style.css"):
         response = client.get(f"/assets/{asset}")
         assert response.status_code == 200
