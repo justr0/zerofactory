@@ -444,6 +444,47 @@ def test_test_clone_board_already_existing(
     assert "Already cloned" in data["message"]
 
 
+def test_test_clone_destination_stays_within_workspaces(
+    api_client: TestClient, tmp_path, monkeypatch
+):
+    workspaces = tmp_path / "workspaces"
+    monkeypatch.setattr(
+        "paths.get_board_repos_dir", lambda slug: workspaces / slug / "repos"
+    )
+    monkeypatch.setattr("paths.get_workspaces_root", lambda: workspaces)
+    monkeypatch.setattr(
+        "dashboard.routes.boards.get_repo_resolver", lambda: lambda _: None
+    )
+    monkeypatch.delenv("ZEROFACTORY_SKIP_GIT", raising=False)
+
+    def fake_subprocess_run(cmd, *args, **kwargs):
+        if cmd[1] == "clone":
+            destination = Path(cmd[-1]).resolve()
+            destination.relative_to(workspaces.resolve())
+            destination.mkdir(parents=True)
+            (destination / ".git").mkdir()
+
+        class Success:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Success()
+
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+    response = api_client.post(
+        "/api/plugins/zerofactory/boards/test-clone",
+        json={
+            "git_url": "https://github.com/example/repo.git",
+            "slug": "custom_board.1",
+            "repo_alias": "service-api",
+        },
+    )
+
+    assert response.status_code == 200
+    assert Path(response.json()["path"]).is_relative_to(workspaces.resolve())
+
+
 def test_test_clone_board_remote_failure(api_client: TestClient, tmp_path, monkeypatch):
     """When remote check fails (ls-remote error), test-clone returns 400 with exact error."""
     monkeypatch.setattr(
