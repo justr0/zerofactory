@@ -67,7 +67,7 @@ def resolve_board_for_issue(
                 f"Unknown board '{board_slug}'. Select a configured board."
             )
 
-        # 2. Try matching repo_or_project to git_url, repo_alias, or slug in boards
+        # 2. Prefer exact normalized repository identity across every linked repo.
         if repo_or_project:
             cursor.execute(
                 "SELECT b.slug, br.git_url, br.repo_alias FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug ORDER BY b.created_at ASC"
@@ -79,26 +79,21 @@ def resolve_board_for_issue(
                 if git_url and _repo_identity(git_url) == issue_identity:
                     return str(row["slug"])
 
-            # Preserve historical alias/slug/substring discovery for unlinked repos.
+            # Lower-precedence legacy fallback for aliases and board slugs when
+            # no linked repository has the exact normalized identity.
             for row in rows:
                 row_dict = dict(row)
                 slug = str(row_dict.get("slug") or "")
-                git_url = str(row_dict.get("git_url") or "")
                 repo_alias = str(row_dict.get("repo_alias") or "")
                 if repo_alias and repo_or_project.lower() in repo_alias.lower():
                     return slug
-                # Normalize git_url (strip .git, protocol)
-                cleaned_git = re.sub(r"\.git$", "", git_url).strip().rstrip("/")
-                if cleaned_git and repo_or_project.lower() in cleaned_git.lower():
-                    return slug
-                # Check slug match
                 norm_repo_slug = (
                     re.sub(r"[^a-zA-Z0-9]+", "-", repo_or_project).strip("-").lower()
                 )
                 if norm_repo_slug in slug.lower():
                     return slug
 
-        # 3. Try matching current working directory git remote
+        # 4. Try matching current working directory git remote
         try:
             cwd_remote = subprocess.run(
                 ["git", "remote", "get-url", "origin"],
@@ -126,7 +121,7 @@ def resolve_board_for_issue(
         except Exception:
             pass
 
-        # 4. Fallback to first available board
+        # 5. Fallback to first available board
         cursor.execute("SELECT slug FROM boards ORDER BY created_at ASC LIMIT 1")
         first_row = cursor.fetchone()
         if first_row:
