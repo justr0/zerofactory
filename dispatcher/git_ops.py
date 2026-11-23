@@ -211,7 +211,10 @@ def check_unresolved_conflicts(workspace_path: Path) -> list[str]:
             text=True,
             timeout=5,
         )
-        if res.returncode == 0 and res.stdout.strip():
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout or "").strip()
+            raise RuntimeError(detail or f"git exited with status {res.returncode}")
+        if res.stdout.strip():
             for line in res.stdout.strip().splitlines():
                 if line.strip():
                     conflicted.add(line.strip())
@@ -235,19 +238,23 @@ def check_unresolved_conflicts(workspace_path: Path) -> list[str]:
             text=True,
             timeout=5,
         )
+        if status_res.returncode != 0:
+            detail = (status_res.stderr or status_res.stdout or "").strip()
+            raise RuntimeError(
+                detail or f"git exited with status {status_res.returncode}"
+            )
         status_output = status_res.stdout
-        if status_res.returncode == 0:
-            for line in status_output.splitlines():
-                if len(line) >= 3 and line[:2] in (
-                    "UU",
-                    "AA",
-                    "UD",
-                    "DU",
-                    "DD",
-                    "AU",
-                    "UA",
-                ):
-                    conflicted.add(line[3:].strip())
+        for line in status_output.splitlines():
+            if len(line) >= 3 and line[:2] in (
+                "UU",
+                "AA",
+                "UD",
+                "DU",
+                "DD",
+                "AU",
+                "UA",
+            ):
+                conflicted.add(line[3:].strip())
     except Exception as e:
         _log.warning(
             "check_unresolved_conflicts: status-porcelain query failed for %s: %s",
