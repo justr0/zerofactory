@@ -20,7 +20,7 @@ def test_get_scanner_cron_config_falls_back_for_invalid_numeric_settings():
 
         def fetchall(self):
             return [
-                ("scan_on_idle", "true"),
+                ("scan_on_idle", " true "),
                 ("idle_scan_cooldown_minutes_board-a", "not-a-number"),
                 ("idle_scan_max_todo_board-a", "stale-value"),
             ]
@@ -30,6 +30,15 @@ def test_get_scanner_cron_config_falls_back_for_invalid_numeric_settings():
     assert config["scan_on_idle"] is True
     assert config["idle_scan_cooldown_minutes"] == DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
     assert config["idle_scan_max_todo"] == DEFAULT_IDLE_SCAN_MAX_TODO
+
+
+def test_get_scanner_cron_config_accepts_trimmed_environment_boolean(monkeypatch):
+    """Environment overrides retain whitespace-tolerant boolean parsing."""
+    monkeypatch.setenv("ZEROFACTORY_SCAN_ON_IDLE", " yes ")
+
+    config = scanner.get_scanner_cron_config("board-a", cursor=MagicMock())
+
+    assert config["scan_on_idle"] is True
 
 
 def test_get_active_scanner_pids_preserves_embedded_scanner_in_slug(tmp_path):

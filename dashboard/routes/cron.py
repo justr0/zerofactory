@@ -21,6 +21,8 @@ _DASHBOARD_ROOT = str(Path(__file__).resolve().parent.parent)
 if _DASHBOARD_ROOT not in sys.path:
     sys.path.insert(0, _DASHBOARD_ROOT)
 
+from settings import _parse_bool
+
 from fastapi import APIRouter, HTTPException
 
 try:
@@ -69,6 +71,7 @@ except Exception:
         run_dispatch_cycle = None  # type: ignore
         load_settings = None  # type: ignore
 
+
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -99,7 +102,7 @@ def _list_builtin_jobs_with_conn(conn: sqlite3.Connection) -> List[Dict[str, Any
     def _is_job_enabled(job_id: str, default: bool = True) -> bool:
         val = raw_settings.get(f"cron_enabled_{job_id}")
         if val is not None:
-            return val.strip().lower() in ("1", "true", "yes")
+            return _parse_bool(val)
         return default
 
     # 1. Core watchdog & dispatcher job
@@ -416,7 +419,7 @@ def get_builtin_cron_jobs():
                 "SELECT value FROM settings WHERE key = 'enable_cron_scheduler'"
             ).fetchone()
             if row and row[0] is not None:
-                scheduler_enabled = str(row[0]).strip().lower() in ("1", "true", "yes")
+                scheduler_enabled = _parse_bool(row[0])
     except Exception:
         pass
     return {

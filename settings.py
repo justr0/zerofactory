@@ -176,7 +176,7 @@ def _clamp_int(value: Any, lower: int) -> Any:
 
 def _parse_bool(value: Any) -> bool:
     """Parse a stored boolean ('true'/'1'/'yes' are truthy). Never raises."""
-    return str(value).lower() in ("true", "1", "yes")
+    return str(value).strip().lower() in ("true", "1", "yes")
 
 
 _INT_SETTING_MINIMUMS = {
