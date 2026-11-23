@@ -21,7 +21,11 @@ _DASHBOARD_ROOT = str(Path(__file__).resolve().parent.parent)
 if _DASHBOARD_ROOT not in sys.path:
     sys.path.insert(0, _DASHBOARD_ROOT)
 
-from settings import _parse_bool
+from settings import (
+    DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
+    DEFAULT_IDLE_SCAN_MAX_TODO,
+    _parse_bool,
+)
 
 from fastapi import APIRouter, HTTPException
 
@@ -60,8 +64,6 @@ except Exception:
         from ...dispatcher.worktree import resolve_task_repo_path
         from ...settings import load_settings
     except Exception:
-        DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES = 15
-        DEFAULT_IDLE_SCAN_MAX_TODO = 2
         _active_scanners = {}  # type: ignore
         get_active_scanner_pids = lambda: {}  # type: ignore
         kill_board_scanner = lambda slug: True  # type: ignore
