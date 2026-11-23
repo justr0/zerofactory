@@ -1141,7 +1141,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
         {
           id: "zero-factory-improvement-scanner-{slug}",
           title: "Codebase Improvement Scanner (zf-orchestrator)",
-          interval: "On Idle (Active < 2)",
+          interval: "On Idle (Configured Capacity Gate)",
           tokens: "0 Tokens when Busy / Cooldown",
           desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
           badge: "Dispatcher-Gated • zf-orchestrator"
