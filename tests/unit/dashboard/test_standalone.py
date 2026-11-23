@@ -17,8 +17,29 @@ def test_standalone_serves_local_dashboard_assets():
     assert "createRoot" in script.text
     assert "/api/plugins/zerofactory" in script.text
     assert "https://" not in page.text
+    assert "cdn." not in page.text.lower()
     assert styles.status_code == 200
     assert styles.headers["content-type"].startswith("text/css")
+
+    # The standalone bundle ships the same management surfaces as the plugin UI.
+    for route in (
+        "/tasks",
+        "/boards",
+        "/boards/test-clone",
+        "/dispatch/run",
+        "/settings/langfuse/test",
+        "/settings/profiles/sync",
+        "/cron",
+        "/memories/",
+        "/sessions/",
+        "/approve",
+        "/reject",
+        "/recover",
+        "/split",
+        "/report-bug",
+        "/comments",
+    ):
+        assert route in script.text
 
 
 def test_standalone_health_controls_use_existing_api_routes():
