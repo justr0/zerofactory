@@ -489,7 +489,6 @@ def check_openwiki_gate(
         # Evaluate all linked repositories on this board
         reasons = []
         any_wake = False
-        tasks_created = 0
 
         for r in board_repos:
             alias = r["repo_alias"]
@@ -507,8 +506,6 @@ def check_openwiki_gate(
             reasons.append(f"[{alias}] {reason}")
             if wake:
                 any_wake = True
-            if "created task" in reason:
-                tasks_created += 1
 
         summary = (
             "\n".join(reasons)
