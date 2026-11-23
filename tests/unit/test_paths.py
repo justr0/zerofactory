@@ -35,6 +35,15 @@ class TestPathsResolution(unittest.TestCase):
         p.touch(exist_ok=True)
         return p
 
+    def test_resolve_local_git_checkout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            (checkout / ".git").mkdir()
+            self.assertEqual(P.resolve_local_git_checkout(checkout), checkout.resolve())
+            self.assertIsNone(P.resolve_local_git_checkout(root))
+
     @contextlib.contextmanager
     def _with_fake_home(self, home_root: Path, plugin_root):
         """Redirect paths.Path.home to home_root and the plugin-relative root
