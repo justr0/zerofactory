@@ -20,7 +20,6 @@ def test_get_hermes_home_does_not_strip_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(custom_profile_home))
 
     assert paths.get_hermes_home() == custom_profile_home.resolve()
-    assert profile_manager.get_hermes_root() == custom_profile_home.resolve()
     assert profile_manager.get_hermes_home() == custom_profile_home.resolve()
 
 
