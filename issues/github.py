@@ -117,9 +117,7 @@ class GitHubIssueClient:
         except Exception:
             return False
 
-    def fetch_issue(
-        self, issue_ref: str, repo: str | None = None, **kwargs: Any
-    ) -> ExternalIssue:
+    def fetch_issue(self, issue_ref: str, repo: str | None = None) -> ExternalIssue:
         """Fetch an issue from GitHub and normalize it to ExternalIssue."""
         target_repo = repo or self.default_repo
         effective_repo, issue_num = parse_github_issue_ref(
