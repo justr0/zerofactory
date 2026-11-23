@@ -1,5 +1,6 @@
 """Unit tests for Zero Factory external issue tracker integration (GitHub)."""
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -34,8 +35,21 @@ class TestExternalIssueModel:
             repo_or_project="hotcode-dev/zerofactory",
         )
         # Board code for "hotcode-dev-zerofactory" -> "hdz"
-        assert issue_gh.to_task_id("hotcode-dev-zerofactory") == "zf-hdz-gh42"
-        assert issue_gh.to_task_id(None) == "zf-gh42"
+        assert issue_gh.to_task_id("hotcode-dev-zerofactory") == (
+            f"zf-hdz-gh42-{hashlib.sha256(b'hotcode-dev/zerofactory').hexdigest()[:8]}"
+        )
+        assert issue_gh.to_task_id(None) == (
+            f"zf-gh42-{hashlib.sha256(b'hotcode-dev/zerofactory').hexdigest()[:8]}"
+        )
+
+    def test_task_id_is_repository_specific(self):
+        issue_a = ExternalIssue(
+            source="github", id="42", key="#42", title="Issue", repo_or_project="org/a"
+        )
+        issue_b = ExternalIssue(
+            source="github", id="42", key="#42", title="Issue", repo_or_project="org/b"
+        )
+        assert issue_a.to_task_id("shared-board") != issue_b.to_task_id("shared-board")
 
     def test_priority_inference(self):
         p0_issue = ExternalIssue(
@@ -360,6 +374,37 @@ class TestImporterIdempotencyAndDeterminism:
             assert meta["external_issue"]["key"] == "#42"
             assert meta["external_issue"]["issue_type"] == "bug"
             assert meta["dedup_key"] == issue.to_dedup_key()
+
+    def test_same_issue_number_in_different_repositories(self):
+        def issue(repo):
+            return ExternalIssue(
+                source="github",
+                id="42",
+                key="#42",
+                title="Same numbered issue",
+                url=f"https://github.com/{repo}/issues/42",
+                repo_or_project=repo,
+            )
+
+        first_issue = issue("hotcode-dev/zerofactory")
+        second_issue = issue("hotcode-dev/other-repo")
+        first = import_external_issue(first_issue, board_slug=self.board_slug)
+        second = import_external_issue(second_issue, board_slug=self.board_slug)
+
+        assert first["ok"] and not first["duplicate"]
+        assert second["ok"] and not second["duplicate"]
+        assert first["id"] != second["id"]
+
+        first_again = import_external_issue(first_issue, board_slug=self.board_slug)
+        second_again = import_external_issue(second_issue, board_slug=self.board_slug)
+        assert first_again["duplicate"] and first_again["id"] == first["id"]
+        assert second_again["duplicate"] and second_again["id"] == second["id"]
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id FROM tasks WHERE id IN (?, ?)", (first["id"], second["id"])
+            ).fetchall()
+        assert len(rows) == 2
 
     def test_import_feature_issue(self):
         issue = ExternalIssue(
