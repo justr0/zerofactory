@@ -180,6 +180,12 @@ def test_process_matches_identity_preserves_non_proc_fallback():
         assert process_matches_identity(1234, "scanner_board-a") is True
 
 
+def test_process_matches_identity_rejects_inaccessible_procfs():
+    """An error checking procfs must not be mistaken for an absent procfs."""
+    with patch("dispatcher.process_manager.Path.is_dir", side_effect=PermissionError):
+        assert process_matches_identity(1234, "scanner_board-a") is False
+
+
 def test_process_matches_identity_rejects_unavailable_proc_command_line():
     """Missing, empty, or unreadable per-PID cmdline data fails closed."""
     with (

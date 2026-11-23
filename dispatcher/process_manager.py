@@ -127,8 +127,8 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
                     # Keep best-effort behavior on platforms without procfs.
                     return True
             except OSError:
-                # Procfs itself is unavailable; retain the legacy fallback.
-                return True
+                # An inaccessible procfs does not establish that it is absent.
+                return False
             cmdline_path = Path(f"/proc/{pid}/cmdline")
             cmd_data = cmdline_path.read_bytes()
             if not cmd_data:
