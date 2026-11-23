@@ -172,6 +172,7 @@ def create_board_memory(slug: str, req: MemoryCreate):
                     "author": author,
                     "tags": req.tags or [],
                 },
+                infer=False,
             )
     except Exception as _me:
         _log.debug("Mem0 memory index failed: %s", _me)

@@ -254,6 +254,30 @@ class TestPathsResolution(unittest.TestCase):
             self.assertEqual(stage, exp_stage)
             self.assertEqual(P.derive_ui_column(status, stage), exp_col)
 
+    def test_task_metadata_coercion_for_assignee_and_stage(self):
+        """Both task helpers accept object metadata and ignore invalid/non-object JSON."""
+        for metadata, expected_assignee, expected_stage in (
+            ({"triage_phase": "recovery"}, "zf-orchestrator", "recovery"),
+            ('{"triage_phase":"recovery"}', "zf-orchestrator", "recovery"),
+            ("{invalid", "zf-builder", "grill"),
+            ("[]", "zf-builder", "grill"),
+            ("", "zf-builder", "grill"),
+        ):
+            with self.subTest(metadata=metadata):
+                self.assertEqual(
+                    P.resolve_status_assignee(
+                        "todo", target_assignee="zf-orchestrator", metadata=metadata
+                    ),
+                    expected_assignee,
+                )
+                self.assertEqual(
+                    P.derive_task_stage("todo", "zf-orchestrator", metadata=metadata),
+                    expected_stage,
+                )
+        self.assertEqual(
+            P.derive_task_stage("done", "zf-builder", metadata="{invalid"), "done"
+        )
+
     def test_dispatcher_and_dashboard_agree(self):
         """The dispatcher's spawn-path resolver and dashboard's get_profile_state_db agree."""
         with tempfile.TemporaryDirectory() as td:
@@ -341,7 +365,6 @@ class TestPathsResolution(unittest.TestCase):
         import os
         import dispatcher.config as disp_cfg
         import migrations.runner as mig_runner
-        import scripts.zf_daily_stats as daily_stats
         import scripts.zf_openwiki_gate as ow_gate
         import dashboard.routes.stats as stats_route
 
@@ -356,12 +379,11 @@ class TestPathsResolution(unittest.TestCase):
                 expected_db = hermes_home.resolve() / "zerofactory.db"
                 self.assertEqual(disp_cfg.get_db_path(), expected_db)
                 self.assertEqual(mig_runner._resolve_default_db_path(), expected_db)
-                self.assertEqual(ow_gate._get_db_path(), expected_db)
+                self.assertEqual(P.get_zerofactory_db_path(), expected_db)
                 self.assertEqual(
                     ow_gate._get_state_file(),
                     hermes_home.resolve() / "openwiki_state.json",
                 )
-                self.assertEqual(daily_stats._get_db_path(), expected_db)
                 self.assertEqual(
                     stats_route._get_orchestrator_executions_db_path(),
                     str(

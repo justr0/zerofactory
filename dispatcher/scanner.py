@@ -259,6 +259,7 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         {
             "HERMES_PROFILE": "zf-orchestrator",
             "ZEROFACTORY_IDLE_SCAN": "1",
+            "ZEROFACTORY_IDLE_SCAN_BOARD": board_slug,
             "ZEROFACTORY_DISABLE_DISPATCHER": "1",
         }
     )
