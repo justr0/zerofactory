@@ -310,7 +310,10 @@ def create_task(req: TaskCreate):
         if board_slug and board_slug != "all":
             cursor.execute("SELECT slug FROM boards WHERE slug = ?", (board_slug,))
             if not cursor.fetchone():
-                board_slug = None
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown board '{board_slug}'. Select a configured board.",
+                )
         else:
             board_slug = None
         if not board_slug:
