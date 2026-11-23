@@ -307,6 +307,16 @@ class TestOpenWikiGate(unittest.TestCase):
                 self.assertIn("created task", reason)
                 self.assertIn("for zf-builder", reason)
 
+    def test_resolve_repo_path_uses_repository_name_from_git_url(self):
+        repo_dir = self.tmp / "widgets"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        with patch("paths.get_board_repos_dir", return_value=self.tmp):
+            resolved = self.gate.resolve_repo_path(
+                "team-board", "widget-service", "https://github.com/team/widgets.git/"
+            )
+        self.assertEqual(resolved, repo_dir.resolve())
+
     def test_multi_repo_openwiki_gate_evaluates_all_repos(self):
         repo_api = self.tmp / "api"
         repo_worker = self.tmp / "worker"

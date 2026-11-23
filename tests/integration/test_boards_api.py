@@ -1,6 +1,7 @@
 """Integration tests for Board API endpoints (/api/plugins/zerofactory/boards)."""
 
 import subprocess
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -30,6 +31,46 @@ def test_create_and_list_boards(api_client: TestClient):
     assert len(matching) == 1
     assert matching[0]["target_branch"] == "main"
     assert matching[0]["max_concurrent_running"] == 2
+
+
+def test_create_board_rejects_unsafe_slug_and_preserves_custom_slug(
+    api_client: TestClient,
+):
+    for slug in ("../escape", "a/b", "a\\b", " .. ", " . "):
+        response = api_client.post(
+            "/api/plugins/zerofactory/boards",
+            json={"git_url": "https://github.com/example/repo.git", "slug": slug},
+        )
+        assert response.status_code == 422
+
+    response = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={
+            "git_url": "https://github.com/example/repo.git",
+            "slug": "custom_board.1",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["slug"] == "custom_board.1"
+
+
+def test_test_clone_rejects_unsafe_components_before_git_or_filesystem(
+    api_client: TestClient, monkeypatch
+):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("unsafe clone input reached filesystem or Git operation")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    monkeypatch.setattr("dashboard.routes.boards.get_repo_resolver", unexpected)
+    monkeypatch.setattr("paths.get_board_repos_dir", unexpected)
+    monkeypatch.setattr("paths.get_workspaces_root", unexpected)
+    for component in ("../escape", "a/b", "a\\b", " .. ", " . "):
+        for key in ("slug", "repo_alias"):
+            response = api_client.post(
+                "/api/plugins/zerofactory/boards/test-clone",
+                json={"git_url": "https://github.com/example/repo.git", key: component},
+            )
+            assert response.status_code == 422
 
 
 def test_update_board(api_client: TestClient):
@@ -74,6 +115,50 @@ def test_delete_board(api_client: TestClient):
     # Should no longer be present
     boards = api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
     assert not any(b["slug"] == "delete-org-repo-del" for b in boards)
+
+
+def test_delete_board_cleans_up_scanner(api_client: TestClient, monkeypatch):
+    """Deleting a board terminates its scanner and removes scanner settings."""
+    from dashboard.db import get_db_conn
+    from dashboard.routes import cron as cron_routes
+
+    monkeypatch.delenv("ZEROFACTORY_SKIP_CRON_SYNC", raising=False)
+    slug = "delete-scanner-board"
+    api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"git_url": "https://github.com/delete-scanner/board.git", "slug": slug},
+    )
+    scanner_job_id = f"zero-factory-improvement-scanner-{slug}"
+    with get_db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, 0)",
+            [
+                (f"cron_enabled_{scanner_job_id}", "true"),
+                (f"scan_on_idle_{slug}", "true"),
+                (f"idle_scan_cooldown_minutes_{slug}", "30"),
+                (f"idle_scan_max_todo_{slug}", "5"),
+            ],
+        )
+    killed = []
+    monkeypatch.setattr(
+        cron_routes, "kill_board_scanner", lambda board: killed.append(board)
+    )
+
+    response = api_client.delete(f"/api/plugins/zerofactory/boards/{slug}")
+
+    assert response.status_code == 200
+    assert killed == [slug]
+    with get_db_conn() as conn:
+        remaining = conn.execute(
+            "SELECT key FROM settings WHERE key IN (?, ?, ?, ?)",
+            (
+                f"cron_enabled_{scanner_job_id}",
+                f"scan_on_idle_{slug}",
+                f"idle_scan_cooldown_minutes_{slug}",
+                f"idle_scan_max_todo_{slug}",
+            ),
+        ).fetchall()
+    assert remaining == []
 
 
 def test_board_precommit_endpoints(api_client: TestClient):
@@ -343,6 +428,7 @@ def test_test_clone_board_already_existing(
     monkeypatch.setattr(
         "paths.get_board_repos_dir", lambda b: tmp_path / "workspaces" / b / "repos"
     )
+    monkeypatch.setattr("paths.get_workspaces_root", lambda: tmp_path / "workspaces")
     monkeypatch.delenv("ZEROFACTORY_SKIP_GIT", raising=False)
 
     res = api_client.post(
@@ -360,11 +446,53 @@ def test_test_clone_board_already_existing(
     assert "Already cloned" in data["message"]
 
 
+def test_test_clone_destination_stays_within_workspaces(
+    api_client: TestClient, tmp_path, monkeypatch
+):
+    workspaces = tmp_path / "workspaces"
+    monkeypatch.setattr(
+        "paths.get_board_repos_dir", lambda slug: workspaces / slug / "repos"
+    )
+    monkeypatch.setattr("paths.get_workspaces_root", lambda: workspaces)
+    monkeypatch.setattr(
+        "dashboard.routes.boards.get_repo_resolver", lambda: lambda _: None
+    )
+    monkeypatch.delenv("ZEROFACTORY_SKIP_GIT", raising=False)
+
+    def fake_subprocess_run(cmd, *args, **kwargs):
+        if cmd[1] == "clone":
+            destination = Path(cmd[-1]).resolve()
+            destination.relative_to(workspaces.resolve())
+            destination.mkdir(parents=True)
+            (destination / ".git").mkdir()
+
+        class Success:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Success()
+
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+    response = api_client.post(
+        "/api/plugins/zerofactory/boards/test-clone",
+        json={
+            "git_url": "https://github.com/example/repo.git",
+            "slug": "custom_board.1",
+            "repo_alias": "service-api",
+        },
+    )
+
+    assert response.status_code == 200
+    assert Path(response.json()["path"]).is_relative_to(workspaces.resolve())
+
+
 def test_test_clone_board_remote_failure(api_client: TestClient, tmp_path, monkeypatch):
     """When remote check fails (ls-remote error), test-clone returns 400 with exact error."""
     monkeypatch.setattr(
         "paths.get_board_repos_dir", lambda b: tmp_path / "workspaces" / b / "repos"
     )
+    monkeypatch.setattr("paths.get_workspaces_root", lambda: tmp_path / "workspaces")
     monkeypatch.delenv("ZEROFACTORY_SKIP_GIT", raising=False)
 
     class FakeLsRemoteFail:
@@ -396,6 +524,7 @@ def test_test_clone_board_clone_failure_cleaned_up(
     monkeypatch.setattr(
         "paths.get_board_repos_dir", lambda b: tmp_path / "workspaces" / b / "repos"
     )
+    monkeypatch.setattr("paths.get_workspaces_root", lambda: tmp_path / "workspaces")
     monkeypatch.delenv("ZEROFACTORY_SKIP_GIT", raising=False)
 
     target_dir = board_repos_dir / "my-repo"
@@ -445,6 +574,7 @@ def test_test_clone_board_success(api_client: TestClient, tmp_path, monkeypatch)
     monkeypatch.setattr(
         "paths.get_board_repos_dir", lambda b: tmp_path / "workspaces" / b / "repos"
     )
+    monkeypatch.setattr("paths.get_workspaces_root", lambda: tmp_path / "workspaces")
     monkeypatch.delenv("ZEROFACTORY_SKIP_GIT", raising=False)
 
     target_dir = board_repos_dir / "my-repo"
@@ -485,3 +615,5 @@ def test_test_clone_board_success(api_client: TestClient, tmp_path, monkeypatch)
     assert data["ok"] is True
     assert data["cloned"] is True
     assert "Successfully cloned repository" in data["message"]
+    relative_path = Path(data["path"]).relative_to((tmp_path / "workspaces").resolve())
+    assert relative_path.parts == ("my-board", "repos", "my-repo")

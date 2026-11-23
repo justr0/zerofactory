@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from dashboard.db import init_db
 from dashboard.models import TaskCreate, TaskSplitRequest, TaskUpdate
 from dashboard.routes.tasks import create_task, split_task, update_task
@@ -58,6 +60,34 @@ class TestTriageSplit(unittest.TestCase):
             self.assertEqual(row["status"], "triage")
             meta = json.loads(row["metadata"])
             self.assertEqual(meta.get("target_repos"), ["frontend", "backend"])
+
+    def test_create_task_rejects_unknown_explicit_board(self):
+        req = TaskCreate(title="Task for unknown board", board_slug="typo-board")
+
+        with self.assertRaises(HTTPException) as exc:
+            create_task(req)
+
+        self.assertEqual(exc.exception.status_code, 400)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0
+            )
+
+    def test_create_task_without_board_or_with_all_uses_first_board(self):
+        for board_slug in (None, "all"):
+            with self.subTest(board_slug=board_slug):
+                req = TaskCreate(
+                    title=f"Task using default board {board_slug}",
+                    board_slug=board_slug,
+                )
+
+                res = create_task(req)
+
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    row = conn.execute(
+                        "SELECT board_slug FROM tasks WHERE id = ?", (res["id"],)
+                    ).fetchone()
+                self.assertEqual(row[0], "test-board")
 
     def test_split_triage_task_into_todo_tasks(self):
         # 1. Create parent triage task

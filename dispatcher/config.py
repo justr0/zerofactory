@@ -13,7 +13,6 @@ from typing import Any
 
 try:
     from ..settings import (  # type: ignore
-        DEFAULT_IDLE_SCAN_ACTIVE_THRESHOLD,
         DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
         DEFAULT_IDLE_SCAN_COOLDOWN_SECONDS,
         DEFAULT_IDLE_SCAN_MAX_TODO,
@@ -21,13 +20,11 @@ try:
         DEFAULT_MAX_ACTIVE_TASKS,
         DEFAULT_MAX_CONCURRENT_LLM_WORKERS,
         DEFAULT_MAX_CONCURRENT_WORKERS,
-        DEFAULT_SCAN_ON_IDLE,
         DEFAULT_TASK_TIMEOUT_SECONDS,
         load_settings,
     )
 except (ImportError, ValueError):
     from settings import (  # type: ignore
-        DEFAULT_IDLE_SCAN_ACTIVE_THRESHOLD,
         DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
         DEFAULT_IDLE_SCAN_COOLDOWN_SECONDS,
         DEFAULT_IDLE_SCAN_MAX_TODO,
@@ -35,7 +32,6 @@ except (ImportError, ValueError):
         DEFAULT_MAX_ACTIVE_TASKS,
         DEFAULT_MAX_CONCURRENT_LLM_WORKERS,
         DEFAULT_MAX_CONCURRENT_WORKERS,
-        DEFAULT_SCAN_ON_IDLE,
         DEFAULT_TASK_TIMEOUT_SECONDS,
         load_settings,
     )

@@ -56,3 +56,34 @@ def test_memories_lifecycle(api_client: TestClient, default_board: str):
         f"/api/plugins/zerofactory/boards/{default_board}/memories"
     ).json()["memories"]
     assert not any(m["id"] == mem_id for m in list_after)
+
+
+def test_manual_memory_creation_disables_mem0_inference(
+    api_client: TestClient, default_board: str, monkeypatch
+):
+    """Manual memory creation passes infer=False to Mem0."""
+    from dashboard import memory_service
+
+    calls = []
+
+    class FakeMem0Client:
+        def add(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(memory_service, "get_mem0_client", lambda: FakeMem0Client())
+
+    response = api_client.post(
+        f"/api/plugins/zerofactory/boards/{default_board}/memories",
+        json={
+            "category": "decision",
+            "content": "Keep manual memory writes deterministic.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["memory"]["content"]
+        == "Keep manual memory writes deterministic."
+    )
+    assert len(calls) == 1
+    assert calls[0][1]["infer"] is False

@@ -202,7 +202,7 @@ def stop_session(session_id: str):
 
     # Standalone session fallback: mark ended in profile state.db
     stopped_in_db = False
-    for prof in ["zf-builder", "zf-reviewer", "zf-orchestrator"]:
+    for prof in AGENT_ROLES:
         sdb = _resolve_profile_state_db_dyn(prof)
         if sdb and sdb.exists():
             try:

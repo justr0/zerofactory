@@ -137,7 +137,8 @@ def get_orchestrator_scan_activities(
                     ts = int(datetime.fromisoformat(r["claimed_at"]).timestamp())
                 except Exception:
                     ts = int(time.time())
-                b_slug = r["job_id"].replace("zero-factory-improvement-scanner-", "")
+                scanner_prefix = "zero-factory-improvement-scanner-"
+                b_slug = r["job_id"][len(scanner_prefix) :]
                 res.append(
                     {
                         "id": f"scan-{r['id'][:8]}",
