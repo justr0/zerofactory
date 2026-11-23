@@ -799,6 +799,7 @@ def spawn_agent_worker(
         }
     )
 
+    proc = None
     try:
         cleanup_process_artifacts(task_id)
         exit_prefix = log_dir / f"worker_{task_id}"
@@ -883,4 +884,6 @@ def spawn_agent_worker(
     except Exception as e:
         steps.end("error", f"{type(e).__name__}: {e}")
         _log.error("Failed to spawn %s worker for task %s: %s", assignee, task_id, e)
+        if proc is None:
+            raise
         return None, None

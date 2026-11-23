@@ -221,6 +221,49 @@ def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
         assert row["status"] == "running"
 
 
+def test_run_dispatch_cycle_reverts_task_when_worker_spawn_fails(tmp_path: Path):
+    """A Popen failure must not leave a running task with a pid-less session."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-spawn-fail', 'Work Item', '', 'todo', 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+            (now, now),
+        )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+    import dispatcher
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": "1"}),
+        patch(
+            "dispatcher.worker_spawner.subprocess.Popen",
+            side_effect=OSError("spawn failed"),
+        ),
+    ):
+        os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT status, metadata, worker_pid FROM tasks WHERE id = 't-spawn-fail'"
+        ).fetchone()
+        assert row["status"] == "todo"
+        assert row["worker_pid"] is None
+        assert not any(
+            session.get("status") == "ongoing"
+            for session in json.loads(row["metadata"]).get("sessions", [])
+        )
+
+
 def test_run_dispatch_cycle_skips_pr_conflict_for_queued_or_builder_task(
     tmp_path: Path,
 ):
