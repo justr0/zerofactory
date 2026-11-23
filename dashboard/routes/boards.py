@@ -87,7 +87,6 @@ def _get_cron_helpers():
 
 
 @router.get("/boards")
-@router.get("/boards")
 def list_boards():
     """List all Kanban boards with their linked repositories."""
     init_db()
