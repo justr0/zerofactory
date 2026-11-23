@@ -71,7 +71,9 @@ def _get_cron_helpers():
         )
 
     def prune_cron(slug: str) -> None:
-        pass
+        scanner_job_id = f"zero-factory-improvement-scanner-{slug}"
+        toggle_builtin_job(scanner_job_id, False)
+        reset_builtin_job(scanner_job_id)
 
     return (
         ensure_builtin_cron_jobs,
