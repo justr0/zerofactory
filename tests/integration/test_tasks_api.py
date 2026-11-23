@@ -120,6 +120,44 @@ def test_list_tasks_normalizes_metadata_for_session_progress(
         assert "session_progress" not in task
 
 
+@pytest.mark.parametrize(
+    ("turn_count", "message_count", "expected_turns", "expected_messages"),
+    [
+        ("2", "3", 2, 3),
+        ("invalid", None, 0, 0),
+        (2, 3, 2, 3),
+    ],
+    ids=["numeric-strings", "invalid-counters", "integer-counters"],
+)
+def test_list_tasks_handles_malformed_session_counters(
+    api_client: TestClient,
+    default_board: str,
+    turn_count: object,
+    message_count: object,
+    expected_turns: int,
+    expected_messages: int,
+):
+    created = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Malformed session counter listing",
+            "board_slug": default_board,
+            "metadata": {
+                "sessions": [{"turn_count": turn_count, "message_count": message_count}]
+            },
+        },
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    response = api_client.get("/api/plugins/zerofactory/tasks")
+
+    assert response.status_code == 200
+    task = next(task for task in response.json()["tasks"] if task["id"] == task_id)
+    assert task["session_progress"]["turn_count"] == expected_turns
+    assert task["session_progress"]["message_count"] == expected_messages
+
+
 def test_task_dependencies(api_client: TestClient, default_board: str):
     """Verify linking and unlinking task dependencies with repo_alias and link_type."""
     t1_id = api_client.post(

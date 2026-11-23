@@ -141,6 +141,16 @@ def _trigger_async_dispatch(log_context: str) -> None:
         _log.debug("Async dispatch trigger after %s failed: %s", log_context, disp_err)
 
 
+def _session_counter(value: Any) -> int:
+    """Return an integer session counter, defaulting malformed values to zero."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
 @router.get("/tasks")
 def list_tasks(
     board: str | None = Query(None, description="Board slug filter"),
@@ -271,10 +281,12 @@ def list_tasks(
                         "session_id": meta_obj.get("session_id"),
                         "is_alive": False,
                         "turn_count": sum(
-                            s.get("turn_count", 0) for s in clean_sessions
+                            _session_counter(s.get("turn_count"))
+                            for s in clean_sessions
                         ),
                         "message_count": sum(
-                            s.get("message_count", 0) for s in clean_sessions
+                            _session_counter(s.get("message_count"))
+                            for s in clean_sessions
                         ),
                         "sessions": clean_sessions,
                     }
