@@ -252,7 +252,7 @@ def trigger_builtin_job(job_id: str) -> Dict[str, Any]:
         return {"ok": True, "message": "Queue watchdog triggered"}
 
     if job_id.startswith("zero-factory-improvement-scanner-"):
-        slug = job_id.replace("zero-factory-improvement-scanner-", "")
+        slug = job_id[len("zero-factory-improvement-scanner-") :]
         if spawn_board_scanner:
             try:
                 with get_db_conn() as conn:
@@ -296,7 +296,7 @@ def toggle_builtin_job(job_id: str, enabled: bool) -> Dict[str, Any]:
             (f"cron_enabled_{job_id}", val_str, now),
         )
         if job_id.startswith("zero-factory-improvement-scanner-"):
-            slug = job_id.replace("zero-factory-improvement-scanner-", "")
+            slug = job_id[len("zero-factory-improvement-scanner-") :]
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
                 (f"scan_on_idle_{slug}", val_str, now),
@@ -321,7 +321,7 @@ def update_builtin_job(job_id: str, update_data: Dict[str, Any]) -> Dict[str, An
                 (f"cron_enabled_{job_id}", val_str, now),
             )
         if job_id.startswith("zero-factory-improvement-scanner-"):
-            slug = job_id.replace("zero-factory-improvement-scanner-", "")
+            slug = job_id[len("zero-factory-improvement-scanner-") :]
             if (
                 "scan_on_idle" in update_data
                 and update_data["scan_on_idle"] is not None
@@ -367,7 +367,7 @@ def reset_builtin_job(job_id: str) -> Dict[str, Any]:
             (f"cron_enabled_{job_id}",),
         )
         if job_id.startswith("zero-factory-improvement-scanner-"):
-            slug = job_id.replace("zero-factory-improvement-scanner-", "")
+            slug = job_id[len("zero-factory-improvement-scanner-") :]
             conn.execute(
                 "DELETE FROM settings WHERE key = ?",
                 (f"scan_on_idle_{slug}",),

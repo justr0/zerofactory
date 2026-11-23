@@ -186,7 +186,7 @@ export function CronModal(props) {
                   const isScanner = job.id.startsWith("zero-factory-improvement-scanner-") || job.category === "scanner";
                   const isOpenWiki = job.id.startsWith("zero-factory-openwiki-update-") || job.category === "openwiki";
                   const boardSlug = isScanner
-                    ? job.id.replace("zero-factory-improvement-scanner-", "")
+                    ? job.id.slice("zero-factory-improvement-scanner-".length)
                     : (isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null);
                   const isRunning = runningCronId === job.id;
 

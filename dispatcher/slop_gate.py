@@ -522,8 +522,28 @@ def analyze_workspace_diff(
         )
         if res.returncode == 0:
             raw_diff = res.stdout
-    except Exception:
-        raw_diff = ""
+        else:
+            report.errors.append(
+                SlopFinding(
+                    rule="diff_inspection_failed",
+                    severity="error",
+                    file="(diff)",
+                    line=0,
+                    snippet=f"git diff exited {res.returncode}",
+                    message=f"Unable to inspect workspace diff: git diff exited with status {res.returncode}. {res.stderr.strip()}",
+                )
+            )
+    except Exception as exc:
+        report.errors.append(
+            SlopFinding(
+                rule="diff_inspection_failed",
+                severity="error",
+                file="(diff)",
+                line=0,
+                snippet=type(exc).__name__,
+                message=f"Unable to inspect workspace diff: {type(exc).__name__}: {exc}",
+            )
+        )
 
     files_seen: set[str] = set()
     all_unexcluded_files: set[str] = set()
