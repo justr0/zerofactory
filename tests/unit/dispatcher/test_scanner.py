@@ -5,6 +5,28 @@ from unittest.mock import MagicMock, patch
 from dispatcher import scanner
 from dispatcher.config import _active_scanners
 from dispatcher.process_manager import ProcessState
+from settings import DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES, DEFAULT_IDLE_SCAN_MAX_TODO
+
+
+def test_get_scanner_cron_config_falls_back_for_invalid_numeric_settings():
+    """Malformed stored scanner numbers use defaults instead of aborting."""
+
+    class SettingsCursor:
+        def execute(self, _query):
+            return self
+
+        def fetchall(self):
+            return [
+                ("scan_on_idle", "true"),
+                ("idle_scan_cooldown_minutes", "not-a-number"),
+                ("idle_scan_max_todo", "stale-value"),
+            ]
+
+    config = scanner.get_scanner_cron_config("board-a", cursor=SettingsCursor())
+
+    assert config["scan_on_idle"] is True
+    assert config["idle_scan_cooldown_minutes"] == DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
+    assert config["idle_scan_max_todo"] == DEFAULT_IDLE_SCAN_MAX_TODO
 
 
 def test_reap_active_scanners_keeps_running_scanner(tmp_path):
