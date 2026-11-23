@@ -51,7 +51,7 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         # Pop HERMES_HOME (set in factory worker sessions) so get_hermes_home()
         # falls back to Path.home()/.hermes, which tracks HOME = fake_home.
         # NOTE: setting it to the scratch path instead would break
-        # get_hermes_root() because TMPDIR itself lives under
+        # get_hermes_home() because TMPDIR itself lives under
         # ~/.hermes/profiles/<profile>/cache/scratch.
         os.environ.pop("HERMES_HOME", None)
         init_db(force=True)

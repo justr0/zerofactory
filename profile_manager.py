@@ -29,6 +29,11 @@ except ImportError:
 
 _log = logging.getLogger("zerofactory.profiles")
 
+try:
+    from .paths import get_hermes_home
+except (ImportError, ValueError):
+    from paths import get_hermes_home  # type: ignore
+
 ZF_PROFILES = ("zf-orchestrator", "zf-builder", "zf-reviewer", "zf-goldfish")
 
 # All HERMES_LANGFUSE_* keys written to .env files by sync_langfuse_profiles().
@@ -40,20 +45,6 @@ LANGFUSE_ENV_KEYS: set[str] = {
     "HERMES_LANGFUSE_CAPTURE",
     "HERMES_LANGFUSE_ENV",
 }
-
-
-def get_hermes_root() -> Path:
-    """Return the active Hermes home directory without stripping ``profiles/``."""
-    try:
-        from .paths import get_hermes_home as _paths_get_hermes_home
-    except (ImportError, ValueError):
-        from paths import get_hermes_home as _paths_get_hermes_home  # type: ignore
-    return _paths_get_hermes_home()
-
-
-def get_hermes_home() -> Path:
-    """Return the active Hermes home directory."""
-    return get_hermes_root()
 
 
 def get_hermes_profiles_root() -> Path:
