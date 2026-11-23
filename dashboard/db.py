@@ -209,17 +209,6 @@ def init_db(force: bool = False):
     db_path = get_db_path()
     if not force and db_path in _DB_INITIALIZED_PATHS:
         return
-    if not force and db_path.exists():
-        try:
-            with get_db_conn() as check_conn:
-                row = check_conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
-                ).fetchone()
-                if row is not None:
-                    _DB_INITIALIZED_PATHS.add(db_path)
-                    return
-        except Exception:
-            pass
     with get_db_conn() as conn:
         try:
             conn.execute("PRAGMA journal_mode=WAL;")

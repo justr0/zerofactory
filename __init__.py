@@ -926,7 +926,6 @@ def register(ctx: Any):
                 sys.exit(1)
 
             import signal
-            import time
 
             ensure_builtin_cron_jobs()
             start_background_dispatcher()

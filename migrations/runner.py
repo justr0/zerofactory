@@ -126,8 +126,21 @@ def _execute_sql_file(conn: sqlite3.Connection, file_path: Path) -> None:
     Safely handles statements like `ALTER TABLE ADD COLUMN` if the column already exists.
     """
     content = file_path.read_text(encoding="utf-8")
-    # Split by semicolon while respecting comments
-    raw_statements = content.split(";")
+    # SQLite's parser knows whether a semicolon terminates a statement, including
+    # semicolons inside string literals and trigger bodies.
+    raw_statements = []
+    statement = []
+    for char in content:
+        statement.append(char)
+        if char == ";":
+            candidate = "".join(statement)
+            if sqlite3.complete_statement(candidate):
+                raw_statements.append(candidate)
+                statement = []
+    trailing = "".join(statement)
+    if trailing.strip():
+        raw_statements.append(trailing)
+
     for raw in raw_statements:
         stmt = raw.strip()
         if not stmt:
@@ -205,9 +218,32 @@ def run_migrations(
     applied_now: List[str] = []
 
     try:
+        has_migration_history = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone()
+            is not None
+        )
+        has_existing_tasks = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+            ).fetchone()
+            is not None
+        )
         ensure_migration_table(conn)
         applied = get_applied_migrations(conn)
         available = get_available_migrations(migrations_dir)
+
+        # Older databases predate migration tracking. Their existing task tables
+        # are the baseline schema; do not replay the initial schema migration.
+        if not has_migration_history and has_existing_tasks and available:
+            baseline = available[0].stem
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (baseline, int(time.time())),
+                )
+            applied[baseline] = int(time.time())
 
         for p in available:
             version = p.stem

@@ -24,10 +24,6 @@ if _PLUGIN_ROOT not in sys.path:
 from paths import get_zerofactory_db_path  # noqa: E402
 
 
-def _get_db_path() -> Path:
-    return get_zerofactory_db_path()
-
-
 def _resolve_running_since(rt: dict[str, Any], now: int) -> int:
     """Return the epoch second a running task started, for in-flight duration.
 
@@ -60,7 +56,7 @@ def _resolve_running_since(rt: dict[str, Any], now: int) -> int:
 
 
 def run_daily_stats() -> int:
-    db_path = _get_db_path()
+    db_path = get_zerofactory_db_path()
     if not db_path.exists():
         print("ZeroFactory database not found at", db_path)
         return 0
@@ -83,7 +79,15 @@ def run_daily_stats() -> int:
 
             # Completed in last 24h
             cursor.execute(
-                "SELECT id, title, assignee, board_slug, updated_at FROM tasks WHERE status = 'done' AND updated_at >= ? ORDER BY updated_at DESC",
+                """
+                SELECT t.id, t.title, t.assignee, t.board_slug, a.created_at AS completed_at
+                FROM task_activity a
+                JOIN tasks t ON t.id = a.task_id
+                WHERE a.action = 'status_change'
+                  AND a.details LIKE '% -> done'
+                  AND a.created_at >= ?
+                ORDER BY a.created_at DESC
+                """,
                 (one_day_ago,),
             )
             completed_24h = [dict(r) for r in cursor.fetchall()]

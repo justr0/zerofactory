@@ -74,6 +74,9 @@ class TestZfDailyStatsUnit(unittest.TestCase):
                 " priority TEXT NOT NULL DEFAULT 'P2', workspace_path TEXT, workspace_kind TEXT DEFAULT 'worktree', branch_name TEXT,"
                 " pr_url TEXT, tenant TEXT DEFAULT '', skills TEXT DEFAULT '[]', tags TEXT DEFAULT '[]', metadata TEXT DEFAULT '{}',"
                 " created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
+                "CREATE TABLE task_activity ("
+                " id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, actor TEXT NOT NULL,"
+                " action TEXT NOT NULL, details TEXT NOT NULL, created_at INTEGER NOT NULL);"
             )
             real_now = int(_time.time())
             conn.execute(
@@ -110,6 +113,96 @@ class TestZfDailyStatsUnit(unittest.TestCase):
                     real_now - 5,
                 ),
             )
+            # An edit refreshes updated_at, but must not turn an old completion into new velocity.
+            conn.execute(
+                "INSERT INTO tasks (id, board_slug, title, status, assignee, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (
+                    "zf-done-old",
+                    "stats-board",
+                    "Old completion",
+                    "done",
+                    "human",
+                    real_now - 3 * 86400,
+                    real_now - 5,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO task_activity (task_id, actor, action, details, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (
+                    "zf-done-old",
+                    "human",
+                    "status_change",
+                    "running -> done",
+                    real_now - 2 * 86400,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO tasks (id, board_slug, title, status, assignee, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (
+                    "zf-done-recent",
+                    "stats-board",
+                    "Recent completion",
+                    "done",
+                    "human",
+                    real_now - 3600,
+                    real_now - 5,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO task_activity (task_id, actor, action, details, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (
+                    "zf-done-recent",
+                    "human",
+                    "status_change",
+                    "todo -> done",
+                    real_now - 3600,
+                ),
+            )
+            # Reopening a completed task is not a completion; its later transition back to done is.
+            conn.execute(
+                "INSERT INTO tasks (id, board_slug, title, status, assignee, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (
+                    "zf-done-recompleted",
+                    "stats-board",
+                    "Recompleted task",
+                    "done",
+                    "human",
+                    real_now - 3 * 86400,
+                    real_now - 5,
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO task_activity (task_id, actor, action, details, created_at)"
+                " VALUES (?,?,?,?,?)",
+                [
+                    (
+                        "zf-done-recompleted",
+                        "human",
+                        "status_change",
+                        "running -> done",
+                        real_now - 2 * 86400,
+                    ),
+                    (
+                        "zf-done-recompleted",
+                        "human",
+                        "status_change",
+                        "done -> triage",
+                        real_now - 3 * 3600,
+                    ),
+                    (
+                        "zf-done-recompleted",
+                        "human",
+                        "status_change",
+                        "triage -> done",
+                        real_now - 2 * 3600,
+                    ),
+                ],
+            )
             conn.commit()
             conn.close()
 
@@ -126,6 +219,10 @@ class TestZfDailyStatsUnit(unittest.TestCase):
                     os.environ["ZEROFACTORY_DB"] = old_db
             out = buf.getvalue()
             self.assertEqual(rc, 0)
+            self.assertIn("Tasks Completed in Last 24h:** 2", out)
+            self.assertIn("`zf-done-recent`: Recent completion", out)
+            self.assertIn("`zf-done-recompleted`: Recompleted task", out)
+            self.assertNotIn("`zf-done-old`: Old completion", out)
 
             # Task A: active for ~47m (derived from started_at, NOT the stale updated_at)
             m = re.search(r"`zf-run-a`.*active for (-?\d+)m", out)

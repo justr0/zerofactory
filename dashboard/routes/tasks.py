@@ -21,9 +21,9 @@ if _DASHBOARD_ROOT not in sys.path:
 from fastapi import APIRouter, HTTPException, Query
 
 try:
-    from ...paths import get_active_profile
+    from ...paths import AGENT_ROLES, get_active_profile, resolve_profile_state_db
 except (ImportError, ValueError):
-    from paths import get_active_profile  # type: ignore
+    from paths import AGENT_ROLES, get_active_profile, resolve_profile_state_db  # type: ignore
 
 try:
     from ...zf_wincompat import IS_WINDOWS, kill_tree
@@ -110,9 +110,9 @@ except (ImportError, ValueError):
     from session_service import resolve_task_session_progress  # type: ignore
 
 try:
-    from ...settings import load_settings  # type: ignore
+    from ...settings import DEFAULT_IDLE_SCAN_MAX_TODO, load_settings  # type: ignore
 except (ImportError, ValueError):
-    from settings import load_settings  # type: ignore
+    from settings import DEFAULT_IDLE_SCAN_MAX_TODO, load_settings  # type: ignore
 
 try:
     from paths import ZEROFACTORY_REPO, ZEROFACTORY_ISSUES_URL
@@ -237,17 +237,9 @@ def list_tasks(
                 t["blocking_parent_count"] = blocking_counts.get(t_id, 0)
                 t["child_count"] = child_counts.get(t_id, 0)
                 t["comment_count"] = comment_counts.get(t_id, 0)
-                meta_obj = {}
-                raw_meta = t.get("metadata")
-                if raw_meta:
-                    try:
-                        meta_obj = (
-                            json.loads(raw_meta)
-                            if isinstance(raw_meta, str)
-                            else (raw_meta or {})
-                        )
-                    except Exception:
-                        meta_obj = {}
+                meta_obj = t.get("metadata")
+                if not isinstance(meta_obj, dict):
+                    meta_obj = {}
                 meta_sessions = meta_obj.get("sessions") or []
 
                 if t.get("status") == "running":
@@ -306,17 +298,57 @@ def create_task(req: TaskCreate):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
+        scanner_board = os.environ.get("ZEROFACTORY_IDLE_SCAN_BOARD")
+        enforce_scanner_cap = (
+            os.environ.get("ZEROFACTORY_IDLE_SCAN") == "1"
+            and status_val == "todo"
+            and bool(scanner_board)
+        )
+        if enforce_scanner_cap:
+            # Serialize scanner admission with all other SQLite writers so a
+            # concurrent task creation cannot consume the same remaining slot.
+            conn.execute("BEGIN IMMEDIATE")
         board_slug = req.board_slug
         if board_slug and board_slug != "all":
             cursor.execute("SELECT slug FROM boards WHERE slug = ?", (board_slug,))
             if not cursor.fetchone():
-                board_slug = None
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown board '{board_slug}'. Select a configured board.",
+                )
         else:
             board_slug = None
         if not board_slug:
             cursor.execute("SELECT slug FROM boards ORDER BY created_at ASC LIMIT 1")
             row = cursor.fetchone()
             board_slug = row[0] if row else ""
+
+        if enforce_scanner_cap:
+            if board_slug != scanner_board:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Idle scanner may only create todo tasks on its target board.",
+                )
+            cursor.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                (f"idle_scan_max_todo_{board_slug}",),
+            )
+            cap_row = cursor.fetchone()
+            try:
+                max_todo = (
+                    max(0, int(cap_row[0])) if cap_row else DEFAULT_IDLE_SCAN_MAX_TODO
+                )
+            except (TypeError, ValueError):
+                max_todo = DEFAULT_IDLE_SCAN_MAX_TODO
+            cursor.execute(
+                "SELECT COUNT(*) FROM tasks WHERE board_slug = ? AND status = 'todo'",
+                (board_slug,),
+            )
+            if cursor.fetchone()[0] >= max_todo:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idle scanner todo task cap reached for this board.",
+                )
 
         task_id = req.task_id or generate_task_id(board_slug)
         branch_name = req.branch_name or f"task/{task_id}"
@@ -672,29 +704,21 @@ def stop_task_session(task_id: str, to_status: str | None = "blocked"):
 
         # Mark ended_at in profile state.db if session_id is active
         if active_sid:
-            for prof in ["zf-builder", "zf-reviewer", "zf-orchestrator"]:
-                try:
-                    from ...paths import resolve_profile_state_db
-                except Exception:
+            for prof in AGENT_ROLES:
+                sdb = resolve_profile_state_db(prof)
+                if sdb and sdb.exists():
                     try:
-                        from paths import resolve_profile_state_db  # type: ignore
-                    except Exception:
-                        resolve_profile_state_db = None
-                if resolve_profile_state_db:
-                    sdb = resolve_profile_state_db(prof)
-                    if sdb and sdb.exists():
-                        try:
-                            import sqlite3 as _sqlite3
+                        import sqlite3 as _sqlite3
 
-                            with _sqlite3.connect(str(sdb), timeout=2.0) as pconn:
-                                pcur = pconn.cursor()
-                                pcur.execute(
-                                    "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
-                                    (now, active_sid),
-                                )
-                                pconn.commit()
-                        except Exception:
-                            pass
+                        with _sqlite3.connect(str(sdb), timeout=2.0) as pconn:
+                            pcur = pconn.cursor()
+                            pcur.execute(
+                                "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+                                (now, active_sid),
+                            )
+                            pconn.commit()
+                    except Exception:
+                        pass
 
         conn.commit()
 
@@ -1623,6 +1647,17 @@ def reply_interview(task_id: str, req: InterviewReply):
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
         task = row_to_dict(task_row)
 
+        raw_meta = task.get("metadata") or "{}"
+        try:
+            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta)
+        except Exception:
+            meta = {}
+        if task.get("status") != "triage" or not meta.get("awaiting_interview"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task '{task_id}' does not have a pending interview",
+            )
+
         reply_lines = [
             f"🎯 **[Grill-with-Docs Human Response]**\n**Selection:** {req.selection.strip()}"
         ]
@@ -1638,33 +1673,30 @@ def reply_interview(task_id: str, req: InterviewReply):
             (task_id, author_val, comment_body, now),
         )
         comment_id = cursor.lastrowid
-        log_activity(
-            conn,
-            task_id,
-            author_val,
-            "interview_reply",
-            f"Submitted interview response: {req.selection[:60]}",
-        )
-
-        raw_meta = task.get("metadata") or "{}"
-        try:
-            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta)
-        except Exception:
-            meta = {}
-
         meta["last_interview_reply"] = {
             "selection": req.selection.strip(),
             "notes": (req.notes or "").strip(),
             "replied_at": now,
         }
-        meta.pop("blocked_reason", None)
-
+        meta.pop("awaiting_interview", None)
+        meta["awaiting_interview"] = None
         target_status = "triage"
-        assignee = "zf-orchestrator"
-        cursor.execute(
-            "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
-            (target_status, assignee, json.dumps(meta), now, task_id),
-        )
+        if transition_task:
+            transition_task(
+                conn,
+                task_id,
+                target_status,
+                target_assignee="zf-orchestrator",
+                metadata_patch=meta,
+                actor="human",
+            )
+        else:
+            meta.pop("blocked_reason", None)
+            meta.pop("blocked_reason_type", None)
+            cursor.execute(
+                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
+                (target_status, "zf-orchestrator", json.dumps(meta), now, task_id),
+            )
         conn.commit()
 
         if (

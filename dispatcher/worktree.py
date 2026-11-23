@@ -73,10 +73,9 @@ def resolve_board_repo_path(board: dict[str, Any]) -> Path | None:
 
     repo = ""
     if git_url:
-        cleaned_url = re.sub(r"\.git$", "", git_url.strip().rstrip("/"))
-        parts = cleaned_url.replace(":", "/").split("/")
-        if len(parts) >= 1:
-            repo = parts[-1]
+        from paths import repository_name_from_git_url
+
+        repo = repository_name_from_git_url(git_url)
     elif "-" in slug:
         parts = slug.split("-", 1)
         repo = parts[1]

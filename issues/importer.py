@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -27,7 +29,10 @@ _log = logging.getLogger("zerofactory.issues.importer")
 
 
 def _repo_identity(value: str) -> str:
-    cleaned = re.sub(r"\.git$", "", value.strip()).rstrip("/")
+    """Normalize a Git URL or owner/repository value to owner/repository."""
+    cleaned = value.strip().rstrip("/")
+    if cleaned.lower().endswith(".git"):
+        cleaned = cleaned[:-4].rstrip("/")
     parts = re.split(r"[/ :]", cleaned)
     return "/".join(parts[-2:]).casefold()
 
@@ -42,18 +47,25 @@ def resolve_board_for_issue(
         db_path = get_db_path()
 
     if not db_path.exists():
+        if board_slug:
+            raise ValueError(
+                f"Unknown board '{board_slug}': cannot validate it because the board database does not exist."
+            )
         return board_slug
 
     with sqlite3.connect(str(db_path), timeout=5.0) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # 1. If explicit board_slug provided and valid, return it
+        # 1. An explicit board selection must never fall through to discovery.
         if board_slug:
             cursor.execute("SELECT slug FROM boards WHERE slug = ?", (board_slug,))
             row = cursor.fetchone()
             if row:
                 return str(row["slug"])
+            raise ValueError(
+                f"Unknown board '{board_slug}'. Select a configured board."
+            )
 
         # 2. Prefer exact normalized repository identity across every linked repo.
         if repo_or_project:
@@ -61,13 +73,14 @@ def resolve_board_for_issue(
                 "SELECT b.slug, br.git_url, br.repo_alias FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug ORDER BY b.created_at ASC"
             )
             rows = cursor.fetchall()
-            identity = _repo_identity(repo_or_project)
+            issue_identity = _repo_identity(repo_or_project)
             for row in rows:
                 git_url = str(row["git_url"] or "")
-                if git_url and _repo_identity(git_url) == identity:
+                if git_url and _repo_identity(git_url) == issue_identity:
                     return str(row["slug"])
 
-            # 3. Explicitly weaker legacy fallback for aliases and board slugs.
+            # Lower-precedence legacy fallback for aliases and board slugs when
+            # no linked repository has the exact normalized identity.
             for row in rows:
                 row_dict = dict(row)
                 slug = str(row_dict.get("slug") or "")
@@ -172,8 +185,37 @@ def import_external_issue(
     )
     repo_alias = _resolve_repo_alias(issue.repo_or_project, effective_board, db_path)
 
-    task_id = issue.to_task_id(effective_board)
     dedup_key = issue.to_dedup_key()
+    task_id = issue.to_task_id(effective_board)
+    database_path = db_path or get_db_path()
+    if database_path.exists():
+        with sqlite3.connect(str(database_path), timeout=5.0) as conn:
+            rows = conn.execute(
+                "SELECT id, metadata, board_slug FROM tasks",
+            ).fetchall()
+        for existing_id, raw_metadata, existing_board in rows:
+            try:
+                existing_metadata = json.loads(raw_metadata or "{}")
+            except (TypeError, json.JSONDecodeError):
+                existing_metadata = {}
+            if (
+                existing_board == effective_board
+                and existing_metadata.get("dedup_key") == dedup_key
+            ):
+                task_id = str(existing_id)
+                break
+        else:
+            conflicting_id = next(
+                (
+                    str(existing_id)
+                    for existing_id, _, _ in rows
+                    if existing_id == task_id
+                ),
+                None,
+            )
+            if conflicting_id:
+                repo = issue.repo_or_project.strip().lower()
+                task_id = f"{task_id}-{hashlib.sha256(repo.encode()).hexdigest()[:8]}"
     effective_priority = priority or issue.infer_priority()
     category = issue.infer_category()
 

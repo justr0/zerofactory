@@ -887,6 +887,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 _ZF_GITHUB_GIT_URL_RE = re.compile(
     r"^(?:git\+)?https?://(?:[^@/]+@)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$"
 )
+_ZF_GITHUB_SSH_URL_RE = re.compile(r"^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$")
 
 
 def _zf_board_git_url(cursor: "sqlite3.Cursor | None", board_slug: str | None) -> str:
@@ -919,6 +920,9 @@ def _zf_board_owner_repo(
     if not git_url:
         return ""
     match = _ZF_GITHUB_GIT_URL_RE.match(git_url)
+    if match:
+        return f"{match.group(1)}/{match.group(2)}"
+    match = _ZF_GITHUB_SSH_URL_RE.match(git_url)
     if match:
         return f"{match.group(1)}/{match.group(2)}"
     parts = git_url.rstrip("/").split("/")
