@@ -96,6 +96,26 @@ def test_slop_gate_blocks_debugger_todo_and_skipped_test(tmp_path: Path):
     assert "[test_disabled] tests/test_app.py:3" in msg
 
 
+def test_slop_gate_fails_when_git_diff_fails(tmp_path: Path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    (repo / "bad.py").write_text("breakpoint()\n")
+    real_run = subprocess.run
+
+    def fail_diff(*args, **kwargs):
+        command = args[0] if args else kwargs["args"]
+        if "diff" in command:
+            return subprocess.CompletedProcess(command, 1, "", "forced diff failure")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_diff)
+    passed, msg, code = run_deterministic_slop_gate(repo, target_branch="main")
+
+    assert passed is False
+    assert code == 1
+    assert "[diff_inspection_failed]" in msg
+    assert "forced diff failure" in msg
+
+
 def test_slop_gate_skip_env_and_non_git(tmp_path: Path, monkeypatch):
     # Non-git directory passes safely
     empty = tmp_path / "not_a_repo"
