@@ -98,6 +98,18 @@ def is_pid_alive(pid: int | None) -> bool:
     return True
 
 
+def process_matches_identity(pid: int, task_id: str) -> bool:
+    """Check whether a live process still belongs to the given worker task."""
+    try:
+        cmdline_path = Path(f"/proc/{pid}/cmdline")
+        if cmdline_path.exists():
+            cmd_data = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+            return any(token in cmd_data for token in ("hermes", task_id, "zf-runner"))
+    except Exception:
+        pass
+    return True
+
+
 def get_process_exit_code(
     task_id: str, pid: int | None
 ) -> Tuple[ProcessState, Optional[int]]:
@@ -119,23 +131,7 @@ def get_process_exit_code(
             pass
 
     if pid and is_pid_alive(pid):
-        # Validate process identity before confirming running state
-        is_hermes = False
-        try:
-            cmdline_path = Path(f"/proc/{pid}/cmdline")
-            if cmdline_path.exists():
-                cmd_data = cmdline_path.read_bytes().decode("utf-8", errors="replace")
-                if (
-                    "hermes" in cmd_data
-                    or task_id in cmd_data
-                    or "zf-runner" in cmd_data
-                ):
-                    is_hermes = True
-            else:
-                is_hermes = True
-        except Exception:
-            is_hermes = True
-        if is_hermes:
+        if process_matches_identity(pid, task_id):
             return ProcessState.RUNNING, None
 
     return ProcessState.CRASHED, -1

@@ -25,6 +25,7 @@ from .process_manager import (
     get_exit_file_path,
     get_process_exit_code,
     is_pid_alive,
+    process_matches_identity,
     terminate_process_group,
 )
 from .worker_spawner import build_minimal_child_env, is_unattended_approvals_enabled
@@ -54,7 +55,9 @@ def get_active_scanner_pids() -> dict[str, int]:
             slug = pf.stem.removeprefix("scanner_")
             try:
                 pid = int(pf.read_text().strip())
-                if is_pid_alive(pid):
+                if is_pid_alive(pid) and process_matches_identity(
+                    pid, f"scanner_{slug}"
+                ):
                     active[slug] = pid
                 else:
                     pf.unlink(missing_ok=True)
@@ -79,7 +82,9 @@ def kill_board_scanner(board_slug: str) -> bool:
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            if is_pid_alive(pid):
+            if is_pid_alive(pid) and process_matches_identity(
+                pid, f"scanner_{board_slug}"
+            ):
                 try:
                     if IS_WINDOWS:
                         kill_tree(pid)
@@ -126,7 +131,9 @@ def reap_active_scanners() -> int:
             if slug not in _active_scanners:
                 try:
                     pid = int(pf.read_text().strip())
-                    if not is_pid_alive(pid):
+                    if not is_pid_alive(pid) or not process_matches_identity(
+                        pid, f"scanner_{slug}"
+                    ):
                         pf.unlink(missing_ok=True)
                         cleanup_process_artifacts(f"scanner_{slug}")
                         reaped += 1
