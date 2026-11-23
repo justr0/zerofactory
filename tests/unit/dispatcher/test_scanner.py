@@ -47,6 +47,101 @@ def test_get_active_scanner_pids_preserves_embedded_scanner_in_slug(tmp_path):
     assert active == {"foo_scanner_bar": 424242}
 
 
+def test_get_active_scanner_pids_discards_live_unrelated_process(tmp_path):
+    """A reused live PID is stale unless it still identifies as this scanner."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=False),
+    ):
+        active = scanner.get_active_scanner_pids()
+
+    assert active == {}
+    assert not pid_file.exists()
+
+
+def test_kill_board_scanner_does_not_signal_reused_pid(tmp_path):
+    """Cleanup removes a stale PID file without signaling its unrelated owner."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=False),
+        patch.object(scanner.os, "kill") as mock_kill,
+        patch.object(scanner.os, "killpg") as mock_killpg,
+        patch.object(scanner, "cleanup_process_artifacts"),
+    ):
+        scanner.kill_board_scanner("board-a")
+
+    mock_kill.assert_not_called()
+    mock_killpg.assert_not_called()
+    assert not pid_file.exists()
+
+
+def test_get_active_scanner_pids_keeps_matching_live_scanner(tmp_path):
+    """A persisted PID remains active when the scanner identity matches."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=True),
+    ):
+        active = scanner.get_active_scanner_pids()
+
+    assert active == {"board-a": 424242}
+    assert pid_file.exists()
+
+
+def test_spawn_board_scanner_ignores_reused_pid_file(tmp_path):
+    """A live unrelated PID in the persisted file does not suppress a scan."""
+    _active_scanners.clear()
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "scanner_board-a.pid").write_text("424242")
+    proc = MagicMock()
+    proc.pid = 515151
+
+    try:
+        with (
+            patch.dict(
+                scanner.os.environ,
+                {
+                    "ZEROFACTORY_SKIP_WORKER_SPAWN": "",
+                    "ZEROFACTORY_SKIP_SCANNER_SPAWN": "",
+                },
+            ),
+            patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+            patch.object(scanner, "is_pid_alive", return_value=True),
+            patch.object(scanner, "process_matches_identity", return_value=False),
+            patch.object(
+                scanner,
+                "get_scanner_cron_config",
+                return_value={"scan_on_idle": True},
+            ),
+            patch.object(scanner, "resolve_hermes_bin", return_value="hermes"),
+            patch.object(scanner.subprocess, "Popen", return_value=proc) as mock_popen,
+        ):
+            pid = scanner.spawn_board_scanner("board-a")
+
+        assert pid == 515151
+        mock_popen.assert_called_once()
+    finally:
+        _active_scanners.clear()
+
+
 def test_reap_active_scanners_preserves_embedded_scanner_in_slug(tmp_path):
     """Dead PID-file reaping uses the complete board slug for artifact cleanup."""
     _active_scanners.clear()
