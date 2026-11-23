@@ -116,17 +116,6 @@ class BoardRepoUpdate(BaseModel):
     is_primary: bool | None = None
 
 
-class BoardRepoResponse(BaseModel):
-    id: int
-    board_slug: str
-    repo_alias: str
-    git_url: str
-    target_branch: str
-    additional_reviewer_usernames: list[str] = Field(default_factory=list)
-    created_at: int
-    updated_at: int
-
-
 class BoardArchitectureUpdate(BaseModel):
     architecture: str = Field(
         ...,
