@@ -237,17 +237,9 @@ def list_tasks(
                 t["blocking_parent_count"] = blocking_counts.get(t_id, 0)
                 t["child_count"] = child_counts.get(t_id, 0)
                 t["comment_count"] = comment_counts.get(t_id, 0)
-                meta_obj = {}
-                raw_meta = t.get("metadata")
-                if raw_meta:
-                    try:
-                        meta_obj = (
-                            json.loads(raw_meta)
-                            if isinstance(raw_meta, str)
-                            else (raw_meta or {})
-                        )
-                    except Exception:
-                        meta_obj = {}
+                meta_obj = t.get("metadata")
+                if not isinstance(meta_obj, dict):
+                    meta_obj = {}
                 meta_sessions = meta_obj.get("sessions") or []
 
                 if t.get("status") == "running":

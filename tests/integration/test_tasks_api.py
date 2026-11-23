@@ -3,6 +3,7 @@
 import json
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
@@ -69,6 +70,54 @@ def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
     assert list_res.status_code == 200
     filtered_tasks = list_res.json()["tasks"]
     assert any(t["id"] == task_id for t in filtered_tasks)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_progress"),
+    [
+        (
+            json.dumps(
+                {
+                    "session_id": "session-1",
+                    "sessions": [
+                        {
+                            "session_id": "session-1",
+                            "status": "ongoing",
+                            "turn_count": 2,
+                            "message_count": 3,
+                        }
+                    ],
+                }
+            ),
+            True,
+        ),
+        ("{invalid", False),
+        (json.dumps(["not", "an", "object"]), False),
+    ],
+    ids=["dict-metadata", "invalid-metadata", "non-object-metadata"],
+)
+def test_list_tasks_normalizes_metadata_for_session_progress(
+    api_client: TestClient, default_board: str, metadata: str, expected_progress: bool
+):
+    from dashboard.db import get_db_conn
+
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={"title": "Metadata listing regression", "board_slug": default_board},
+    ).json()["id"]
+    with get_db_conn() as conn:
+        conn.execute("UPDATE tasks SET metadata = ? WHERE id = ?", (metadata, task_id))
+        conn.commit()
+
+    response = api_client.get("/api/plugins/zerofactory/tasks")
+
+    assert response.status_code == 200
+    task = next(task for task in response.json()["tasks"] if task["id"] == task_id)
+    if expected_progress:
+        assert task["session_progress"]["has_session"] is True
+        assert task["session_progress"]["sessions"][0]["turn_count"] == 2
+    else:
+        assert "session_progress" not in task
 
 
 def test_task_dependencies(api_client: TestClient, default_board: str):
