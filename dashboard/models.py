@@ -502,7 +502,7 @@ class CronJobUpdate(BaseModel):
     )
     idle_scan_max_todo: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         le=50,
         description="Max todo tasks before pausing idle scans",
     )
