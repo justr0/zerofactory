@@ -154,6 +154,26 @@ class TestOpenWikiGate(unittest.TestCase):
                     self.assertIsNotNone(row)
                     self.assertIn("automerge", json.loads(row[0]))
 
+    def test_generated_task_uses_dispatcher_handoff_without_git_mutations(self):
+        with patch(
+            "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+        ) as create_task:
+            task = self.gate.create_openwiki_task(
+                "test-board", "abc123 feat: add endpoint", self.tmp
+            )
+
+        self.assertEqual(task, {"id": "task-1"})
+        description = create_task.call_args.args[0].description
+        lowered_description = description.lower()
+        for git_mutation in ("git add", "git commit", "git push", "git checkout"):
+            with self.subTest(git_mutation=git_mutation):
+                self.assertNotIn(git_mutation, lowered_description)
+        self.assertIn(
+            "after updating and verifying the documentation", lowered_description
+        )
+        self.assertIn("hermes zerofactory move <task_id> done", description)
+        self.assertIn("dispatcher handles packaging and PR creation", description)
+
     def test_code_commit_touching_openwiki_does_not_reset_sync_point(self):
         """A code commit that also edits openwiki/ must not count as a docs sync."""
         (self.tmp / ".git").mkdir()

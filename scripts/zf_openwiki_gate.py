@@ -81,9 +81,8 @@ def create_openwiki_task(
    - When all pages are updated, call `openwiki_finish`.
 3. If OpenWiki created `.github/workflows/openwiki-update.yml` or `CLAUDE.md`, remove them:
    `rm -rf .github/workflows/openwiki-update.yml CLAUDE.md`
-4. Stage and commit updated documentation directly on the default branch:
-   `git add openwiki/ AGENTS.md`
-   `git commit -m "docs(openwiki): sync architecture documentation with recent changes"`
+4. After updating and verifying the documentation, mark the task done with
+   `hermes zerofactory move <task_id> done`; the dispatcher handles packaging and PR creation.
 """
     task_title = (
         f"docs(openwiki): sync architecture documentation for {repo_alias}"
