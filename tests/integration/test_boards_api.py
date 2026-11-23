@@ -36,7 +36,7 @@ def test_create_and_list_boards(api_client: TestClient):
 def test_create_board_rejects_unsafe_slug_and_preserves_custom_slug(
     api_client: TestClient,
 ):
-    for slug in ("../escape", "a/b", "a\\b"):
+    for slug in ("../escape", "a/b", "a\\b", " .. ", " . "):
         response = api_client.post(
             "/api/plugins/zerofactory/boards",
             json={"git_url": "https://github.com/example/repo.git", "slug": slug},
@@ -62,7 +62,9 @@ def test_test_clone_rejects_unsafe_components_before_git_or_filesystem(
 
     monkeypatch.setattr(subprocess, "run", unexpected)
     monkeypatch.setattr("dashboard.routes.boards.get_repo_resolver", unexpected)
-    for component in ("../escape", "a/b", "a\\b"):
+    monkeypatch.setattr("paths.get_board_repos_dir", unexpected)
+    monkeypatch.setattr("paths.get_workspaces_root", unexpected)
+    for component in ("../escape", "a/b", "a\\b", " .. ", " . "):
         for key in ("slug", "repo_alias"):
             response = api_client.post(
                 "/api/plugins/zerofactory/boards/test-clone",

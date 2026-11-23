@@ -36,6 +36,10 @@ def test_board_create_validation():
         ).slug
         == "custom_board.1"
     )
+    assert (
+        BoardCreate(git_url="https://github.com/owner/repo.git", slug=" custom ").slug
+        == "custom"
+    )
 
     # Empty git_url fails
     with pytest.raises(ValidationError):
@@ -48,7 +52,7 @@ def test_board_create_validation():
         )
 
 
-@pytest.mark.parametrize("slug", ["../escape", "a/b", "a\\b", ".."])
+@pytest.mark.parametrize("slug", ["../escape", "a/b", "a\\b", "..", " .. ", " . "])
 def test_board_path_components_reject_traversal(slug):
     with pytest.raises(ValidationError):
         BoardCreate(git_url="https://github.com/owner/repo.git", slug=slug)
@@ -56,7 +60,7 @@ def test_board_path_components_reject_traversal(slug):
         BoardTestClone(git_url="https://github.com/owner/repo.git", slug=slug)
 
 
-@pytest.mark.parametrize("alias", ["../escape", "a/b", "a\\b", ".."])
+@pytest.mark.parametrize("alias", ["../escape", "a/b", "a\\b", "..", " .. ", " . "])
 def test_repo_alias_rejects_path_traversal(alias):
     with pytest.raises(ValidationError):
         BoardRepoCreate(repo_alias=alias, git_url="https://github.com/owner/repo.git")

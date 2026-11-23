@@ -74,9 +74,10 @@ VALID_REPO_ROLES = {"library", "gateway", "service", "worker", "docs", "other"}
 
 
 def _validate_path_component(value: str | None) -> str | None:
-    if value is not None and (
-        value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value
-    ):
+    if value is None:
+        return None
+    value = value.strip()
+    if value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
         raise ValueError("must be a single safe path component")
     return value
 
