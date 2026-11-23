@@ -24,8 +24,6 @@ if _DASHBOARD_ROOT not in sys.path:
 try:
     from ..settings import (  # type: ignore
         DEFAULT_MAX_ACTIVE_TASKS,
-        DEFAULT_SCAN_ON_IDLE,
-        DEFAULT_IDLE_SCAN_ACTIVE_THRESHOLD,
         DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
         DEFAULT_IDLE_SCAN_MAX_TODO,
         DEFAULT_ACTIVITY_RETENTION_DAYS,
@@ -36,8 +34,6 @@ try:
 except (ImportError, ValueError):
     from settings import (  # type: ignore
         DEFAULT_MAX_ACTIVE_TASKS,
-        DEFAULT_SCAN_ON_IDLE,
-        DEFAULT_IDLE_SCAN_ACTIVE_THRESHOLD,
         DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
         DEFAULT_IDLE_SCAN_MAX_TODO,
         DEFAULT_ACTIVITY_RETENTION_DAYS,
