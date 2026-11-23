@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -52,7 +51,14 @@ for candidate in candidate_roots:
     except Exception:
         pass
 
-from paths import get_hermes_home, get_zerofactory_db_path  # noqa: E402
+# Prefer the plugin tree containing this script over another installed copy.
+sys.path.insert(0, str(SCRIPT_DIR.parent.resolve()))
+
+from paths import (  # noqa: E402
+    get_hermes_home,
+    get_zerofactory_db_path,
+    repository_name_from_git_url,
+)
 
 
 def _get_state_file() -> Path:
@@ -278,11 +284,8 @@ def resolve_repo_path(
     ]
 
     if git_url:
-        cleaned_url = re.sub(r"\.git$", "", git_url.strip().rstrip("/"))
-        parts = cleaned_url.replace(":", "/").split("/")
-        if len(parts) >= 1:
-            repo_name = parts[-1]
-            candidates.append(b_repos / repo_name)
+        repo_name = repository_name_from_git_url(git_url)
+        candidates.append(b_repos / repo_name)
 
     for cand in candidates:
         if cand.is_dir() and (cand / ".git").exists():

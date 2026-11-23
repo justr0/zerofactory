@@ -73,6 +73,14 @@ HUMAN = "human"
 VALID_ASSIGNEES = {UNASSIGNED, HUMAN, *PROFILE_MAP}
 
 
+def repository_name_from_git_url(git_url: str) -> str:
+    """Return the final path component from an HTTPS, SSH, or local Git URL."""
+    cleaned_url = git_url.strip().rstrip("/")
+    if cleaned_url.endswith(".git"):
+        cleaned_url = cleaned_url[:-4]
+    return cleaned_url.replace(":", "/").split("/")[-1]
+
+
 def normalize_assignee(assignee: str | None) -> str:
     """Normalize an assignee onto a canonical ``zf-*`` profile, ``"human"``, or ``"unassigned"``.
 
