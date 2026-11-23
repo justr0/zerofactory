@@ -3,7 +3,54 @@
 import sqlite3
 from pathlib import Path
 
-from migrations.runner import get_applied_migrations, run_migrations
+from migrations.runner import (
+    get_applied_migrations,
+    get_migration_status,
+    run_migrations,
+)
+
+
+def test_migration_status_does_not_create_missing_database(tmp_path: Path):
+    """Inspecting status for a missing database leaves the filesystem unchanged."""
+    db_path = tmp_path / "missing.db"
+    mdir = tmp_path / "migrations"
+    mdir.mkdir()
+    (mdir / "0001_first.sql").write_text("CREATE TABLE t (id INTEGER PRIMARY KEY);")
+
+    status = get_migration_status(db_path=db_path, migrations_dir=mdir)
+
+    assert [(item["version"], item["applied"]) for item in status] == [
+        ("0001_first", False)
+    ]
+    assert not db_path.exists()
+
+
+def test_migration_status_does_not_create_tracking_table(tmp_path: Path):
+    """Untracked legacy databases report migrations pending without writes."""
+    db_path = tmp_path / "legacy.db"
+    mdir = tmp_path / "migrations"
+    mdir.mkdir()
+    (mdir / "0001_first.sql").write_text("CREATE TABLE t (id INTEGER PRIMARY KEY);")
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE legacy (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    status = get_migration_status(db_path=db_path, migrations_dir=mdir)
+
+    assert [(item["version"], item["applied"]) for item in status] == [
+        ("0001_first", False)
+    ]
+    conn = sqlite3.connect(db_path)
+    try:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone()
+            is None
+        )
+    finally:
+        conn.close()
 
 
 def test_run_migrations_applies_pending_in_order_and_once(tmp_path: Path):
