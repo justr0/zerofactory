@@ -104,6 +104,24 @@ hermes dashboard
 ```
 Open **`http://localhost:9119/zerofactory`** in your browser to view your boards, drag-and-drop tasks, and track agent progress.
 
+### Standalone dashboard and external worker adapter
+
+The API and a lightweight task dashboard can run without the Hermes dashboard:
+`python -m dashboard.standalone --host 127.0.0.1 --port 9119` (requires the project's
+FastAPI and Uvicorn runtime dependencies). The standalone page is available at `/`
+and the REST API at `/api/plugins/zerofactory`.
+
+Workers default to Hermes. To use an external foreground worker, set
+`ZEROFACTORY_WORKER_COMMAND` to its executable and `ZEROFACTORY_WORKER_ARGS` to a
+JSON argv array. Supported placeholders are `{prompt}`, `{task_id}`, `{workspace}`
+and `{role}`; the process exit status remains the completion signal and Zero Factory
+retains worktree, SQLite, timeout, reaping and recovery ownership. For example,
+configure an Oh-my-pi executable as `ZEROFACTORY_WORKER_COMMAND=omp` and supply the
+arguments supported by the installed OMP version, e.g.
+`ZEROFACTORY_WORKER_ARGS='["--prompt", "{prompt}"]'`. This adapter contract does not
+assume OMP-specific session APIs; the executable must run in the foreground and
+accept the configured arguments.
+
 ---
 
 ## CLI Management

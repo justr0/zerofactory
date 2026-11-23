@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zero Factory</title>
+<style>body{font:16px system-ui;background:#0b1020;color:#e5e7eb;margin:2rem auto;max-width:1100px;padding:0 1rem}h1{color:#a78bfa}button,input{padding:.55rem;border-radius:.4rem}button{cursor:pointer}#tasks{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem}.task{background:#172033;padding:1rem;border-radius:.7rem}.muted{color:#94a3b8}</style>
+<h1>Zero Factory</h1><p class="muted">Standalone Kanban control surface</p><form id="create"><input id="title" placeholder="Task title" required><button>Create task</button></form><p id="error"></p><div id="tasks"></div>
+<script>
+const api='/api/plugins/zerofactory';
+async function refresh(){const r=await fetch(api+'/tasks');if(!r.ok)throw Error(await r.text());const data=await r.json();const tasks=Array.isArray(data)?data:(data.tasks||[]);document.querySelector('#tasks').innerHTML=tasks.map(t=>`<article class="task"><b>${escapeHtml(t.title)}</b><p>${escapeHtml(t.status)} · ${escapeHtml(t.assignee||'unassigned')}</p><p class="muted">${escapeHtml(t.description||'')}</p></article>`).join('')||'<p>No tasks yet.</p>';}
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+document.querySelector('#create').addEventListener('submit',async e=>{e.preventDefault();const error=document.querySelector('#error');error.textContent='';try{const r=await fetch(api+'/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:document.querySelector('#title').value,priority:'P2'})});if(!r.ok)throw Error(await r.text());document.querySelector('#title').value='';await refresh();}catch(err){error.textContent=err.message;}});
+refresh().catch(e=>document.querySelector('#error').textContent=e.message);setInterval(()=>refresh().catch(()=>{}),5000);
+</script></html>
