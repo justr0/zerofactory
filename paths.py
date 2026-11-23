@@ -338,9 +338,16 @@ def get_active_profile() -> str | None:
     return None
 
 
-def _hermes_profiles_root() -> Path:
-    """Root directory holding per-profile state directories."""
-    return get_hermes_home() / "profiles"
+def get_hermes_profiles_root(hermes_home: Path | None = None) -> Path:
+    """Return the shared directory holding Hermes profile directories.
+
+    Worker environments may set ``HERMES_HOME`` to an active Zero Factory
+    profile. Resolve those homes back to their shared Hermes profile root.
+    """
+    hermes_home = hermes_home or get_hermes_home()
+    if hermes_home.parent.name == "profiles" and hermes_home.name in PROFILE_MAP:
+        return hermes_home.parent
+    return hermes_home / "profiles"
 
 
 def _plugin_profiles_root() -> Path | None:
@@ -376,7 +383,7 @@ def resolve_profile_state_db(assignee: str) -> Path | None:
     norm_asgn = normalize_assignee(assignee)
 
     # 1. Canonical per-profile location.
-    p1 = _hermes_profiles_root() / norm_asgn / "state.db"
+    p1 = get_hermes_profiles_root() / norm_asgn / "state.db"
     if p1.exists():
         return p1
 

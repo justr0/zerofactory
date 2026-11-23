@@ -56,6 +56,15 @@ def get_hermes_home() -> Path:
     return get_hermes_root()
 
 
+def get_hermes_profiles_root() -> Path:
+    """Return the shared root directory containing Hermes profiles."""
+    try:
+        from .paths import get_hermes_profiles_root as _get_profiles_root
+    except (ImportError, ValueError):
+        from paths import get_hermes_profiles_root as _get_profiles_root  # type: ignore
+    return _get_profiles_root(get_hermes_home())
+
+
 def get_plugin_root() -> Path:
     """Return the canonical root path of the zerofactory plugin.
 
@@ -148,8 +157,7 @@ def ensure_zf_profiles(
     Returns:
         Dict with lists of 'created', 'updated', and 'existing' profiles.
     """
-    hermes_home = get_hermes_home()
-    profiles_dir = hermes_home / "profiles"
+    profiles_dir = get_hermes_profiles_root()
 
     # Handle case where profiles_dir is a broken symlink or points to repo
     if profiles_dir.is_symlink():
@@ -306,9 +314,8 @@ def ensure_plugin_symlinks() -> dict[str, Any]:
     1. Root ~/.hermes/plugins/ and ~/.hermes/config.yaml
     2. ~/.hermes/profiles/<role>/plugins/ and config.yaml for each zf-* profile
     """
-    hermes_home = get_hermes_home()
     plugin_root = get_plugin_root()
-    profiles_dir = hermes_home / "profiles"
+    profiles_dir = get_hermes_profiles_root()
 
     # Guardrail: NEVER symlink to a transient git worktree directory
     if "-worktrees" in str(plugin_root) or (plugin_root / ".git").is_file():
@@ -398,10 +405,9 @@ def ensure_script_files() -> dict[str, Any]:
     HERMES_HOME/scripts/ (or <profile>/scripts/). To satisfy this sandbox without
     triggering symlink escape checks, scripts are copied directly.
     """
-    hermes_home = get_hermes_home()
     plugin_root = get_plugin_root()
     src_scripts_dir = plugin_root / "scripts"
-    profiles_dir = hermes_home / "profiles"
+    profiles_dir = get_hermes_profiles_root()
 
     if not src_scripts_dir.is_dir():
         return {"copied": []}
@@ -540,8 +546,7 @@ def sync_langfuse_profiles(settings: dict[str, Any] | None = None) -> dict[str, 
             _log.debug("Could not load settings for Langfuse sync: %s", e)
             settings = {}
 
-    hermes_home = get_hermes_home()
-    profiles_dir = hermes_home / "profiles"
+    profiles_dir = get_hermes_profiles_root()
 
     # Scope strictly to canonical ZF profiles (never touch root or other user profiles)
     target_dirs: list[Path] = []
@@ -739,7 +744,7 @@ def _has_gh_token_in_zf_envs(profiles_dir: Path) -> bool:
 
 def check_gh_auth_status(*, use_cache: bool = True) -> bool:
     """Check whether GitHub CLI is authenticated or GH_TOKEN is set in zf-* .env."""
-    profiles_dir = get_hermes_home() / "profiles"
+    profiles_dir = get_hermes_profiles_root()
     if _has_gh_token_in_zf_envs(profiles_dir):
         return True
     now = time.monotonic()
@@ -764,7 +769,7 @@ def check_gh_auth_status(*, use_cache: bool = True) -> bool:
 
 def check_setup_status(*, use_cache: bool = True) -> dict[str, Any]:
     """Read-only check of Zero Factory profile readiness, template sync, and GitHub auth status."""
-    profiles_dir = get_hermes_home() / "profiles"
+    profiles_dir = get_hermes_profiles_root()
     templates_dir = get_plugin_root() / "templates"
     missing_profiles: list[str] = []
     outdated_profiles: list[str] = []
