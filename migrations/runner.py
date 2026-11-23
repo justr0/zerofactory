@@ -126,8 +126,21 @@ def _execute_sql_file(conn: sqlite3.Connection, file_path: Path) -> None:
     Safely handles statements like `ALTER TABLE ADD COLUMN` if the column already exists.
     """
     content = file_path.read_text(encoding="utf-8")
-    # Split by semicolon while respecting comments
-    raw_statements = content.split(";")
+    # SQLite's parser knows whether a semicolon terminates a statement, including
+    # semicolons inside string literals and trigger bodies.
+    raw_statements = []
+    statement = []
+    for char in content:
+        statement.append(char)
+        if char == ";":
+            candidate = "".join(statement)
+            if sqlite3.complete_statement(candidate):
+                raw_statements.append(candidate)
+                statement = []
+    trailing = "".join(statement)
+    if trailing.strip():
+        raw_statements.append(trailing)
+
     for raw in raw_statements:
         stmt = raw.strip()
         if not stmt:

@@ -26,6 +26,22 @@ def test_run_migrations_applies_pending_in_order_and_once(tmp_path: Path):
         conn.close()
 
 
+def test_run_migrations_preserves_semicolon_inside_sql_literal(tmp_path: Path):
+    """Semicolons inside a quoted literal do not split a SQL migration."""
+    mdir = tmp_path / "migrations"
+    mdir.mkdir()
+    (mdir / "0001_literal.sql").write_text(
+        "CREATE TABLE sample (value TEXT);\nINSERT INTO sample VALUES ('alpha;beta');"
+    )
+
+    conn = sqlite3.connect(tmp_path / "literal.db")
+    try:
+        assert run_migrations(conn, migrations_dir=mdir) == ["0001_literal"]
+        assert conn.execute("SELECT value FROM sample").fetchone()[0] == "alpha;beta"
+    finally:
+        conn.close()
+
+
 def test_run_migrations_skips_initial_schema_for_untracked_existing_database(
     tmp_path: Path,
 ):
