@@ -272,6 +272,7 @@ def sync_board_openwiki_workspace(
         return {"status": "skipped", "reason": "No board slug provided"}
 
     import json
+    import hashlib
     import os
     import re
     import tempfile
@@ -343,7 +344,7 @@ def sync_board_openwiki_workspace(
     ]
 
     # 2. Update or create workspace for board_slug
-    ws_id = _slugify(board_slug, "workspace")
+    ws_id = f"{_slugify(board_slug, 'workspace')[:63]}-{hashlib.sha256(board_slug.encode()).hexdigest()}"
     target_ws = None
     for ws in existing_workspaces:
         if ws.get("id") == ws_id or ws.get("name") == board_slug:
@@ -352,6 +353,7 @@ def sync_board_openwiki_workspace(
 
     if target_ws:
         merged_ids = list(dict.fromkeys(target_ws.get("wikis", []) + member_wiki_ids))
+        target_ws["id"] = ws_id
         target_ws["wikis"] = merged_ids
         target_ws["name"] = board_slug
     else:

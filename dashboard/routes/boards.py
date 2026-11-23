@@ -391,6 +391,26 @@ def test_clone_board(req: BoardTestClone):
     slug = (req.slug or "").strip() or auto_slug or "repo"
     repo_alias = (getattr(req, "repo_alias", None) or "").strip() or repo or slug
 
+    try:
+        from paths import get_board_repos_dir, get_workspaces_root  # type: ignore
+    except Exception:
+        try:
+            from ..paths import get_board_repos_dir, get_workspaces_root  # type: ignore
+        except Exception:
+            get_board_repos_dir = lambda b: (
+                Path.home() / ".zerofactory" / "workspaces" / b / "repos"
+            )  # type: ignore
+            get_workspaces_root = lambda: Path.home() / ".zerofactory" / "workspaces"  # type: ignore
+
+    target_clone = get_board_repos_dir(slug) / repo_alias
+    try:
+        target_clone.resolve().relative_to(get_workspaces_root().resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Clone destination must remain within workspaces",
+        )
+
     # If git operations disabled in test environment
     if os.environ.get("ZEROFACTORY_SKIP_GIT"):
         return {
@@ -399,16 +419,6 @@ def test_clone_board(req: BoardTestClone):
             "cloned": False,
             "path": None,
         }
-
-    try:
-        from paths import get_board_repos_dir  # type: ignore
-    except Exception:
-        try:
-            from ..paths import get_board_repos_dir  # type: ignore
-        except Exception:
-            get_board_repos_dir = lambda b: (
-                Path.home() / ".zerofactory" / "workspaces" / b / "repos"
-            )  # type: ignore
 
     try:
         resolve_board_repo_path = get_repo_resolver()
@@ -458,7 +468,6 @@ def test_clone_board(req: BoardTestClone):
             )
 
         # 3. Attempt clone directly with proper cleanup and descriptive error reporting
-        target_clone = get_board_repos_dir(slug) / (repo_alias or repo or slug)
         if target_clone.exists() and not (target_clone / ".git").exists():
             shutil.rmtree(target_clone, ignore_errors=True)
 

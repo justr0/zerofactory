@@ -26,6 +26,15 @@ from .base import ExternalIssue
 _log = logging.getLogger("zerofactory.issues.importer")
 
 
+def _repo_identity(value: str) -> str:
+    """Normalize a Git URL or owner/repository value to owner/repository."""
+    cleaned = value.strip().rstrip("/")
+    if cleaned.lower().endswith(".git"):
+        cleaned = cleaned[:-4].rstrip("/")
+    parts = re.split(r"[/ :]", cleaned)
+    return "/".join(parts[-2:]).casefold()
+
+
 def resolve_board_for_issue(
     repo_or_project: str | None = None,
     board_slug: str | None = None,
@@ -61,7 +70,15 @@ def resolve_board_for_issue(
             cursor.execute(
                 "SELECT b.slug, br.git_url, br.repo_alias FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug ORDER BY b.created_at ASC"
             )
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            issue_identity = _repo_identity(repo_or_project)
+            for row in rows:
+                git_url = str(row["git_url"] or "")
+                if git_url and _repo_identity(git_url) == issue_identity:
+                    return str(row["slug"])
+
+            # Preserve historical alias/slug/substring discovery for unlinked repos.
+            for row in rows:
                 row_dict = dict(row)
                 slug = str(row_dict.get("slug") or "")
                 git_url = str(row_dict.get("git_url") or "")
@@ -127,19 +144,14 @@ def _resolve_repo_alias(
     if not db_path.exists():
         return None
 
-    def repo_identity(value: str) -> str:
-        cleaned = re.sub(r"\.git$", "", value.strip()).rstrip("/")
-        parts = re.split(r"[/ :]", cleaned)
-        return "/".join(parts[-2:]).casefold()
-
-    identity = repo_identity(repo_or_project)
+    identity = _repo_identity(repo_or_project)
     with sqlite3.connect(str(db_path), timeout=5.0) as conn:
         rows = conn.execute(
             "SELECT repo_alias, git_url FROM board_repositories WHERE board_slug = ?",
             (board_slug,),
         ).fetchall()
     for repo_alias, git_url in rows:
-        if git_url and repo_identity(str(git_url)) == identity:
+        if git_url and _repo_identity(str(git_url)) == identity:
             return str(repo_alias)
     return None
 

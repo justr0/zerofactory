@@ -58,10 +58,6 @@ def _get_state_file() -> Path:
     return paths.get_hermes_home() / "openwiki_state.json"
 
 
-def _get_db_path() -> Path:
-    return paths.get_zerofactory_db_path()
-
-
 def create_openwiki_task(
     board_slug: str, diff_log: str, repo_dir: Path, repo_alias: str | None = None
 ) -> dict[str, Any] | None:
@@ -107,7 +103,7 @@ def create_openwiki_task(
         return task
     except Exception:
         # Fallback to direct SQLite insertion if plugin_api unavailable
-        db_path = _get_db_path()
+        db_path = paths.get_zerofactory_db_path()
         if db_path.exists():
             try:
                 from dashboard.db import generate_task_id
@@ -200,7 +196,7 @@ def resolve_board_slug(repo_dir: Path) -> str:
         if not arg.startswith("-"):
             return arg
 
-    db_path = _get_db_path()
+    db_path = paths.get_zerofactory_db_path()
     if db_path.exists():
         try:
             with sqlite3.connect(str(db_path), timeout=5.0) as conn:
@@ -270,7 +266,7 @@ def has_active_openwiki_task(
     board_slug: str, repo_alias: str | None = None
 ) -> tuple[bool, str]:
     """Check if an OpenWiki setup or update task is already active on the board."""
-    db_path = _get_db_path()
+    db_path = paths.get_zerofactory_db_path()
     if not db_path.exists():
         return False, ""
     try:
@@ -470,7 +466,7 @@ def check_openwiki_gate(
     except Exception:
         pass
 
-    db_path = _get_db_path()
+    db_path = paths.get_zerofactory_db_path()
     board_repos: list[dict[str, Any]] = []
     if db_path.exists():
         try:
@@ -489,7 +485,6 @@ def check_openwiki_gate(
         # Evaluate all linked repositories on this board
         reasons = []
         any_wake = False
-        tasks_created = 0
 
         for r in board_repos:
             alias = r["repo_alias"]
@@ -507,8 +502,6 @@ def check_openwiki_gate(
             reasons.append(f"[{alias}] {reason}")
             if wake:
                 any_wake = True
-            if "created task" in reason:
-                tasks_created += 1
 
         summary = (
             "\n".join(reasons)

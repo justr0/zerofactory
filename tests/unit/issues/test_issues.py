@@ -335,6 +335,36 @@ class TestImporterIdempotencyAndDeterminism:
             == self.board_slug
         )
 
+    def test_resolve_board_prefers_exact_repository_over_prefix_match(self):
+        prefix_board = create_board(
+            BoardCreate(
+                slug="prefix-board",
+                repositories=[
+                    BoardRepoCreate(
+                        repo_alias="app-shell",
+                        git_url="git@github.com:acme/app-shell.git/",
+                    )
+                ],
+            )
+        )
+        exact_board = create_board(
+            BoardCreate(
+                slug="exact-board",
+                repositories=[
+                    BoardRepoCreate(
+                        repo_alias="app",
+                        git_url="https://github.com/acme/app/",
+                    )
+                ],
+            )
+        )
+
+        assert prefix_board["slug"] == "prefix-board"
+        assert (
+            resolve_board_for_issue(repo_or_project="acme/app", db_path=self.db_path)
+            == exact_board["slug"]
+        )
+
     def test_import_issue_deterministic_and_idempotent(self):
         issue = ExternalIssue(
             source="github",
