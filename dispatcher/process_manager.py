@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -123,11 +124,14 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
         else:
             procfs_path = Path("/proc")
             try:
-                if not procfs_path.is_dir():
-                    # Keep best-effort behavior on platforms without procfs.
-                    return True
+                procfs_mode = procfs_path.stat().st_mode
+            except FileNotFoundError:
+                # Keep best-effort behavior only when procfs is confirmed absent.
+                return True
             except OSError:
                 # An inaccessible procfs does not establish that it is absent.
+                return False
+            if not stat.S_ISDIR(procfs_mode):
                 return False
             cmdline_path = Path(f"/proc/{pid}/cmdline")
             cmd_data = cmdline_path.read_bytes()

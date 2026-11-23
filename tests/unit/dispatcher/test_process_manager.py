@@ -175,21 +175,24 @@ def test_process_matches_identity_accepts_wrapped_scanner():
 
 
 def test_process_matches_identity_preserves_non_proc_fallback():
-    """Platforms without accessible procfs retain best-effort acceptance."""
-    with patch("dispatcher.process_manager.Path.is_dir", return_value=False):
+    """Platforms with confirmed-absent procfs retain best-effort acceptance."""
+    with patch("dispatcher.process_manager.Path.stat", side_effect=FileNotFoundError):
         assert process_matches_identity(1234, "scanner_board-a") is True
 
 
 def test_process_matches_identity_rejects_inaccessible_procfs():
     """An error checking procfs must not be mistaken for an absent procfs."""
-    with patch("dispatcher.process_manager.Path.is_dir", side_effect=PermissionError):
+    with patch("dispatcher.process_manager.Path.stat", side_effect=PermissionError):
         assert process_matches_identity(1234, "scanner_board-a") is False
 
 
 def test_process_matches_identity_rejects_unavailable_proc_command_line():
     """Missing, empty, or unreadable per-PID cmdline data fails closed."""
     with (
-        patch("dispatcher.process_manager.Path.is_dir", return_value=True),
+        patch(
+            "dispatcher.process_manager.Path.stat",
+            return_value=MagicMock(st_mode=0o040755),
+        ),
         patch(
             "dispatcher.process_manager.Path.read_bytes",
             side_effect=[FileNotFoundError, b"", PermissionError],
