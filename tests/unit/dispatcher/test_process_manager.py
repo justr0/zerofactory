@@ -37,6 +37,43 @@ def test_is_pid_alive():
     assert is_pid_alive(9999999) is False
 
 
+def test_process_matches_identity_requires_task_specific_marker():
+    """A generic Hermes command is not enough to validate a persisted PID."""
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
+        patch("pathlib.Path.exists", return_value=True),
+        patch(
+            "pathlib.Path.read_bytes",
+            return_value=b"hermes -p zf-builder chat unrelated worker",
+        ),
+    ):
+        assert process_matches_identity(1234, "scanner_no_such_board_marker") is False
+
+
+def test_process_matches_identity_accepts_matching_worker_or_scanner():
+    """The wrapper's task-specific exit-file argument identifies its worker."""
+    for task_id in ("task-123", "scanner_board-a"):
+        with (
+            patch("dispatcher.process_manager.IS_WINDOWS", False),
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "pathlib.Path.read_bytes",
+                return_value=f"hermes -q prompt worker_{task_id}.exit".encode(),
+            ),
+        ):
+            assert process_matches_identity(1234, task_id) is True
+
+
+def test_process_matches_identity_reads_windows_command_line():
+    """Use the Windows process command line query and require the same marker."""
+    result = MagicMock(returncode=0, stdout="python worker_scanner_board-a.exit")
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", True),
+        patch("dispatcher.process_manager.subprocess.run", return_value=result),
+    ):
+        assert process_matches_identity(1234, "scanner_board-a") is True
+
+
 def test_terminate_process_group_with_dead_group():
     """Calling terminate_process_group on dead or non-existent group does not raise."""
     # Should safely return without error
@@ -169,6 +206,7 @@ def test_get_process_exit_code_running(tmp_path):
     with (
         patch("dispatcher.process_manager.get_exit_file_path", return_value=exit_file),
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch("pathlib.Path.exists", return_value=False),
     ):
         state, rc = get_process_exit_code(task_id, pid=12345)

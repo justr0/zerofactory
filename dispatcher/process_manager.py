@@ -100,17 +100,39 @@ def is_pid_alive(pid: int | None) -> bool:
 
 def process_matches_identity(pid: int, task_id: str) -> bool:
     """Check whether a live process still belongs to the given worker task."""
+    if not isinstance(pid, int) or pid <= 0 or not task_id:
+        return False
     try:
-        cmdline_path = Path(f"/proc/{pid}/cmdline")
-        if cmdline_path.exists():
+        if IS_WINDOWS:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode != 0:
+                return False
+            cmd_data = result.stdout
+        else:
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
+            if not cmdline_path.exists():
+                # Keep the legacy best-effort behavior where procfs is absent.
+                return True
             cmd_data = cmdline_path.read_bytes()
-            if cmd_data:
-                return f"worker_{task_id}.exit".encode() in cmd_data
+            if not cmd_data:
+                return True
+            return f"worker_{task_id}.exit".encode() in cmd_data
+        return f"worker_{task_id}.exit" in cmd_data
     except Exception:
-        pass
-    # On platforms without /proc (or when procfs is unavailable), retain the
-    # existing best-effort behavior.
-    return True
+        # Preserve best-effort behavior on platforms without readable procfs.
+        return not IS_WINDOWS
 
 
 def get_process_exit_code(
