@@ -41,6 +41,7 @@ def test_get_active_scanner_pids_preserves_embedded_scanner_in_slug(tmp_path):
     with (
         patch.object(scanner, "get_hermes_home", return_value=tmp_path),
         patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=True),
     ):
         active = scanner.get_active_scanner_pids()
 
