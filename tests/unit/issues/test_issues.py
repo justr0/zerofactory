@@ -219,6 +219,8 @@ class TestGitHubParserAndClient:
         assert issue.author == "devuser"
         assert issue.labels == ["bug", "p0", "zerofactory"]
         assert issue.assignees == ["alice"]
+        assert issue.repo_or_project == "my-org/my-repo"
+        assert issue.raw == fake_data
         assert issue.infer_priority() == "P0"
         assert issue.issue_type == "bug"
         assert issue.has_ai_request_label()
@@ -247,6 +249,45 @@ class TestGitHubParserAndClient:
         assert issues[0].key == "#10"
         assert issues[0].issue_type == "feature"
         assert issues[0].has_ai_request_label()
+        assert issues[0].raw == fake_list[0]
+        assert issues[0].repo_or_project == "my-org/my-repo"
+
+    @patch("subprocess.run")
+    def test_fetch_issue_fallback_number_and_url(self, mock_run):
+        payload = {"title": "  [BUG] Missing response fields  "}
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+
+        issue = GitHubIssueClient(default_repo="default/repo").fetch_issue(
+            "42", repo="explicit/repo"
+        )
+
+        assert issue.id == "42"
+        assert issue.key == "#42"
+        assert issue.url == "https://github.com/explicit/repo/issues/42"
+        assert issue.repo_or_project == "explicit/repo"
+        assert issue.title == "[BUG] Missing response fields"
+        assert issue.issue_type == "bug"
+        assert issue.raw == payload
+
+    @patch("subprocess.run")
+    def test_fetch_investigation_issue_fallback_number_and_url(self, mock_run):
+        payload = [{"title": "Enhancement without a number", "labels": ["enhancement"]}]
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+
+        issue = GitHubIssueClient(
+            default_repo="default/repo"
+        ).fetch_investigation_issues(repo="explicit/repo")[0]
+
+        assert issue.id == ""
+        assert issue.key == "#"
+        assert issue.url == "https://github.com/explicit/repo/issues/"
+        assert issue.repo_or_project == "explicit/repo"
+        assert issue.issue_type == "feature"
+        assert issue.raw == payload[0]
 
     @patch("subprocess.run")
     def test_fetch_issue_gh_error(self, mock_run):
