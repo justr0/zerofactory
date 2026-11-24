@@ -161,7 +161,7 @@ class TestOpenWikiGate(unittest.TestCase):
             "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
         ) as create_task:
             task = self.gate.create_openwiki_task(
-                "test-board", "abc123 feat: add endpoint", self.tmp
+                "test-board", "abc123 feat: add endpoint"
             )
 
         self.assertEqual(task, {"id": "task-1"})
@@ -188,9 +188,7 @@ class TestOpenWikiGate(unittest.TestCase):
                 "dashboard.plugin_api.create_task",
                 side_effect=ValueError("unknown board"),
             ):
-                task = self.gate.create_openwiki_task(
-                    "stale-board", "changes", self.tmp
-                )
+                task = self.gate.create_openwiki_task("stale-board", "changes")
 
         self.assertIsNone(task)
         with sqlite3.connect(str(db_file)) as conn:
@@ -207,7 +205,7 @@ class TestOpenWikiGate(unittest.TestCase):
 
         with patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}):
             with patch.dict("sys.modules", {"dashboard.plugin_api": None}):
-                task = self.gate.create_openwiki_task("test-board", "changes", self.tmp)
+                task = self.gate.create_openwiki_task("test-board", "changes")
 
         self.assertIsNotNone(task)
         with sqlite3.connect(str(db_file)) as conn:
