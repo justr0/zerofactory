@@ -270,6 +270,70 @@ def test_sync_repo_main_ff_merge_on_clean_main():
     assert ("git", "merge", "--ff-only", "origin/main") in rec.calls
 
 
+def test_sync_repo_main_fails_when_fetch_fails_with_existing_origin_ref(
+    tmp_path: Path, caplog
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("initial\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    stale_ref = subprocess.run(
+        ["git", "rev-parse", "refs/remotes/origin/main"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    original_run = subprocess.run
+
+    def fail_fetch(cmd, *args, **kwargs):
+        if cmd == ["git", "fetch", "origin", "main"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                128,
+                stdout="",
+                stderr="fatal: could not read from remote repository",
+            )
+        return original_run(cmd, *args, **kwargs)
+
+    with (
+        patch("dispatcher.git_ops._d") as mock_d,
+        patch("dispatcher.git_ops.subprocess.run", side_effect=fail_fetch),
+        pytest.raises(
+            subprocess.CalledProcessError,
+            match="returned non-zero exit status 128",
+        ),
+    ):
+        mock_d.return_value.get_default_branch.return_value = "main"
+        sync_repo_main(repo)
+
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "refs/remotes/origin/main"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == stale_ref
+    )
+    assert "git fetch/sync origin main failed" in caplog.text
+    assert "could not read from remote repository" in caplog.text
+
+
 # --- 4. Fail-Closed Conflict Detection & Safe Wrapper ---
 
 
@@ -409,6 +473,12 @@ def test_pull_and_merge_main_non_ff(tmp_path: Path):
     )
     subprocess.run(
         ["git", "commit", "-m", "base"],
+        cwd=str(repo_path),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(repo_path)],
         cwd=str(repo_path),
         check=True,
         capture_output=True,

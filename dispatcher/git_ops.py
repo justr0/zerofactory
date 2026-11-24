@@ -46,8 +46,9 @@ def sync_repo_main(repo_path: Path, default_branch: str | None = None) -> str:
     """Fetch latest changes from origin for repository default branch."""
     if not default_branch:
         default_branch = _d().get_default_branch(repo_path)
+    assert default_branch is not None
     try:
-        subprocess.run(
+        fetch = subprocess.run(
             ["git", "fetch", "origin", default_branch],
             cwd=str(repo_path),
             capture_output=True,
@@ -55,6 +56,29 @@ def sync_repo_main(repo_path: Path, default_branch: str | None = None) -> str:
             timeout=10,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
+    except Exception as e:
+        _log.warning(
+            "git fetch/sync origin %s failed in %s: %s",
+            default_branch,
+            repo_path,
+            e,
+        )
+        raise
+    if fetch.returncode != 0:
+        error = subprocess.CalledProcessError(
+            fetch.returncode,
+            ["git", "fetch", "origin", default_branch],
+            output=fetch.stdout,
+            stderr=fetch.stderr,
+        )
+        _log.warning(
+            "git fetch/sync origin %s failed in %s: %s",
+            default_branch,
+            repo_path,
+            (error.stderr or error.output or str(error)).strip(),
+        )
+        raise error
+    try:
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=str(repo_path),

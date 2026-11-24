@@ -72,6 +72,7 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         (self.repo_dir / "README.md").write_text("# Zero Factory E2E Repo\n")
         self._git(self.repo_dir, "add", "README.md")
         self._git(self.repo_dir, "commit", "-m", "chore: initial commit")
+        self._git(self.repo_dir, "remote", "add", "origin", str(self.repo_dir))
 
         # Create Kanban board pointing to this local git repository
         b_res = create_board(

@@ -5,7 +5,7 @@ import os
 import signal
 import sqlite3
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from dispatcher.config import _active_workers
 from dispatcher.process_manager import (
@@ -115,7 +115,7 @@ def test_stop_task_worker_in_memory_and_db():
     with patch("dispatcher.process_manager.terminate_worker_process") as mock_term:
         stop_task_worker("task-test-1")
         assert "task-test-1" not in _active_workers
-        mock_term.assert_called_once_with(mock_proc, 4321)
+        mock_term.assert_called_once_with(mock_proc, 4321, task_id="task-test-1")
 
 
 def test_stop_task_worker_falls_back_to_db_metadata():
@@ -130,7 +130,7 @@ def test_stop_task_worker_falls_back_to_db_metadata():
 
     with patch("dispatcher.process_manager.terminate_worker_process") as mock_term:
         stop_task_worker("t-meta", cursor=conn.cursor())
-        mock_term.assert_called_once_with(None, 8888)
+        mock_term.assert_called_once_with(None, 8888, task_id="t-meta")
 
 
 def test_build_shell_wrapper():
@@ -276,6 +276,7 @@ def test_terminate_task_worker():
     """Verify terminate_task_worker calls process group termination and artifact cleanup."""
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch("builtins.open", mock_open(read_data=b"hermes -q task-xyz")),
         patch("dispatcher.process_manager.terminate_process_group") as mock_term,
         patch("dispatcher.process_manager.cleanup_process_artifacts") as mock_cleanup,
     ):
