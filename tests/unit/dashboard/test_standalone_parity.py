@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import socket
 import subprocess
 import sys
@@ -194,6 +195,8 @@ def test_standalone_legacy_root_tasks_contract_and_static_assets():
         assert response.status_code == 200
         assert response.content
         assert "cdn." not in response.text.lower()
+        if asset == "app.js":
+            assert not re.search(r"[ \t]+$", response.text, re.MULTILINE)
 
 
 def test_standalone_ui_create_task_invokes_api_and_renders_result(
