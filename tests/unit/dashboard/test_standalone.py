@@ -50,3 +50,37 @@ def test_standalone_health_controls_use_existing_api_routes(initialized_db):
     assert "health/stuck-tasks" in page
     assert "health/reap-stuck" in page
     assert client.get("/api/plugins/zerofactory/tasks").status_code == 200
+
+
+def test_standalone_app_serves_and_uses_isolated_database(initialized_db):
+    client = TestClient(app)
+
+    assert client.get("/").status_code == 200
+    created = client.post(
+        "/api/plugins/zerofactory/boards",
+        json={
+            "slug": "standalone-smoke",
+            "repositories": [
+                {
+                    "repo_alias": "main",
+                    "git_url": "https://example.invalid/repo.git",
+                }
+            ],
+        },
+    )
+    assert created.status_code == 200
+    task = client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={"title": "Standalone smoke task", "board_slug": "standalone-smoke"},
+    )
+    assert task.status_code == 200
+
+    tasks = client.get("/api/plugins/zerofactory/tasks?board=standalone-smoke")
+    assert tasks.status_code == 200
+    payload = tasks.json()
+    assert set(payload) == {"ok", "tasks", "count"}
+    assert payload["ok"] is True
+    assert payload["count"] == 1
+    assert len(payload["tasks"]) == 1
+    assert payload["tasks"][0]["id"] == task.json()["id"]
+    assert payload["tasks"][0]["title"] == "Standalone smoke task"
