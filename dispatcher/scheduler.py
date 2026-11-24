@@ -832,6 +832,12 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 repo_for_task = _disp.resolve_task_repo_path(
                                     cursor, board_slug, None
                                 )
+                                if not repo_for_task:
+                                    _log.warning(
+                                        "Skipping idle improvement scan for board '%s': repository could not be resolved",
+                                        board_slug,
+                                    )
+                                    continue
                                 pid = _disp.spawn_board_scanner(
                                     board_slug, repo_for_task
                                 )

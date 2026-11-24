@@ -59,7 +59,7 @@ def _get_state_file() -> Path:
 
 
 def create_openwiki_task(
-    board_slug: str, diff_log: str, repo_dir: Path, repo_alias: str | None = None
+    board_slug: str, diff_log: str, repo_alias: str | None = None
 ) -> dict[str, Any] | None:
     """Deterministically create a documentation sync task on the Kanban board for zf-builder."""
     target_str = f" for repository `{repo_alias}`" if repo_alias else ""
@@ -336,7 +336,6 @@ def evaluate_single_repo_openwiki(
             task = create_openwiki_task(
                 slug,
                 f"Force OpenWiki documentation sync requested{alias_label}",
-                repo_dir,
                 repo_alias=repo_alias,
             )
             if task and task.get("id"):
@@ -390,7 +389,6 @@ def evaluate_single_repo_openwiki(
             task = create_openwiki_task(
                 slug,
                 "Initial OpenWiki documentation sync",
-                repo_dir,
                 repo_alias=repo_alias,
             )
             if task and task.get("id"):
@@ -429,7 +427,7 @@ def evaluate_single_repo_openwiki(
 
     commit_count = len(diff_log.splitlines())
     if auto_create_task:
-        task = create_openwiki_task(slug, diff_log, repo_dir, repo_alias=repo_alias)
+        task = create_openwiki_task(slug, diff_log, repo_alias=repo_alias)
         if task and task.get("id"):
             return (
                 False,

@@ -142,9 +142,10 @@ def test_spawn_board_scanner_ignores_reused_pid_file(tmp_path):
                 return_value={"scan_on_idle": True},
             ),
             patch.object(scanner, "resolve_hermes_bin", return_value="hermes"),
+            patch.object(scanner, "sync_repo_main"),
             patch.object(scanner.subprocess, "Popen", return_value=proc) as mock_popen,
         ):
-            pid = scanner.spawn_board_scanner("board-a")
+            pid = scanner.spawn_board_scanner("board-a", tmp_path)
 
         assert pid == 515151
         mock_popen.assert_called_once()
