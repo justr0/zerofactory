@@ -113,11 +113,6 @@ def kill_tree(pid: int | None, timeout: int = 15) -> bool:
             return False
 
 
-def getpgrp() -> int:
-    """Group identity stand-in: own PID (sufficient for self-kill guards)."""
-    return os.getpid()
-
-
 def detached_popen_kwargs() -> dict:
     """Popen kwargs giving a detached child on the current platform."""
     if IS_WINDOWS:

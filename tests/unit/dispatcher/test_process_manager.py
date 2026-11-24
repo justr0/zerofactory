@@ -292,6 +292,19 @@ def test_terminate_process_group_refuses_self_pgid():
         mock_killpg.assert_not_called()
 
 
+def test_terminate_process_group_without_getpgrp_refuses_own_pid(monkeypatch):
+    """The Windows fallback still guards against signaling the current process."""
+    monkeypatch.delattr(os, "getpgrp")
+    my_pid = os.getpid()
+    proc = MagicMock(pid=1234)
+    with (
+        patch("dispatcher.process_manager.os.getpgid", return_value=my_pid),
+        patch("dispatcher.process_manager.os.killpg") as mock_killpg,
+    ):
+        terminate_process_group(proc, 1234, grace=0.1)
+        mock_killpg.assert_not_called()
+
+
 def test_get_active_profile_from_hermes_home(monkeypatch):
     """Infer profile name from HERMES_HOME=.../profiles/<name> when HERMES_PROFILE is unset."""
     from paths import get_active_profile
