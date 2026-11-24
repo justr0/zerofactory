@@ -66,6 +66,15 @@ def build_minimal_child_env(extra: dict[str, str] | None = None) -> dict[str, st
         "TMPDIR",
         "SSH_AUTH_SOCK",
         "XDG_CONFIG_HOME",
+        # Windows: child hermes resolves home via USERPROFILE; without the
+        # APPDATA/LOCALAPPDATA/SYSTEMROOT trio child processes misbehave.
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "SYSTEMROOT",
+        "ComSpec",
     ):
         val = os.environ.get(key)
         if val is not None:
