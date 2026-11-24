@@ -193,7 +193,18 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             browser = p.chromium.launch(**launch_kwargs)
             page = browser.new_page()
             page_errors: list[str] = []
+            api_requests: list[tuple[str, str, str | None]] = []
             page.on("pageerror", lambda err: page_errors.append(str(err)))
+            page.on(
+                "request",
+                lambda request: (
+                    api_requests.append(
+                        (request.method, request.url, request.post_data)
+                    )
+                    if "/api/plugins/zerofactory/" in request.url
+                    else None
+                ),
+            )
 
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
 
@@ -213,6 +224,55 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             )
             page.get_by_role("button", name="Create Task").click()
             page.get_by_text("Playwright UI Task").wait_for(timeout=10000)
+
+            # Verify the real form submits the API contract, then exercise details
+            # and comments through the rendered task card.
+            create_request = next(
+                (
+                    entry
+                    for entry in api_requests
+                    if entry[0] == "POST" and entry[1].endswith("/tasks")
+                ),
+                None,
+            )
+            assert create_request is not None
+            assert create_request[2] is not None
+            import json
+
+            create_payload = json.loads(create_request[2])
+            assert create_payload["title"] == "Playwright UI Task"
+            assert create_payload["board_slug"] == "demo"
+            list_request = next(
+                entry
+                for entry in api_requests
+                if entry[0] == "GET" and "/tasks?board=demo" in entry[1]
+            )
+            assert list_request[0] == "GET"
+            assert "/stats?board=demo" in "\n".join(url for _, url, _ in api_requests)
+
+            task_button = page.get_by_role("button", name="Open task zf-")
+            if task_button.count() == 0:
+                task_button = page.locator('button[aria-label^="Open task "]')
+            task_button.last.click()
+            page.get_by_text("Discussion & Activity (0)").wait_for(timeout=10000)
+            page.get_by_placeholder("Write a note or comment...").fill(
+                "UI comment payload"
+            )
+            page.get_by_role("button", name="Post", exact=True).click()
+            page.get_by_text("UI comment payload").wait_for(timeout=10000)
+            comment_request = next(
+                entry
+                for entry in api_requests
+                if entry[0] == "POST"
+                and "/tasks/" in entry[1]
+                and entry[1].endswith("/comments")
+            )
+            assert comment_request[2] is not None
+            assert json.loads(comment_request[2]) == {
+                "author": "user",
+                "body": "UI comment payload",
+            }
+            assert page.get_by_text("UI comment payload").is_visible()
 
             # 4. Toggle lane info ("i") panel open and closed
             info_btn = page.get_by_role("button", name="Toggle Human lane information")

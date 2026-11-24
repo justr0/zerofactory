@@ -30,7 +30,10 @@ def _subprocess_env(hermes_home: Path, db_path: Path, bin_dir: Path) -> dict[str
     env["HERMES_HOME"] = str(hermes_home)
     env["ZEROFACTORY_DB"] = str(db_path)
     env["ZEROFACTORY_DISABLE_DISPATCHER"] = "0"
-    env["PYTHONPATH"] = str(REPO_ROOT)
+    inherited_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(REPO_ROOT), inherited_pythonpath) if part
+    )
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env["PYTHONUNBUFFERED"] = "1"
     return env

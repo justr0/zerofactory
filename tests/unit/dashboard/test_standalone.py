@@ -42,7 +42,7 @@ def test_standalone_serves_local_dashboard_assets():
         assert route in script.text
 
 
-def test_standalone_health_controls_use_existing_api_routes():
+def test_standalone_health_controls_use_existing_api_routes(initialized_db):
     client = TestClient(app)
     page = client.get("/").text
 
