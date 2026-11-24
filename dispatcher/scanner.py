@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from paths import get_hermes_home
-from settings import _clamp_int
+from settings import _clamp_int, _parse_bool
 
 from .config import (
     DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
@@ -182,13 +182,13 @@ def get_scanner_cron_config(board_slug: str, cursor: Any = None) -> dict[str, An
         setting_val = raw_settings.get("scan_on_idle")
 
     if setting_val is not None:
-        scan_on_idle = setting_val.strip().lower() in ("1", "true", "yes")
+        scan_on_idle = _parse_bool(setting_val)
     else:
         scan_on_idle = False
 
     env_soi = os.environ.get("ZEROFACTORY_SCAN_ON_IDLE")
     if env_soi is not None:
-        scan_on_idle = env_soi.strip().lower() in ("1", "true", "yes")
+        scan_on_idle = _parse_bool(env_soi)
 
     return {
         "enabled": scan_on_idle,

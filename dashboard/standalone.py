@@ -7,7 +7,8 @@ import ipaddress
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from dashboard.plugin_api import router
 
@@ -24,11 +25,26 @@ def _loopback_host(value: str) -> str:
 
 app = FastAPI(title="Zero Factory")
 app.include_router(router, prefix="/api/plugins/zerofactory")
+_ASSET_DIR = Path(__file__).with_name("standalone_assets")
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
     return (Path(__file__).with_name("standalone.html")).read_text(encoding="utf-8")
+
+
+@app.get("/assets/style.css")
+def dashboard_styles() -> Response:
+    styles = (
+        Path(__file__)
+        .with_name("dist")
+        .joinpath("style.css")
+        .read_text(encoding="utf-8")
+    )
+    return Response(styles, media_type="text/css")
+
+
+app.mount("/assets", StaticFiles(directory=_ASSET_DIR), name="standalone-assets")
 
 
 def main() -> None:

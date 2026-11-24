@@ -1,8 +1,13 @@
 """Unit tests for dashboard/routes/cron.py endpoints."""
 
+import builtins
+import importlib
+import sqlite3
+
 from fastapi.testclient import TestClient
 
 from dashboard.routes import cron as cron_routes
+from settings import DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES, DEFAULT_IDLE_SCAN_MAX_TODO
 
 
 def test_get_cron_jobs(api_client: TestClient, default_board: str):
@@ -37,6 +42,30 @@ def test_get_cron_jobs(api_client: TestClient, default_board: str):
     assert scanner["enabled"] is False
 
 
+def test_cron_flags_accept_trimmed_boolean_settings(api_client: TestClient):
+    """Persisted cron flags keep accepting values padded with whitespace."""
+    from dashboard.db import get_db_conn
+
+    with get_db_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, 0)",
+            [
+                ("cron_enabled_zero-factory-task-queue-check", " true "),
+                ("enable_cron_scheduler", " yes "),
+            ],
+        )
+
+    response = api_client.get("/api/plugins/zerofactory/cron")
+
+    assert response.status_code == 200
+    data = response.json()
+    watchdog = next(
+        job for job in data["jobs"] if job["id"] == "zero-factory-task-queue-check"
+    )
+    assert watchdog["enabled"] is True
+    assert data["scheduler_enabled"] is True
+
+
 def test_get_cron_jobs_scanner_config_error_falls_back(
     api_client: TestClient, default_board: str, monkeypatch
 ):
@@ -61,6 +90,48 @@ def test_get_cron_jobs_scanner_config_error_falls_back(
         == cron_routes.DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
     )
     assert scanner["idle_scan_max_todo"] == cron_routes.DEFAULT_IDLE_SCAN_MAX_TODO
+
+
+def test_cron_import_fallback_uses_canonical_scanner_defaults(monkeypatch):
+    """The disabled scanner import fallback reports settings.py defaults."""
+    original_import = builtins.__import__
+
+    def fail_dispatcher_imports(name, *args, **kwargs):
+        if any(
+            module in name
+            for module in (
+                "dispatcher.scanner",
+                "dispatcher.scheduler",
+                "dispatcher.worktree",
+            )
+        ):
+            raise ImportError("dispatcher imports unavailable")
+        return original_import(name, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(builtins, "__import__", fail_dispatcher_imports)
+            importlib.reload(cron_routes)
+
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                "CREATE TABLE settings (key TEXT, value TEXT);"
+                "CREATE TABLE boards (slug TEXT, description TEXT);"
+                "INSERT INTO boards VALUES ('fallback-board', '');"
+            )
+            jobs = cron_routes._list_builtin_jobs_with_conn(conn)
+            scanner = next(job for job in jobs if job["category"] == "scanner")
+
+            assert (
+                scanner["idle_scan_cooldown_minutes"]
+                == DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES
+            )
+            assert scanner["idle_scan_max_todo"] == DEFAULT_IDLE_SCAN_MAX_TODO
+            assert scanner["enabled"] is False
+            assert scanner["scan_on_idle"] is False
+    finally:
+        importlib.reload(cron_routes)
 
 
 def test_toggle_scheduler(api_client: TestClient):

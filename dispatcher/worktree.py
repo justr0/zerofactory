@@ -23,6 +23,7 @@ from .config import (
     normalize_assignee,
 )
 from .state_machine import transition_task
+from paths import resolve_local_git_checkout
 
 
 def _find_checked_out_worktree(repo_path: Path, branch_name: str) -> Path | None:
@@ -100,12 +101,9 @@ def resolve_board_repo_path(board: dict[str, Any]) -> Path | None:
 
     # 0. Check if git_url is an existing local directory
     if git_url:
-        try:
-            local_p = Path(git_url)
-            if local_p.is_dir() and (local_p / ".git").exists():
-                return local_p.resolve()
-        except Exception:
-            pass
+        local_checkout = resolve_local_git_checkout(git_url)
+        if local_checkout:
+            return local_checkout
 
     candidates: list[Path] = []
     if slug:
@@ -168,12 +166,9 @@ def resolve_task_repo_path(
                 alias = (r_dict.get("repo_alias") or "").strip()
                 url = (r_dict.get("git_url") or "").strip()
                 if url:
-                    try:
-                        p = Path(url)
-                        if p.is_dir() and (p / ".git").exists():
-                            return p.resolve()
-                    except Exception:
-                        pass
+                    local_checkout = resolve_local_git_checkout(url)
+                    if local_checkout:
+                        return local_checkout
                 resolved_r = resolve_board_repo_path(
                     {"git_url": url, "slug": board_slug or alias, "repo_alias": alias}
                 )
