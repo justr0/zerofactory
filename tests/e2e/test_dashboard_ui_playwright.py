@@ -253,6 +253,9 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             task_button = page.get_by_role("button", name="Open task zf-")
             if task_button.count() == 0:
                 task_button = page.locator('button[aria-label^="Open task "]')
+            task_id = (task_button.last.get_attribute("aria-label") or "").removeprefix(
+                "Open task "
+            )
             task_button.last.click()
             page.get_by_text("Discussion & Activity (0)").wait_for(timeout=10000)
             page.get_by_placeholder("Write a note or comment...").fill(
@@ -273,6 +276,40 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
                 "body": "UI comment payload",
             }
             assert page.get_by_text("UI comment payload").is_visible()
+
+            # Exercise the rendered detail controls and their wire contracts.
+            page.get_by_label("Priority").select_option("P1")
+            page.get_by_label("Column").select_option("running")
+            page.get_by_text("Discussion & Activity").wait_for(timeout=10000)
+            detail_requests = [
+                (method, url, json.loads(body) if body else None)
+                for method, url, body in api_requests
+                if "/tasks/" in url
+                and url.split("/tasks/", 1)[1].split("/", 1)[0] == task_id
+            ]
+            task_url = (
+                f"http://127.0.0.1:{port}/api/plugins/zerofactory/tasks/{task_id}"
+            )
+            assert ("PATCH", task_url, {"priority": "P1"}) in detail_requests
+            assert (
+                "POST",
+                task_url + "/move",
+                {"status": "running"},
+            ) in detail_requests
+
+            page.get_by_role("button", name="Delete Task", exact=True).click()
+            page.get_by_role("button", name="Delete Task", exact=True).last.click()
+            page.get_by_text("Playwright UI Task").wait_for(
+                state="hidden", timeout=10000
+            )
+            assert (
+                "DELETE",
+                task_url,
+                None,
+            ) in detail_requests or any(
+                method == "DELETE" and url.endswith(f"/tasks/{task_id}")
+                for method, url, _ in api_requests
+            )
 
             # 4. Toggle lane info ("i") panel open and closed
             info_btn = page.get_by_role("button", name="Toggle Human lane information")
