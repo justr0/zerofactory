@@ -306,8 +306,8 @@ def terminate_worker_process(
     if pid and is_pid_alive(pid):
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = fh.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace"
+                cmdline = (
+                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
                 )
         except (OSError, ValueError):
             cmdline = ""
@@ -333,8 +333,8 @@ def terminate_task_worker(task_id: str, pid: int | None) -> None:
     if pid and is_pid_alive(pid):
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = fh.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace"
+                cmdline = (
+                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
                 )
         except (OSError, ValueError):
             cmdline = ""

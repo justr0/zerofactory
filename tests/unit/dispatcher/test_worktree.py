@@ -327,6 +327,11 @@ def test_setup_worktree_multi_repo_side_by_side(tmp_path: Path):
         check=True,
         capture_output=True,
     )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(primary_repo)],
+        cwd=primary_repo,
+        check=True,
+    )
 
     sibling_repo = tmp_path / "sib_repo"
     sibling_repo.mkdir()
@@ -351,6 +356,11 @@ def test_setup_worktree_multi_repo_side_by_side(tmp_path: Path):
         cwd=str(sibling_repo),
         check=True,
         capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(sibling_repo)],
+        cwd=sibling_repo,
+        check=True,
     )
 
     db_path = tmp_path / "tasks.db"
@@ -522,6 +532,7 @@ def test_setup_worktree_reuses_existing_checked_out_worktree(tmp_path: Path):
     (repo / "f.txt").write_text("hello")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(repo)], cwd=repo, check=True)
 
     fake_home = tmp_path / "home"
     task_root = (
