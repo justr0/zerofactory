@@ -30,10 +30,25 @@ def _subprocess_env(hermes_home: Path, db_path: Path, bin_dir: Path) -> dict[str
     env["HERMES_HOME"] = str(hermes_home)
     env["ZEROFACTORY_DB"] = str(db_path)
     env["ZEROFACTORY_DISABLE_DISPATCHER"] = "0"
-    env["PYTHONPATH"] = str(REPO_ROOT)
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join(
+        path for path in (str(REPO_ROOT), existing_pythonpath) if path
+    )
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env["PYTHONUNBUFFERED"] = "1"
     return env
+
+
+def test_subprocess_env_preserves_existing_pythonpath(tmp_path, monkeypatch):
+    existing_pythonpath = str(tmp_path / "runtime-dependencies")
+    monkeypatch.setenv("PYTHONPATH", existing_pythonpath)
+
+    env = _subprocess_env(tmp_path / "hermes", tmp_path / "db", tmp_path / "bin")
+
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        str(REPO_ROOT),
+        existing_pythonpath,
+    ]
 
 
 def _run_py(code: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
