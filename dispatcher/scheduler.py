@@ -2347,9 +2347,35 @@ def _package_and_open_pr(
             err_msg = str(raw_err).strip()
         err_msg = err_msg or str(e)
         if "No commits between" in err_msg:
+            # Signal-interrupted workers exit 0 via the kanban handler
+            # (#28181 path), so an empty branch can mean the worker was
+            # killed mid-run rather than the task being genuinely satisfied.
+            # Retry the builder once; a second empty pass completes as a no-op.
+            phantom = int((meta or {}).get("no_commit_retries") or 0)
+            if phantom < 1:
+                meta["no_commit_retries"] = phantom + 1
+                steps.end(
+                    "fail", "no commits between branch and main; retrying builder"
+                )
+                _log.warning(
+                    "Task %s packaged with zero commits (worker likely signal-interrupted); retrying builder",
+                    task_id,
+                )
+                _disp.stop_task_worker(task_id, cursor)
+                _disp._remove_worktree(workspace_path, repo_path)
+                cursor.execute(
+                    "UPDATE tasks SET workspace_path = NULL, status = 'todo', assignee = 'zf-builder', metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), now, task_id),
+                )
+                cursor.execute(
+                    "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'no_commits_retry', 'Worker exited with no commits on the task branch (possible signal interruption); re-dispatching builder once before completing as no-op.', ?)",
+                    (task_id, now),
+                )
+                conn.commit()
+                return False
             steps.end("skip", "no commits between branch and main")
             _log.info(
-                "Task %s has no commits between main and branch; completing task without PR.",
+                "Task %s has no commits between main and branch after retry; completing task without PR.",
                 task_id,
             )
             _disp.stop_task_worker(task_id, cursor)
