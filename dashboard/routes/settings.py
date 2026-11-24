@@ -50,6 +50,8 @@ def get_settings():
     """Retrieve global Zero Factory settings."""
     with get_db_conn() as conn:
         settings = load_settings(conn)
+    settings.pop("langfuse_secret_key", None)
+    settings.pop("mem0_api_key", None)
     return {"ok": True, "settings": settings}
 
 
@@ -113,7 +115,7 @@ def update_settings(req: SettingsUpdate):
                 "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('langfuse_public_key', ?, ?)",
                 (val, now),
             )
-        if req.langfuse_secret_key is not None:
+        if req.langfuse_secret_key is not None and str(req.langfuse_secret_key).strip():
             val = str(req.langfuse_secret_key).strip()
             cursor.execute(
                 "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('langfuse_secret_key', ?, ?)",
@@ -151,7 +153,7 @@ def update_settings(req: SettingsUpdate):
                 "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('mem0_base_url', ?, ?)",
                 (val, now),
             )
-        if req.mem0_api_key is not None:
+        if req.mem0_api_key is not None and str(req.mem0_api_key).strip():
             val = str(req.mem0_api_key).strip()
             cursor.execute(
                 "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('mem0_api_key', ?, ?)",
@@ -197,7 +199,6 @@ def update_settings(req: SettingsUpdate):
         conn.commit()
 
     res = get_settings()
-    current_settings = res.get("settings", {})
     if any(
         getattr(req, k) is not None
         for k in (
@@ -211,6 +212,8 @@ def update_settings(req: SettingsUpdate):
     ):
         if callable(sync_langfuse_profiles):
             try:
+                with get_db_conn() as conn:
+                    current_settings = load_settings(conn)
                 sync_langfuse_profiles(current_settings)
             except Exception as e:
                 _log.warning("Could not sync Langfuse across profiles: %s", e)
