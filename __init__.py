@@ -916,6 +916,12 @@ def register(ctx: Any):
             print(
                 f"  (Configure LLM API keys in {profiles_dir}/zf-*/.env if not inherited globally.)\n"
             )
+            print(
+                "UI test & dashboard build deps (optional; precommit warns if missing):"
+            )
+            print('  uv pip install --python "$(command -v python3)" playwright')
+            print("  python3 -m playwright install chromium")
+            print("  npm ci\n")
 
         elif action == "start":
             try:

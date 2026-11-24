@@ -27,6 +27,16 @@ Zero Factory is a Hermes plugin that coordinates specialized agents to implement
 
 From the repository root, run `./.zerofactory/precommit.sh` to execute formatting/linting, Python compilation, and pytest. For dashboard source or asset changes, also run `npm run build` as appropriate. See `README.md` for user-facing installation and CLI documentation; inspect current source and focused tests when a contract is uncertain.
 
+For Playwright UI tests and dashboard builds on a fresh install, run from the repository root:
+
+```bash
+uv pip install --python "$(command -v python3)" playwright
+python3 -m playwright install chromium
+npm ci
+```
+
+The active Python environment may be uv-managed and have no `pip` module; install Playwright with `uv pip`, not `pip install`. Precommit reports any missing Playwright package, Chromium browser, or React UMD assets with the matching fix command. These are warnings rather than hard failures so environments that intentionally omit browser tests remain usable.
+
 ## Repository map
 
 `__init__.py` is the plugin and CLI entrypoint. `dashboard/` contains the API, persistence layer, and UI. `dispatcher/` owns task scheduling and execution orchestration. `scripts/` contains automation helpers. `tests/` is split into unit, integration, and end-to-end suites.

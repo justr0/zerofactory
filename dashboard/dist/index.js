@@ -4321,7 +4321,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			const form = cronEditForms[job.id] || {};
 			const isScanner = job.id.startsWith("zero-factory-improvement-scanner-") || job.category === "scanner";
 			const isOpenWiki = job.id.startsWith("zero-factory-openwiki-update-") || job.category === "openwiki";
-			const boardSlug = isScanner ? job.id.slice("zero-factory-improvement-scanner-".length) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
+			const boardSlug = isScanner ? job.id.slice(33) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
 			const isRunning = runningCronId === job.id;
 			return React.createElement("div", {
 				key: job.id,

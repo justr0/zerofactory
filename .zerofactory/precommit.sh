@@ -88,8 +88,34 @@ run_build() {
   echo "  (info) no further build step defined for this repository."
 }
 
+check_ui_test_deps() {
+  echo "▶ Zero Factory preflight: UI test & dashboard build deps"
+  if python3 -c "import playwright.sync_api" >/dev/null 2>&1; then
+    echo "  ✓ Python Playwright is importable."
+  else
+    echo "  ! Python Playwright is missing; UI browser tests may be skipped."
+    echo "    Fix: uv pip install --python \"\$(command -v python3)\" playwright"
+  fi
+  if [ -f "node_modules/react/umd/react.production.min.js" ] && \
+    [ -f "node_modules/react-dom/umd/react-dom.production.min.js" ]; then
+    echo "  ✓ React UMD assets are present."
+  else
+    echo "  ! React UMD assets are missing; dashboard UI tests/builds may be skipped or fail."
+    echo "    Fix: npm ci"
+  fi
+  if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1; then
+    echo "  ✓ Chromium is available on PATH."
+  elif python3 -c 'from pathlib import Path; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); available=Path(p.chromium.executable_path).is_file(); p.stop(); raise SystemExit(0 if available else 1)' >/dev/null 2>&1; then
+    echo "  ✓ Playwright-managed Chromium is available."
+  else
+    echo "  ! Chromium is unavailable; browser tests cannot launch."
+    echo "    Fix: python3 -m playwright install chromium"
+  fi
+}
+
 run_test() {
   echo "▶ Zero Factory precommit: test"
+  check_ui_test_deps
   # pytest is the test framework defined by tests/conftest.py (fixtures +
   # hermetic env defaults) and the suite imports the plugin runtime deps.
   # It CANNOT run under plain unittest discovery (module-level `import pytest`
