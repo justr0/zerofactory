@@ -119,7 +119,9 @@ Open **`http://localhost:9119/zerofactory`** in your browser to view your boards
 The API and a lightweight task dashboard can run without the Hermes dashboard:
 `python -m dashboard.standalone --host 127.0.0.1 --port 9119` (requires the project's
 FastAPI and Uvicorn runtime dependencies). The standalone page is available at `/`
-and the REST API at `/api/plugins/zerofactory`.
+and the REST API at `/api/plugins/zerofactory`. Standalone mode only binds to a
+loopback IP address; non-loopback `--host` values are rejected because the API
+does not provide authentication.
 
 Workers default to Hermes. To use an external foreground worker, set
 `ZEROFACTORY_WORKER_COMMAND` to its executable and `ZEROFACTORY_WORKER_ARGS` to a
