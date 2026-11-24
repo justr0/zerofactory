@@ -158,6 +158,37 @@ def test_list_tasks_handles_malformed_session_counters(
     assert task["session_progress"]["message_count"] == expected_messages
 
 
+@pytest.mark.parametrize("route", ["session", "sessions"])
+def test_task_session_routes_share_response_and_not_found_behavior(
+    api_client: TestClient, default_board: str, route: str
+):
+    created = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Session endpoint compatibility",
+            "board_slug": default_board,
+            "metadata": {
+                "session_id": "session-1",
+                "sessions": [{"session_id": "session-1", "status": "ongoing"}],
+            },
+        },
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    response = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}/{route}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["session_progress"]["has_session"] is True
+    assert body["sessions"] == body["session_progress"]["sessions"]
+    assert body["sessions"][0]["session_id"] == "session-1"
+
+    missing = api_client.get(f"/api/plugins/zerofactory/tasks/missing-task/{route}")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Task 'missing-task' not found"
+
+
 def test_task_dependencies(api_client: TestClient, default_board: str):
     """Verify linking and unlinking task dependencies with repo_alias and link_type."""
     t1_id = api_client.post(

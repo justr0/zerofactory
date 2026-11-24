@@ -572,25 +572,16 @@ def get_task(task_id: str):
 @router.get("/tasks/{task_id}/session")
 def get_task_session(task_id: str):
     """Get real-time agent session execution progress, turns, active tool calls, and logs."""
-    init_db()
-    with get_db_conn() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        task_row = cursor.fetchone()
-        if not task_row:
-            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
-        task = row_to_dict(task_row)
-        prog = resolve_task_session_progress(task, backfill=True)
-        return {
-            "ok": True,
-            "session_progress": prog,
-            "sessions": prog.get("sessions", []),
-        }
+    return _get_task_sessions(task_id)
 
 
 @router.get("/tasks/{task_id}/sessions")
 def get_task_sessions(task_id: str):
     """Get all historical and ongoing execution sessions for a task across all agents."""
+    return _get_task_sessions(task_id)
+
+
+def _get_task_sessions(task_id: str):
     init_db()
     with get_db_conn() as conn:
         cursor = conn.cursor()
@@ -602,8 +593,8 @@ def get_task_sessions(task_id: str):
         prog = resolve_task_session_progress(task, backfill=True)
         return {
             "ok": True,
-            "sessions": prog.get("sessions", []),
             "session_progress": prog,
+            "sessions": prog.get("sessions", []),
         }
 
 
