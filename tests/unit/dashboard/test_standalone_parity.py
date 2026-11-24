@@ -8,6 +8,7 @@ import time
 from urllib.error import URLError
 from urllib.request import urlopen
 
+import pytest
 from fastapi.routing import APIRoute
 
 
@@ -194,22 +195,29 @@ def test_standalone_legacy_root_tasks_contract_and_static_assets():
         assert response.status_code == 200
         assert response.content
         assert "cdn." not in response.text.lower()
-
-    script = client.get("/assets/app.js").text
-    assert not re.search(r"[ \t]+$", script, re.MULTILINE)
+        if asset == "app.js":
+            assert not re.search(r"[ \t]+$", response.text, re.MULTILINE)
 
 
 def test_standalone_ui_create_task_invokes_api_and_renders_result(
     initialized_db, default_board
 ):
-    sync_api = __import__("pytest").importorskip("playwright.sync_api")
+    sync_api = pytest.importorskip("playwright.sync_api")
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[3]
+    react_umd = repo_root / "node_modules/react/umd/react.production.min.js"
+    react_dom_umd = repo_root / "node_modules/react-dom/umd/react-dom.production.min.js"
+    if not (react_umd.is_file() and react_dom_umd.is_file()):
+        pytest.skip("React UMD assets not found in node_modules; run npm ci")
+
     from tests.e2e.test_dashboard_ui_playwright import (
+        _build_test_app,
         _find_chromium_executable,
         _start_http_bridge,
     )
-    from dashboard.standalone import app
 
-    httpd, thread, port = _start_http_bridge(app)
+    httpd, thread, port = _start_http_bridge(_build_test_app())
     try:
         with sync_api.sync_playwright() as playwright:
             launch_options = {"headless": True}

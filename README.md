@@ -93,6 +93,16 @@ hermes zerofactory setup
 ```
 Configure LLM API keys (and optional `GH_TOKEN`) in `$HERMES_HOME/profiles/zf-*/.env` if not inherited globally.
 
+#### UI test & dashboard build dependencies
+
+For Playwright UI tests and dashboard builds, provision the optional local dependencies from the repository root:
+```bash
+uv pip install --python "$(command -v python3)" playwright
+python3 -m playwright install chromium
+npm ci
+```
+The active Python environment may be uv-managed and have no `pip` module, so use `uv pip` rather than `pip install`. The precommit test phase checks these requirements and prints remediation commands when they are missing; missing UI dependencies warn but do not fail environments that intentionally skip browser tests.
+
 ### 3. Start the Dispatcher & Open the Kanban Dashboard
 The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal (or enable `auto_start_dispatcher` in Settings):
 ```bash
