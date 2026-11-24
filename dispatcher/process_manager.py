@@ -290,8 +290,37 @@ def terminate_process_group(
             pass
 
 
-def terminate_worker_process(proc: subprocess.Popen | None, pid: int | None) -> None:
-    """Safely terminate a worker process group with SIGTERM then SIGKILL."""
+def terminate_worker_process(
+    proc: subprocess.Popen | None,
+    pid: int | None,
+    task_id: str | None = None,
+) -> None:
+    """Safely terminate a worker process group with SIGTERM then SIGKILL.
+
+    When ``task_id`` is provided, the live PID's cmdline is verified to still
+    reference the task before signaling: worker PIDs recorded in the DB can
+    go stale and be recycled by the OS for an unrelated process, and
+    signaling that PID kills an innocent process — a suspected contributor to
+    the worker-loss churn. Mismatched PIDs are skipped and logged instead.
+    """
+    if pid and is_pid_alive(pid):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace"
+                )
+        except (OSError, ValueError):
+            cmdline = ""
+        if task_id and task_id not in cmdline:
+            _log.warning(
+                "terminate_worker_process: PID %s no longer matches task %s "
+                "(cmdline: %.120s); skipping signal to avoid killing an "
+                "unrelated recycled process",
+                pid,
+                task_id,
+                cmdline,
+            )
+            return
     try:
         terminate_process_group(proc, pid)
     except Exception as e:
@@ -302,6 +331,21 @@ def terminate_task_worker(task_id: str, pid: int | None) -> None:
     """Safely terminate any active worker process group for a task and clean up artifacts."""
     _active_workers.pop(task_id, None)
     if pid and is_pid_alive(pid):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace"
+                )
+        except (OSError, ValueError):
+            cmdline = ""
+        if task_id not in cmdline:
+            _log.warning(
+                "terminate_task_worker: PID %s no longer matches task %s; skipping signal (stale/recycled PID)",
+                pid,
+                task_id,
+            )
+            cleanup_process_artifacts(task_id)
+            return
         terminate_process_group(None, pid)
     cleanup_process_artifacts(task_id)
 
@@ -353,5 +397,5 @@ def stop_task_worker(
                     pid = meta.get("worker_pid")
         except Exception:
             pass
-    terminate_worker_process(proc, pid)
+    terminate_worker_process(proc, pid, task_id=task_id)
     cleanup_process_artifacts(task_id)
