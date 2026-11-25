@@ -189,7 +189,7 @@ def test_reap_active_workers_transitions_stuck_task(tmp_path: Path):
         conn.commit()
 
     assert reaped == 1
-    mock_term.assert_called_once_with(mock_proc, 1111)
+    mock_term.assert_called_once_with(mock_proc, 1111, task_id="t-stuck")
 
     row = conn.execute(
         "SELECT status, metadata FROM tasks WHERE id = 't-stuck'"
@@ -280,7 +280,7 @@ def test_reap_active_workers_parks_exhausted_stuck_task(tmp_path: Path):
         conn.commit()
 
     assert reaped == 1
-    mock_term.assert_called_once_with(mock_proc, 2222)
+    mock_term.assert_called_once_with(mock_proc, 2222, task_id="t-stuck2")
 
     row = conn.execute(
         "SELECT status, assignee, metadata FROM tasks WHERE id = 't-stuck2'"
@@ -314,7 +314,7 @@ def test_reap_active_workers_parks_exhausted_stuck_task(tmp_path: Path):
         reaped2 = reap_active_workers(conn.cursor(), now=now)
         conn.commit()
     assert reaped2 == 1
-    mock_term2.assert_called_once_with(mock_proc2, 3333)
+    mock_term2.assert_called_once_with(mock_proc2, 3333, task_id="t-stuck2")
     row2 = conn.execute(
         "SELECT status, assignee, metadata FROM tasks WHERE id = 't-stuck2'"
     ).fetchone()

@@ -1,6 +1,7 @@
 """Integration tests for Task API endpoints (/api/plugins/zerofactory/tasks)."""
 
 import json
+from collections.abc import Mapping
 
 from fastapi.testclient import TestClient
 import pytest
@@ -72,6 +73,106 @@ def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
     assert list_res.status_code == 200
     filtered_tasks = list_res.json()["tasks"]
     assert any(t["id"] == task_id for t in filtered_tasks)
+
+
+@pytest.mark.parametrize("unsafe", ["/tmp/outside", "../outside"])
+def test_task_api_rejects_unsafe_path_components(
+    api_client: TestClient, default_board: str, unsafe: str
+):
+    endpoint = "/api/plugins/zerofactory/tasks"
+    for field, value in (
+        ("task_id", unsafe),
+        ("repo_alias", unsafe),
+        ("target_repos", [unsafe]),
+    ):
+        body = {"title": "Unsafe", "board_slug": default_board, field: value}
+        assert api_client.post(endpoint, json=body).status_code == 422
+
+    task_id = api_client.post(
+        endpoint, json={"title": "Safe", "board_slug": default_board}
+    ).json()["id"]
+    for field, value, status in (
+        ("repo_alias", unsafe, 422),
+        ("target_repos", [unsafe], 422),
+        ("metadata", {"target_repos": [unsafe]}, 400),
+    ):
+        assert (
+            api_client.patch(f"{endpoint}/{task_id}", json={field: value}).status_code
+            == status
+        )
+
+
+def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
+    api_client: TestClient, default_board: str
+):
+    with get_db_conn() as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, created_at, updated_at) VALUES ('other-board', 1, 1)"
+        )
+        conn.executemany(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+            [
+                (default_board, "frontend", "https://example.com/frontend.git"),
+                (default_board, "web", "https://example.com/web.git"),
+                ("other-board", "backend", "https://example.com/backend.git"),
+            ],
+        )
+        conn.commit()
+
+    endpoint = "/api/plugins/zerofactory/tasks"
+
+    def request_status(
+        method: str, body: Mapping[str, object], task_id: str | None = None
+    ) -> int:
+        url = f"{endpoint}/{task_id}" if task_id else endpoint
+        return api_client.request(method, url, json=body).status_code
+
+    for field, value in (("repo_alias", "unlinked"), ("target_repos", ["unlinked"])):
+        body = {"title": "Unlinked", "board_slug": default_board, field: value}
+        assert request_status("POST", body) == 400
+
+    created = api_client.post(
+        endpoint,
+        json={
+            "title": "Linked repository task",
+            "board_slug": default_board,
+            "repo_alias": "frontend",
+            "metadata": {"target_repos": ["frontend"]},
+        },
+    )
+    task_id = created.json()["id"]
+
+    for changes in (
+        {"repo_alias": "unlinked"},
+        {"metadata": {"target_repos": ["unlinked"]}},
+        {"board_slug": "other-board"},
+        {"board_slug": ""},
+    ):
+        assert request_status("PATCH", changes, task_id) == 400
+
+    unchanged = api_client.get(f"{endpoint}/{task_id}").json()["task"]
+    assert (unchanged["board_slug"], unchanged["repo_alias"]) == (
+        default_board,
+        "frontend",
+    )
+    assert unchanged["metadata"]["target_repos"] == ["frontend"]
+
+    assert (
+        request_status(
+            "PATCH",
+            {
+                "board_slug": "other-board",
+                "repo_alias": "backend",
+                "target_repos": ["backend"],
+                "metadata": {"target_repos": ["backend"]},
+            },
+            task_id,
+        )
+        == 200
+    )
+    task = api_client.get(f"{endpoint}/{task_id}").json()["task"]
+    assert (task["board_slug"], task["repo_alias"]) == ("other-board", "backend")
+    assert task["metadata"]["target_repos"] == ["backend"]
 
 
 @pytest.mark.parametrize(
@@ -191,6 +292,14 @@ def test_task_session_routes_share_response_and_not_found_behavior(
 
 def test_task_dependencies(api_client: TestClient, default_board: str):
     """Verify linking and unlinking task dependencies with repo_alias and link_type."""
+    with get_db_conn() as conn:
+        for alias in ("common-lib", "order-service", "api-gateway"):
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+                (default_board, alias, f"https://example.com/{alias}.git"),
+            )
+        conn.commit()
+
     t1_id = api_client.post(
         "/api/plugins/zerofactory/tasks",
         json={
