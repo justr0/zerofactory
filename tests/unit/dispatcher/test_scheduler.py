@@ -224,17 +224,24 @@ def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("running_metadata", "max_active_tasks", "expected_todo_status"),
+    (
+        "running_metadata",
+        "max_active_tasks",
+        "active_scanners",
+        "expected_todo_status",
+    ),
     [
-        ('{"awaiting_pr": true}', 5, "running"),
-        ("{}", 5, "todo"),
-        ('{"awaiting_pr": true}', 1, "todo"),
+        ('{"awaiting_pr": true}', 5, {}, "running"),
+        ("{}", 5, {}, "todo"),
+        ('{"awaiting_pr": true}', 1, {}, "todo"),
+        ('{"awaiting_pr": true}', 5, {"other-board": 2345}, "todo"),
     ],
 )
 def test_dispatch_capacity_excludes_packaging_but_preserves_wip_limit(
     tmp_path: Path,
     running_metadata: str,
     max_active_tasks: int,
+    active_scanners: dict[str, int],
     expected_todo_status: str,
 ):
     """Packaging frees LLM capacity but still counts toward the task WIP limit."""
@@ -269,7 +276,16 @@ def test_dispatch_capacity_excludes_packaging_but_preserves_wip_limit(
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.object(dispatcher, "reap_active_workers", return_value=0),
         patch.object(dispatcher, "reap_active_scanners"),
-        patch.object(dispatcher.scanner, "get_active_scanner_pids", return_value={}),
+        patch.object(
+            dispatcher.scanner,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
+        patch.object(
+            dispatcher,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
         patch.dict(
             os.environ,
             {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
@@ -284,11 +300,18 @@ def test_dispatch_capacity_excludes_packaging_but_preserves_wip_limit(
 
 
 @pytest.mark.parametrize(
-    ("running_metadata", "expect_scan"),
-    [('{"awaiting_pr": true}', True), ("{}", False)],
+    ("running_metadata", "active_scanners", "expect_scan"),
+    [
+        ('{"awaiting_pr": true}', {}, True),
+        ("{}", {}, False),
+        ('{"awaiting_pr": true}', {"other-board": 2345}, False),
+    ],
 )
 def test_packaging_does_not_consume_idle_scanner_llm_capacity(
-    tmp_path: Path, running_metadata: str, expect_scan: bool
+    tmp_path: Path,
+    running_metadata: str,
+    active_scanners: dict[str, int],
+    expect_scan: bool,
 ):
     """Idle scanning remains eligible during packaging, but not during agent work."""
     db_path = tmp_path / "test.db"
@@ -314,7 +337,16 @@ def test_packaging_does_not_consume_idle_scanner_llm_capacity(
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.object(dispatcher, "reap_active_workers", return_value=0),
         patch.object(dispatcher, "reap_active_scanners"),
-        patch.object(dispatcher.scanner, "get_active_scanner_pids", return_value={}),
+        patch.object(
+            dispatcher.scanner,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
+        patch.object(
+            dispatcher,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
         patch.object(
             dispatcher,
             "get_scanner_cron_config",
@@ -327,6 +359,7 @@ def test_packaging_does_not_consume_idle_scanner_llm_capacity(
         patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
         patch.object(dispatcher, "spawn_board_scanner", return_value=12345) as spawn,
         patch.object(dispatcher, "clean_stale_git_locks"),
+        patch.dict(dispatcher._last_idle_scan_times, {}, clear=True),
         patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": "1"}),
     ):
         result = run_dispatch_cycle(db_path)

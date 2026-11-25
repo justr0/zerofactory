@@ -782,9 +782,6 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 
                 # 4. Capacity-driven / Idle Improvement Scanner Check
                 _disp.reap_active_scanners()
-                active_count = cursor.execute(
-                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-                ).fetchone()[0]
                 llm_workers = _disp._global_llm_occupancy(
                     _count_running_agent_tasks(cursor)
                 )
