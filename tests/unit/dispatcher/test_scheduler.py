@@ -1,12 +1,12 @@
 """Unit tests for dispatcher/scheduler.py: dispatch cycle, concurrency flock, dependency unblocking, and WIP limits."""
 
-import fcntl
 import json
 import os
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from dispatcher import fcntl
 from dispatcher.scheduler import run_dispatch_cycle
 
 
