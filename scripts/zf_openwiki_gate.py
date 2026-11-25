@@ -196,11 +196,6 @@ def load_state() -> dict[str, Any]:
     return {}
 
 
-def _normalize_git_url(git_url: str) -> str:
-    """Normalize equivalent trailing-slash and .git URL spellings."""
-    return git_url.strip().rstrip("/").removesuffix(".git").casefold()
-
-
 def resolve_board_slug(repo_dir: Path) -> str | None:
     """Resolve an explicit board slug or an exact, unambiguous repo match."""
     for arg in sys.argv[1:]:
@@ -222,14 +217,12 @@ def resolve_board_slug(repo_dir: Path) -> str | None:
                 for row in cursor.fetchall():
                     slug, git_url = row[0], row[1] or ""
                     remote_matches = bool(
-                        git_url
-                        and remote_url
-                        and _normalize_git_url(git_url)
-                        == _normalize_git_url(remote_url)
+                        git_url and remote_url and git_url == remote_url
                     )
                     local_path_matches = bool(
                         git_url
-                        and Path(git_url).expanduser().resolve() == repo_dir.resolve()
+                        and str(Path(git_url).expanduser().resolve())
+                        == str(repo_dir.resolve())
                     )
                     if slug and (remote_matches or local_path_matches):
                         matches.add(slug)
