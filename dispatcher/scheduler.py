@@ -35,9 +35,9 @@ from .config import (
     _active_scanners,
     _active_workers,
     _dispatcher_lock,
-    _dispatcher_thread,
     _last_idle_scan_times,
     _log,
+    get_dispatcher_lock_path,
     is_worker_or_child_process,
     load_settings,
     StepTracker,
@@ -2147,9 +2147,16 @@ def _package_and_open_pr(
                         )
                         ssh_push_cmd = ["git", "push", "-u", ssh_url, f"task/{task_id}"]
                         ssh_push_env = _disp.git_subprocess_env()
-                        _run_git = getattr(fcntl, "run_git", None)  # Windows port: tree-kill timeout
+                        _run_git = getattr(
+                            fcntl, "run_git", None
+                        )  # Windows port: tree-kill timeout
                         push_ssh = (
-                            _run_git(ssh_push_cmd, cwd=workspace_path, timeout=180, env=ssh_push_env)
+                            _run_git(
+                                ssh_push_cmd,
+                                cwd=workspace_path,
+                                timeout=180,
+                                env=ssh_push_env,
+                            )
                             if _run_git is not None
                             else subprocess.run(
                                 ssh_push_cmd,
@@ -2490,23 +2497,127 @@ def _finalize_terminal_done(
     steps.end("ok")
 
 
+# Thread name shared by every dispatch loop so that all copies of this module
+# loaded into one process (package import and top-level import) recognise each
+# other's thread instead of each starting its own dispatcher.
+DISPATCHER_THREAD_NAME = "ZeroFactoryKanbanDispatcher"
+
+# Stop event of the loop started by THIS copy of the module. Each loop thread also
+# carries its own event as ``_zf_stop_event`` so that any copy can stop a loop it
+# did not start.
 _dispatcher_stop_event = threading.Event()
 
+# Handle of the dispatch loop started by THIS copy of the module. Kept for
+# callers that inspect it; ``live_dispatcher_threads()`` is the process-wide view.
+_dispatcher_thread: threading.Thread | None = None
 
-def _dispatcher_loop():
-    """Background polling daemon thread for Kanban dispatch."""
-    while not _dispatcher_stop_event.is_set():
+
+def get_dispatcher_owner_lock_path() -> Path:
+    """Path of the lock held for the whole life of the dispatch loop.
+
+    Distinct from the per-cycle lock: it says *who owns the loop*, not merely
+    that a cycle is executing right now.
+    """
+    return Path(f"{get_dispatcher_lock_path()}.owner")
+
+
+def _acquire_dispatcher_owner_lock() -> tuple[int | None, bool]:
+    """Try to become the dispatch-loop owner.
+
+    Returns ``(fd, acquired)``. ``acquired`` is False only when another loop
+    (a thread or a whole process) holds the lock; the fd must then not be used.
+    Ownership is advisory: when the filesystem refuses ``flock`` outright we fail
+    open, exactly like the per-cycle lock, rather than never dispatching again.
+    """
+    lock_path = get_dispatcher_owner_lock_path()
+    lock_fd: int | None = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_CLOEXEC"):
+            lock_flags |= os.O_CLOEXEC
+        lock_fd = os.open(str(lock_path), lock_flags, 0o666)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd, True
+    except BlockingIOError:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+        return None, False
+    except OSError as e:
+        _log.warning(
+            "Could not lock dispatcher ownership file %s (%s); continuing without it",
+            lock_path,
+            e,
+        )
+        return lock_fd, True
+
+
+def dispatcher_owned_elsewhere() -> bool:
+    """True when a dispatch loop owned by someone else is running.
+
+    "Someone else" is any other open file description: a loop thread in this
+    process (started by another copy of the module) or a loop in another process.
+    """
+    lock_fd, acquired = _acquire_dispatcher_owner_lock()
+    if lock_fd is not None:
         try:
-            run_dispatch_cycle()
-        except Exception as e:
-            _log.error("Unexpected error in background dispatcher loop: %s", e)
+            os.close(lock_fd)
+        except Exception:
+            pass
+    return not acquired
 
-        if _dispatcher_stop_event.wait(DISPATCH_INTERVAL_SECONDS):
-            break
+
+def _thread_is_stopping(thread: threading.Thread) -> bool:
+    event = getattr(thread, "_zf_stop_event", None)
+    return bool(event is not None and event.is_set())
+
+
+def live_dispatcher_threads() -> list[threading.Thread]:
+    """Dispatch-loop threads alive in this process, whichever module copy started them."""
+    return [
+        t
+        for t in threading.enumerate()
+        if t.name == DISPATCHER_THREAD_NAME
+        and t.is_alive()
+        and t is not threading.current_thread()
+    ]
+
+
+def _dispatcher_loop(
+    stop_event: threading.Event | None = None, owner_fd: int | None = None
+):
+    """Background polling daemon thread for Kanban dispatch.
+
+    Holds the ownership lock (``owner_fd``) until the loop exits, so that other
+    processes loading this plugin do not start a second dispatcher.
+    """
+    stop_event = stop_event if stop_event is not None else _dispatcher_stop_event
+    try:
+        while not stop_event.is_set():
+            try:
+                run_dispatch_cycle()
+            except Exception as e:
+                _log.error("Unexpected error in background dispatcher loop: %s", e)
+
+            if stop_event.wait(DISPATCH_INTERVAL_SECONDS):
+                break
+    finally:
+        if owner_fd is not None:
+            try:
+                os.close(owner_fd)
+            except Exception:
+                pass
 
 
 def start_background_dispatcher() -> bool:
-    """Start background dispatcher daemon thread if not already running.
+    """Start the background dispatcher daemon thread unless a loop already exists.
+
+    There is exactly one dispatch loop per machine. A second call - from this
+    copy of the module, from another copy loaded into the same process, or from
+    another process - adopts the running loop or declines, and returns False.
 
     Returns True if a new thread was started, False if already running or skipped.
     """
@@ -2518,34 +2629,61 @@ def start_background_dispatcher() -> bool:
         return False
     global _dispatcher_thread
     with _dispatcher_lock:
-        if _dispatcher_thread is None or not _dispatcher_thread.is_alive():
-            _dispatcher_stop_event.clear()
-            _dispatcher_thread = threading.Thread(
-                target=_dispatcher_loop, name="ZeroFactoryKanbanDispatcher", daemon=True
-            )
-            _dispatcher_thread.start()
+        for thread in live_dispatcher_threads():
+            if _thread_is_stopping(thread):
+                # A loop that was told to stop still owns the lock until it exits.
+                thread.join(timeout=2.0)
+        running = [t for t in live_dispatcher_threads() if not _thread_is_stopping(t)]
+        if running:
+            _dispatcher_thread = running[0]
+            return False
+        owner_fd, acquired = _acquire_dispatcher_owner_lock()
+        if not acquired:
             _log.info(
-                "Zero Factory Kanban background dispatcher started (interval: %ss)",
-                DISPATCH_INTERVAL_SECONDS,
+                "Zero Factory Kanban background dispatcher not started here: "
+                "another process owns the dispatch loop"
             )
-            return True
-    return False
+            return False
+        _dispatcher_stop_event.clear()
+        thread = threading.Thread(
+            target=_dispatcher_loop,
+            args=(_dispatcher_stop_event, owner_fd),
+            name=DISPATCHER_THREAD_NAME,
+            daemon=True,
+        )
+        thread._zf_stop_event = _dispatcher_stop_event  # type: ignore[attr-defined]
+        thread.start()
+        _dispatcher_thread = thread
+        _log.info(
+            "Zero Factory Kanban background dispatcher started (interval: %ss)",
+            DISPATCH_INTERVAL_SECONDS,
+        )
+        return True
 
 
 def stop_background_dispatcher(timeout: float = 2.0) -> bool:
     """Signal the in-process background dispatcher daemon thread to stop.
 
+    Stops every dispatch loop alive in this process, including one started by
+    another copy of the module. A loop owned by another process cannot be
+    stopped from here (see ``dispatcher_owned_elsewhere``).
+
     Returns True if a running thread was signalled to stop, False if none was running.
     """
     global _dispatcher_thread
+    threads = live_dispatcher_threads()
+    if not threads:
+        with _dispatcher_lock:
+            _dispatcher_thread = None
+        return False
+    for thread in threads:
+        event = getattr(thread, "_zf_stop_event", None)
+        (event if event is not None else _dispatcher_stop_event).set()
+    deadline = time.monotonic() + timeout
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
     with _dispatcher_lock:
-        thread = _dispatcher_thread
-        if thread is None or not thread.is_alive():
-            return False
-        _dispatcher_stop_event.set()
-    thread.join(timeout=timeout)
-    with _dispatcher_lock:
-        if _dispatcher_thread is thread and not thread.is_alive():
+        if _dispatcher_thread is None or not _dispatcher_thread.is_alive():
             _dispatcher_thread = None
     _log.info("Zero Factory Kanban background dispatcher stopped")
     return True
