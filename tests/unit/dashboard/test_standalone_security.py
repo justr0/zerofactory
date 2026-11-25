@@ -94,3 +94,100 @@ def test_new_langfuse_secret_is_synced_but_not_returned(api_client, monkeypatch)
     assert synced["langfuse_secret_key"] == "new-langfuse-secret"
     assert "langfuse_secret_key" not in response.json()["settings"]
     assert "new-langfuse-secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://attacker.example",
+        "null",
+        "http://testserver/path",
+        "http://testserver:invalid",
+    ],
+)
+def test_standalone_blocks_cross_origin_reaper_post(
+    initialized_db, monkeypatch, origin
+):
+    from fastapi.testclient import TestClient
+
+    import dispatcher
+    from dashboard.standalone import app
+
+    reaped = []
+    monkeypatch.setattr(
+        dispatcher, "reap_stuck_tasks", lambda **kwargs: reaped.append(kwargs)
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/plugins/zerofactory/health/reap-stuck",
+        headers={"Origin": origin},
+    )
+
+    assert response.status_code == 403
+    assert reaped == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/health/reap-stuck"),
+        ("PUT", "/cron/missing"),
+        ("PATCH", "/settings"),
+        ("DELETE", "/memories/missing"),
+    ],
+)
+def test_standalone_blocks_cross_origin_mutation_methods(initialized_db, method, path):
+    from fastapi.testclient import TestClient
+
+    from dashboard.standalone import app
+
+    response = TestClient(app).request(
+        method,
+        f"/api/plugins/zerofactory{path}",
+        headers={"Origin": "https://attacker.example"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_standalone_allows_same_origin_dashboard_mutations(
+    initialized_db, default_board
+):
+    from fastapi.testclient import TestClient
+
+    from dashboard.standalone import app
+
+    response = TestClient(app).post(
+        "/api/plugins/zerofactory/tasks",
+        headers={"Origin": "http://TESTSERVER:80"},
+        json={
+            "title": "Same-origin dashboard action",
+            "description": "Origin validation preserves dashboard actions",
+            "priority": "P2",
+            "assignee": "zf-builder",
+            "status": "todo",
+            "board_slug": default_board,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["id"]
+    task = TestClient(app).get(f"/api/plugins/zerofactory/tasks/{task_id}")
+    assert task.json()["task"]["title"] == "Same-origin dashboard action"
+
+
+@pytest.mark.parametrize("fetch_site", ["cross-site", "same-site"])
+def test_standalone_blocks_non_same_origin_fetch_without_origin(
+    initialized_db, fetch_site
+):
+    from fastapi.testclient import TestClient
+
+    from dashboard.standalone import app
+
+    response = TestClient(app).post(
+        "/api/plugins/zerofactory/health/reap-stuck",
+        headers={"Sec-Fetch-Site": fetch_site},
+    )
+
+    assert response.status_code == 403
