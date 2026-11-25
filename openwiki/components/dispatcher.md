@@ -327,28 +327,18 @@ ops).
   (`repo://dashboard/routes/tasks.py#L1724-L1726`).
 - **Review-cap arbitration** — with arbitration enabled
   (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default on) the cap additionally
-  posts one `[AI:zf-dispatcher] ARBITRATION REQUEST` conversation comment on
-  the PR for the arbiter profile (`zf-gatekeeper` by default), bound to the
-  request key `arbitration:<task_id>:<full_head_sha>` and the full head SHA,
-  and keeps the task parked — out of conflict handling, ordinary
-  review-comment routing and auto-merge — until that profile answers. Only
-  the **first line** of a PR conversation comment (never an inline review
-  body) reading exactly
-  `[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>`
-  (`... MERGE` / `... ESCALATE`) from an authorized GitHub account
-  (`ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS`, default the `gh` login
-  plus the repository owner), for the open request key and the live head,
-  counts (`dispatcher/review_cap_arbitration.py`). FIX re-opens the task for
-  one bounded fix round with a fresh review budget and the verdict as the
-  builder's entire brief (earlier findings are deferred); MERGE leaves it
-  parked until the arbiter merges it; ESCALATE — or an unanswered request
-  after `ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` (24) — leaves it
-  parked for the human. A task is arbitrated at most
-  `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` times, tasks flagged for
+  posts one `ARBITRATION REQUEST` comment on the PR for the arbiter profile
+  (`zf-gatekeeper` by default) and keeps the task parked until that profile
+  answers with a line starting `[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX`,
+  `... MERGE` or `... ESCALATE` (`dispatcher/review_cap_arbitration.py`).
+  FIX re-opens the task for one bounded fix round with a fresh review budget
+  and the verdict as the builder's brief; MERGE leaves it parked until the
+  arbiter merges it; ESCALATE — or an unanswered request after
+  `ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` — leaves it parked for
+  the human. A task is arbitrated at most
+  `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` times, and tasks flagged for
   human review (`permanently_blocked`, `hitl` / `manual-review` tags,
-  HITL-labelled external issues) skip arbitration entirely, and a request
-  whose flag or opt-out changed while it was open is voided into a plain
-  human park.
+  HITL-labelled external issues) skip arbitration entirely.
 - **External-issue PR linkage** — when a task carries `external_issue` metadata
   (see [External Issue Import](/openwiki/components/issues-importer.md)), the
   PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
