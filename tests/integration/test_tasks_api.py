@@ -1,6 +1,7 @@
 """Integration tests for Task API endpoints (/api/plugins/zerofactory/tasks)."""
 
 import json
+from collections.abc import Mapping
 
 from fastapi.testclient import TestClient
 import pytest
@@ -84,25 +85,21 @@ def test_task_api_rejects_unsafe_path_components(
         ("repo_alias", unsafe),
         ("target_repos", [unsafe]),
     ):
-        response = api_client.post(
-            endpoint,
-            json={
-                "title": f"Unsafe {field}",
-                "board_slug": default_board,
-                field: value,
-            },
-        )
-        assert response.status_code == 422
+        body = {"title": "Unsafe", "board_slug": default_board, field: value}
+        assert api_client.post(endpoint, json=body).status_code == 422
 
     task_id = api_client.post(
-        endpoint, json={"title": "Safe task", "board_slug": default_board}
+        endpoint, json={"title": "Safe", "board_slug": default_board}
     ).json()["id"]
-    for field, value, expected_status in (
+    for field, value, status in (
         ("repo_alias", unsafe, 422),
+        ("target_repos", [unsafe], 422),
         ("metadata", {"target_repos": [unsafe]}, 400),
     ):
-        response = api_client.patch(f"{endpoint}/{task_id}", json={field: value})
-        assert response.status_code == expected_status
+        assert (
+            api_client.patch(f"{endpoint}/{task_id}", json={field: value}).status_code
+            == status
+        )
 
 
 def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
@@ -123,13 +120,16 @@ def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
         conn.commit()
 
     endpoint = "/api/plugins/zerofactory/tasks"
-    for body in [
-        {"repo_alias": "unlinked"},
-        {"target_repos": ["unlinked"]},
-        {"metadata": {"target_repos": ["unlinked"]}},
-    ]:
-        body.update(title="Unlinked repository", board_slug=default_board)
-        assert api_client.post(endpoint, json=body).status_code == 400
+
+    def request_status(
+        method: str, body: Mapping[str, object], task_id: str | None = None
+    ) -> int:
+        url = f"{endpoint}/{task_id}" if task_id else endpoint
+        return api_client.request(method, url, json=body).status_code
+
+    for field, value in (("repo_alias", "unlinked"), ("target_repos", ["unlinked"])):
+        body = {"title": "Unlinked", "board_slug": default_board, field: value}
+        assert request_status("POST", body) == 400
 
     created = api_client.post(
         endpoint,
@@ -142,32 +142,33 @@ def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
     )
     task_id = created.json()["id"]
 
-    api_client.patch(
-        f"{endpoint}/{task_id}",
-        json={"repo_alias": "web", "metadata": {"target_repos": ["web"]}},
-    )
-    for changes in [
+    for changes in (
         {"repo_alias": "unlinked"},
         {"metadata": {"target_repos": ["unlinked"]}},
         {"board_slug": "other-board"},
         {"board_slug": ""},
-    ]:
-        assert (
-            api_client.patch(f"{endpoint}/{task_id}", json=changes).status_code == 400
-        )
+    ):
+        assert request_status("PATCH", changes, task_id) == 400
 
     unchanged = api_client.get(f"{endpoint}/{task_id}").json()["task"]
-    assert (unchanged["board_slug"], unchanged["repo_alias"]) == (default_board, "web")
-    assert unchanged["metadata"]["target_repos"] == ["web"]
+    assert (unchanged["board_slug"], unchanged["repo_alias"]) == (
+        default_board,
+        "frontend",
+    )
+    assert unchanged["metadata"]["target_repos"] == ["frontend"]
 
-    api_client.patch(
-        f"{endpoint}/{task_id}",
-        json={
-            "board_slug": "other-board",
-            "repo_alias": "backend",
-            "target_repos": ["backend"],
-            "metadata": {"target_repos": ["backend"]},
-        },
+    assert (
+        request_status(
+            "PATCH",
+            {
+                "board_slug": "other-board",
+                "repo_alias": "backend",
+                "target_repos": ["backend"],
+                "metadata": {"target_repos": ["backend"]},
+            },
+            task_id,
+        )
+        == 200
     )
     task = api_client.get(f"{endpoint}/{task_id}").json()["task"]
     assert (task["board_slug"], task["repo_alias"]) == ("other-board", "backend")

@@ -49,10 +49,10 @@ from .state_machine import transition_task
 
 
 def _task_worktree_boundary(
-    board_slug: str | None, task_id: str, repo_path: Path
+    board_slug: str | None, task_id: str, repo_path: Path | None
 ) -> tuple[Path, Path]:
-    """Return the canonical worktree base and validated expected task root."""
-    from .worktree import _validate_worktree_component, _validate_worktree_destination
+    """Return the canonical worktree base and lexical per-task root."""
+    from .worktree import _validate_worktree_component
 
     safe_task_id = _validate_worktree_component(task_id, "task_id")
     if board_slug:
@@ -60,11 +60,32 @@ def _task_worktree_boundary(
 
         worktree_base = get_board_worktrees_dir(board_slug)
     else:
+        if repo_path is None:
+            raise ValueError("repository path is required for an unboarded task")
         worktree_base = repo_path.parent / f"{repo_path.name}-worktrees"
     worktree_base = worktree_base.resolve()
-    task_root = worktree_base / safe_task_id
-    task_root = _validate_worktree_destination(task_root, task_root, worktree_base)
-    return worktree_base, task_root
+    return worktree_base, worktree_base / safe_task_id
+
+
+def _safe_task_workspace_path(
+    workspace: str | Path,
+    board_slug: str | None,
+    task_id: str,
+    repo_path: Path | None,
+    phase: str,
+) -> str | None:
+    from .worktree import _validate_worktree_destination
+
+    try:
+        worktree_base, task_root = _task_worktree_boundary(
+            board_slug, task_id, repo_path
+        )
+        return str(
+            _validate_worktree_destination(Path(workspace), task_root, worktree_base)
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        log_step_state(phase, task_id, "failed", f"unsafe task workspace: {exc}")
+        return None
 
 
 def _resolve_task_repo(
@@ -77,13 +98,13 @@ def _resolve_task_repo(
     task_id = str(row["id"])
     tenant = row["tenant"] if "tenant" in row.keys() else None
     try:
-        return (
-            dispatcher.resolve_task_repo_path(
-                cursor, row["board_slug"], tenant, repo_alias=repo_alias
-            ),
-            False,
+        repo_path = dispatcher.resolve_task_repo_path(
+            cursor, row["board_slug"], tenant, repo_alias=repo_alias
         )
-    except (TypeError, ValueError) as exc:
+        if not repo_path:
+            raise ValueError("repository path could not be resolved")
+        return repo_path, False
+    except Exception as exc:
         log_step_state(phase, task_id, "failed", f"repository resolution failed: {exc}")
         return None, True
 
@@ -321,6 +342,26 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                             )
                             if wt:
                                 workspace_path = wt
+
+                        if (
+                            workspace_path
+                            and Path(workspace_path).exists()
+                            and not os.environ.get("ZEROFACTORY_SKIP_GIT")
+                        ):
+                            repo_for_task, failed = _resolve_task_repo(
+                                _disp, cursor, row, repo_alias, "dispatch"
+                            )
+                            if failed:
+                                continue
+                            workspace_path = _safe_task_workspace_path(
+                                workspace_path,
+                                board_slug,
+                                task_id,
+                                repo_for_task,
+                                "dispatch",
+                            )
+                            if not workspace_path:
+                                continue
 
                         if (
                             (not workspace_path or not Path(workspace_path).exists())
@@ -589,6 +630,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         except Exception:
                             pass
 
+                        repo_for_task: Path | None = None
                         if not workspace_path or not Path(workspace_path).exists():
                             repo_for_task, failed = _resolve_task_repo(
                                 _disp, cursor, row, repo_alias, "package"
@@ -688,6 +730,23 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                         "UPDATE tasks SET workspace_path = ? WHERE id = ?",
                                         (workspace_path, task_id),
                                     )
+
+                        if workspace_path and Path(workspace_path).exists():
+                            if repo_for_task is None:
+                                repo_for_task, failed = _resolve_task_repo(
+                                    _disp, cursor, row, repo_alias, "package"
+                                )
+                                if failed:
+                                    continue
+                            workspace_path = _safe_task_workspace_path(
+                                workspace_path,
+                                board_slug,
+                                task_id,
+                                repo_for_task,
+                                "package",
+                            )
+                            if not workspace_path:
+                                continue
 
                         repo_path = None
                         if workspace_path and Path(workspace_path).exists():

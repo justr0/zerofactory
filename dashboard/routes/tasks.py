@@ -159,21 +159,18 @@ def _validate_linked_repo_aliases(
     if not isinstance(aliases, list):
         raise HTTPException(status_code=400, detail="Repository aliases must be a list")
 
-    cleaned: list[str] = []
-    for alias in aliases:
-        if not isinstance(alias, str):
-            raise HTTPException(
-                status_code=400, detail="Repository aliases must be strings"
-            )
-        try:
-            normalized = _validate_path_component(alias)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not normalized:
-            raise HTTPException(
-                status_code=400, detail="Repository aliases must not be empty"
-            )
-        cleaned.append(normalized)
+    if any(not isinstance(alias, str) for alias in aliases):
+        raise HTTPException(
+            status_code=400, detail="Repository aliases must be strings"
+        )
+    try:
+        cleaned = [_validate_path_component(alias) or "" for alias in aliases]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if any(not alias for alias in cleaned):
+        raise HTTPException(
+            status_code=400, detail="Repository aliases must not be empty"
+        )
 
     if not cleaned:
         return cleaned

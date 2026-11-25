@@ -211,6 +211,14 @@ def resolve_task_repo_path(
                     local_checkout = resolve_local_git_checkout(url)
                     if local_checkout:
                         return local_checkout
+                if repo_alias:
+                    alias_checkout = _get_board_repos_dir(board_slug) / repo_alias
+                    if alias_checkout.is_dir() and (alias_checkout / ".git").exists():
+                        return alias_checkout.resolve()
+                    raise ValueError(
+                        f"repository alias '{repo_alias}' is linked to board "
+                        f"'{board_slug}' but has no usable checkout"
+                    )
                 resolved_r = resolve_board_repo_path(
                     {"git_url": url, "slug": board_slug or alias, "repo_alias": alias}
                 )
@@ -225,11 +233,6 @@ def resolve_task_repo_path(
                     w_repo = _get_board_repos_dir(board_slug) / alias
                     if w_repo.exists() and (w_repo / ".git").exists():
                         return w_repo
-                if repo_alias:
-                    raise ValueError(
-                        f"repository alias '{repo_alias}' is linked to board "
-                        f"'{board_slug}' but has no usable checkout"
-                    )
         except ValueError:
             raise
         except Exception:
