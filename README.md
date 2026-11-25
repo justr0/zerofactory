@@ -121,7 +121,12 @@ The API and a lightweight task dashboard can run without the Hermes dashboard:
 FastAPI and Uvicorn runtime dependencies). The standalone page is available at `/`
 and the REST API at `/api/plugins/zerofactory`. Standalone mode only binds to a
 loopback IP address; non-loopback `--host` values are rejected because the API
-does not provide authentication.
+does not provide authentication. For state-changing browser requests, standalone
+mode rejects cross-site/same-site Fetch Metadata and rejects any supplied `Origin`
+unless it matches a `localhost` or loopback request origin. Headerless non-browser
+API clients remain supported, so this is a browser CSRF boundary, not authentication.
+GitHub issue sync is POST-only (`/boards/{slug}/sync-gh-issues`); the legacy GET
+form is no longer available.
 
 Workers default to Hermes. To use an external foreground worker, set
 `ZEROFACTORY_WORKER_COMMAND` to its executable and `ZEROFACTORY_WORKER_ARGS` to a

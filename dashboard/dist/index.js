@@ -1761,6 +1761,11 @@ var ZeroFactoryDashboard = (function(exports) {
 					icon: "🧠",
 					title: "Mem0 Vector Memory",
 					desc: "Hybrid semantic vector memory via Mem0 + Qdrant (FastEmbed ONNX CPU / OpenAI), auto-recorded on task completion."
+				},
+				{
+					icon: "🔒",
+					title: "Standalone Dashboard CSRF Boundary",
+					desc: "Standalone rejects cross-site/same-site browser mutations and requires any supplied Origin to match a localhost/loopback Host. Headerless API clients remain supported, so standalone mode is not authentication; GitHub issue sync is POST-only."
 				}
 			].map((card, idx) => React.createElement("div", {
 				key: idx,
@@ -4321,7 +4326,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			const form = cronEditForms[job.id] || {};
 			const isScanner = job.id.startsWith("zero-factory-improvement-scanner-") || job.category === "scanner";
 			const isOpenWiki = job.id.startsWith("zero-factory-openwiki-update-") || job.category === "openwiki";
-			const boardSlug = isScanner ? job.id.slice("zero-factory-improvement-scanner-".length) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
+			const boardSlug = isScanner ? job.id.slice(33) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
 			const isRunning = runningCronId === job.id;
 			return React.createElement("div", {
 				key: job.id,

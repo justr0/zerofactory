@@ -48,6 +48,15 @@ def _origin_parts(value: str) -> tuple[str, str, int | None] | None:
         return None
 
 
+def _is_loopback_hostname(hostname: str) -> bool:
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 app = FastAPI(title="Zero Factory")
 app.include_router(router, prefix="/api/plugins/zerofactory")
 _ASSET_DIR = Path(__file__).with_name("standalone_assets")
@@ -58,10 +67,16 @@ async def guard_cross_origin_mutations(request: Request, call_next):
     """Reject cross-origin browser mutations while preserving headerless API clients."""
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         origin = request.headers.get("origin")
-        request_origin = _origin_parts(f"{request.url.scheme}://{request.url.netloc}")
         fetch_site = request.headers.get("sec-fetch-site", "").lower()
+        browser_request = origin is not None or "sec-fetch-site" in request.headers
+        request_origin = _origin_parts(f"{request.url.scheme}://{request.url.netloc}")
         if fetch_site in {"cross-site", "same-site"} or (
-            origin is not None and _origin_parts(origin) != request_origin
+            browser_request
+            and (
+                request_origin is None
+                or not _is_loopback_hostname(request_origin[1])
+                or (origin is not None and _origin_parts(origin) != request_origin)
+            )
         ):
             return JSONResponse(
                 status_code=403,

@@ -60,6 +60,17 @@ flowchart TD
 | 7 | Exactly one status reply is posted to a source GitHub issue, only at PR-open time | `scheduler.post_issue_pr_comment` |
 | 8 | Nothing runs unbounded: worker timeout 3600s, retries capped, review rounds capped | reaper + `_handle_precommit_failure` + review cap |
 
+### Standalone Dashboard Request Boundary
+
+The optional `dashboard.standalone` server binds only to a loopback IP. For
+state-changing browser requests, it rejects cross-site/same-site Fetch Metadata,
+requires any supplied `Origin` to exactly match the request origin, and only trusts
+that comparison when the HTTP Host is `localhost` or a loopback IP (including
+`::1`). Headerless non-browser API clients remain supported; this is a CSRF check,
+not authentication, so do not expose the standalone API through a non-loopback
+proxy. GitHub issue synchronization is POST-only so its importer cannot be invoked
+by a cross-origin GET.
+
 ---
 
 ## 2. Board & Task Model
