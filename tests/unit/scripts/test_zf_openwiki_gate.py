@@ -137,8 +137,10 @@ class TestOpenWikiGate(unittest.TestCase):
     def test_failed_diff_log_requests_refresh_instead_of_no_changes(self):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
+        base_sha = "b" * 40
+        head_sha = "c" * 40
         self.state_file.write_text(
-            json.dumps({"test-board": {"last_scanned_sha": "base1234"}}),
+            json.dumps({"test-board": {"last_scanned_sha": base_sha}}),
             encoding="utf-8",
         )
 
@@ -147,9 +149,10 @@ class TestOpenWikiGate(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[:2] == ["git", "rev-parse"]:
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout="head5678\n", stderr=""
+                    cmd, 0, stdout=f"{head_sha}\n", stderr=""
                 )
             if "log" in cmd and ":(exclude)openwiki" in cmd:
+                self.assertIn(f"{base_sha}..HEAD", cmd)
                 return subprocess.CompletedProcess(
                     cmd, 128, stdout="", stderr="bad revision"
                 )
@@ -168,8 +171,9 @@ class TestOpenWikiGate(unittest.TestCase):
     def test_failed_sync_marker_log_does_not_report_current(self):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
+        head_sha = "a" * 40
         self.state_file.write_text(
-            json.dumps({"test-board": {"last_scanned_sha": "head5678"}}),
+            json.dumps({"test-board": {"last_scanned_sha": head_sha}}),
             encoding="utf-8",
         )
 
@@ -178,7 +182,7 @@ class TestOpenWikiGate(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[:2] == ["git", "rev-parse"]:
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout="head5678\n", stderr=""
+                    cmd, 0, stdout=f"{head_sha}\n", stderr=""
                 )
             if "--format=%H%x09%s" in cmd:
                 return subprocess.CompletedProcess(
@@ -186,15 +190,22 @@ class TestOpenWikiGate(unittest.TestCase):
                 )
             self.fail(f"Unexpected Git command: {cmd}")
 
-        with patch.object(self.gate.subprocess, "run", side_effect=_fake_run):
+        with (
+            patch.object(self.gate.subprocess, "run", side_effect=_fake_run),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
             wake, reason = self.gate.check_openwiki_gate(
-                self.tmp, board_slug="test-board", auto_create_task=False
+                self.tmp, board_slug="test-board"
             )
 
-        self.assertTrue(wake)
+        self.assertFalse(wake)
         self.assertIn("Unable to inspect Git sync markers", reason)
         self.assertIn("conservatively requesting an OpenWiki refresh", reason)
+        self.assertIn("Created task 'task-1'", reason)
         self.assertNotIn("OpenWiki is up to date", reason)
+        create_task.assert_called_once()
 
     def test_failed_diff_log_creates_task_by_default(self):
         (self.tmp / ".git").mkdir()
