@@ -134,7 +134,9 @@ from .github_pr import (
     is_task_automerge_enabled,
 )
 from .process_manager import (
+    consume_deliberate_stop,
     is_pid_alive,
+    mark_deliberate_stop,
     stop_task_worker,
     terminate_process_group,
     terminate_worker_process,
@@ -262,7 +264,9 @@ __all__ = [
     "is_actionable_review_comment",
     "is_reviewer_approval_comment",
     # Worker & Process
+    "consume_deliberate_stop",
     "is_pid_alive",
+    "mark_deliberate_stop",
     "spawn_agent_worker",
     "terminate_process_group",
     "terminate_worker_process",
