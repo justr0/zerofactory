@@ -775,15 +775,21 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                     b_rows = []
 
                 todo_per_board: dict[str, int] = {}
+                todo_count_query_succeeded = True
                 try:
                     for td_row in cursor.execute(
                         "SELECT board_slug, COUNT(*) AS cnt FROM tasks WHERE status = 'todo' GROUP BY board_slug"
                     ).fetchall():
                         todo_per_board[str(td_row["board_slug"] or "")] = td_row["cnt"]
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.warning(
+                        "Failed to query Todo counts for idle scanner check: %s", e
+                    )
+                    todo_count_query_succeeded = False
 
                 for b_row in b_rows:
+                    if not todo_count_query_succeeded:
+                        break
                     if llm_workers >= max_llm_workers:
                         break
                     board_slug = str(b_row["slug"] or "")

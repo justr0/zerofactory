@@ -695,6 +695,7 @@ def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):
             INSERT INTO boards (slug, name)
             VALUES 
                 ('idle-board-enabled', 'Enabled'),
+                ('idle-board-zero-cap', 'Zero cap'),
                 ('idle-board-disabled', 'Disabled')
             """
         )
@@ -714,6 +715,13 @@ def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):
                 "scan_on_idle": True,
                 "idle_scan_cooldown_minutes": 15,
                 "idle_scan_max_todo": 2,
+                "enabled": True,
+            }
+        if board_slug == "idle-board-zero-cap":
+            return {
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 0,
                 "enabled": True,
             }
         return {
@@ -739,6 +747,7 @@ def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):
         assert res["ok"] is True
         # Enabled board triggers scanner, disabled board does not
         assert "idle-board-enabled" in spawned_slugs
+        assert "idle-board-zero-cap" not in spawned_slugs
         assert "idle-board-disabled" not in spawned_slugs
         assert res["scans_triggered"] == 1
 
@@ -779,6 +788,76 @@ def test_run_dispatch_cycle_skips_idle_scan_without_resolved_repo(tmp_path: Path
     assert result["ok"] is True
     assert result["scans_triggered"] == 0
     mock_spawn.assert_not_called()
+
+
+def test_run_dispatch_cycle_skips_idle_scan_when_todo_count_fails(
+    tmp_path: Path, caplog
+):
+    """Unknown Todo backlog fails closed and logs instead of spawning a scanner."""
+    from types import SimpleNamespace
+
+    import dispatcher
+    import dispatcher.scheduler as scheduler
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    lock_file = tmp_path / "dispatcher.lock"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name) VALUES ('count-failure-board', 'Count failure')"
+        )
+        conn.commit()
+
+    class FailingTodoCountCursor(sqlite3.Cursor):
+        def execute(self, sql, parameters=()):
+            if "COUNT(*) AS cnt FROM tasks WHERE status = 'todo'" in sql:
+                raise sqlite3.OperationalError("injected Todo count failure")
+            return super().execute(sql, parameters)
+
+    class FailingTodoCountConnection(sqlite3.Connection):
+        def cursor(self, factory=None):
+            return super().cursor(factory or FailingTodoCountCursor)
+
+    real_connect = sqlite3.connect
+
+    def failing_todo_count_connect(*args, **kwargs):
+        kwargs["factory"] = FailingTodoCountConnection
+        return real_connect(*args, **kwargs)
+
+    with (
+        patch.object(
+            scheduler,
+            "sqlite3",
+            SimpleNamespace(
+                connect=failing_todo_count_connect,
+                Row=sqlite3.Row,
+                OperationalError=sqlite3.OperationalError,
+            ),
+        ),
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.object(dispatcher, "reap_active_scanners"),
+        patch.object(dispatcher, "spawn_board_scanner") as mock_spawn,
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
+        patch.object(dispatcher, "clean_stale_git_locks"),
+        patch.object(
+            dispatcher,
+            "get_scanner_cron_config",
+            return_value={
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 2,
+                "enabled": True,
+            },
+        ),
+    ):
+        result = run_dispatch_cycle(db_path)
+
+    assert result["ok"] is True
+    assert result["scans_triggered"] == 0
+    mock_spawn.assert_not_called()
+    assert "Failed to query Todo counts for idle scanner check" in caplog.text
+    assert "injected Todo count failure" in caplog.text
 
 
 def test_run_dispatch_cycle_relates_to_does_not_block_task(tmp_path: Path):
