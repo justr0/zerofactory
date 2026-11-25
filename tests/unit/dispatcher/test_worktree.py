@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from dispatcher.worktree import (
     _delete_remote_branch,
     _handle_local_merge_conflict,
@@ -569,3 +571,86 @@ def test_setup_worktree_reuses_existing_checked_out_worktree(tmp_path: Path):
             repo_alias="different_alias",
         )
         assert ws_path == str(existing_dir)
+
+
+def test_setup_worktree_rejects_unsafe_task_ids_and_repo_aliases(tmp_path: Path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _init_tasks_db(conn)
+
+    unsafe_components = (
+        ("../outside", None),
+        ("/tmp/outside", None),
+        ("safe-task", "../outside"),
+        ("safe-task", "/tmp/outside"),
+    )
+    with (
+        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
+        patch("dispatcher.worktree.subprocess.run") as run,
+    ):
+        for task_id, repo_alias in unsafe_components:
+            with pytest.raises(ValueError):
+                setup_worktree(
+                    conn.cursor(),
+                    task_id=task_id,
+                    title="Unsafe worktree",
+                    assignee="zf-builder",
+                    tenant=None,
+                    db_path=tmp_path / "tasks.db",
+                    repo_path=tmp_path,
+                    repo_alias=repo_alias,
+                )
+        run.assert_not_called()
+
+
+def test_setup_worktree_rejects_resolved_destinations_outside_task_root(
+    tmp_path: Path,
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _init_tasks_db(conn)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    workspace_root = tmp_path / "workspace-root"
+    base = workspace_root / "test-board" / "worktrees"
+    base.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    for symlink_task_root in (True, False):
+        task_root = base / "safe-task"
+        if symlink_task_root:
+            task_root.symlink_to(outside, target_is_directory=True)
+        else:
+            task_root.mkdir()
+            (task_root / "frontend").symlink_to(outside, target_is_directory=True)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+                    "ZEROFACTORY_SKIP_GIT": "",
+                },
+            ),
+            patch("dispatcher.worktree.subprocess.run") as run,
+        ):
+            with pytest.raises(ValueError, match="beneath its task root"):
+                setup_worktree(
+                    conn.cursor(),
+                    task_id="safe-task",
+                    title="Symlink worktree",
+                    assignee="zf-builder",
+                    tenant=None,
+                    db_path=tmp_path / "tasks.db",
+                    board_slug="test-board",
+                    repo_path=repo,
+                    repo_alias="frontend",
+                )
+            run.assert_not_called()
+
+        if symlink_task_root:
+            task_root.unlink()
+        else:
+            (task_root / "frontend").unlink()
+            task_root.rmdir()

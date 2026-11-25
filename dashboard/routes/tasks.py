@@ -69,6 +69,7 @@ try:
         TaskSplitRequest,
         TaskTriageRequest,
         TaskUpdate,
+        _validate_path_component,
         normalize_blocked_reason_type,
         resolve_status_assignee,
     )
@@ -104,6 +105,7 @@ except (ImportError, ValueError):
         TaskSplitRequest,
         TaskTriageRequest,
         TaskUpdate,
+        _validate_path_component,
         normalize_blocked_reason_type,
         resolve_status_assignee,
     )
@@ -148,6 +150,48 @@ def _session_counter(value: Any) -> int:
         return int(value)
     except ValueError:
         return 0
+
+
+def _validate_linked_repo_aliases(
+    cursor: Any, board_slug: str | None, aliases: Any
+) -> list[str]:
+    """Require each requested repository alias to be a linked safe path component."""
+    if not isinstance(aliases, list):
+        raise HTTPException(status_code=400, detail="Repository aliases must be a list")
+
+    cleaned: list[str] = []
+    for alias in aliases:
+        if not isinstance(alias, str):
+            raise HTTPException(
+                status_code=400, detail="Repository aliases must be strings"
+            )
+        try:
+            normalized = _validate_path_component(alias)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if normalized:
+            cleaned.append(normalized)
+
+    if not cleaned:
+        return cleaned
+    if not board_slug:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository aliases must belong to a configured board",
+        )
+
+    cursor.execute(
+        "SELECT repo_alias FROM board_repositories WHERE board_slug = ?",
+        (board_slug,),
+    )
+    linked_aliases = {str(row[0]) for row in cursor.fetchall() if row[0]}
+    unknown = sorted(set(cleaned) - linked_aliases)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Repository alias(es) not linked to board '{board_slug}': {', '.join(unknown)}",
+        )
+    return cleaned
 
 
 @router.get("/tasks")
@@ -438,16 +482,18 @@ def create_task(req: TaskCreate):
                 tags.append(t)
 
         if req.target_repos:
-            cleaned_target_repos = [
-                str(r).strip() for r in req.target_repos if str(r).strip()
-            ]
-            if cleaned_target_repos:
-                meta["target_repos"] = cleaned_target_repos
+            meta["target_repos"] = req.target_repos
 
-        tags_json = json.dumps(tags)
-        metadata_json = json.dumps(meta)
+        if "target_repos" in meta:
+            meta["target_repos"] = _validate_linked_repo_aliases(
+                cursor, board_slug, meta["target_repos"]
+            )
 
         repo_alias_val = (req.repo_alias or "").strip() or None
+        if repo_alias_val:
+            repo_alias_val = _validate_linked_repo_aliases(
+                cursor, board_slug, [repo_alias_val]
+            )[0]
         if not repo_alias_val and meta.get("target_repos"):
             repo_alias_val = meta["target_repos"][0]
         if not repo_alias_val and board_slug:
@@ -458,6 +504,9 @@ def create_task(req: TaskCreate):
             r_row = cursor.fetchone()
             if r_row:
                 repo_alias_val = r_row[0]
+
+        tags_json = json.dumps(tags)
+        metadata_json = json.dumps(meta)
 
         cursor.execute(
             """
@@ -761,10 +810,6 @@ def update_task(task_id: str, req: TaskUpdate):
         updates.append("board_slug = ?")
         params.append(req.board_slug)
         changes.append(f"moved to board {req.board_slug}")
-    if req.repo_alias is not None:
-        updates.append("repo_alias = ?")
-        params.append(req.repo_alias.strip() or None)
-        changes.append(f"repo_alias set to {req.repo_alias}")
     if req.status is not None:
         # Status is a lifecycle TRANSITION with side effects (worker stop, flags,
         # marker cleanup, dispatch trigger) — always applied by /move so exactly
@@ -805,10 +850,11 @@ def update_task(task_id: str, req: TaskUpdate):
         params.append(json.dumps(req.tags))
 
     meta_changes = False
+    cleaned_target_repos: list[str] | None = None
     with get_db_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT status, assignee, metadata FROM tasks WHERE id = ?",
+            "SELECT status, assignee, metadata, board_slug FROM tasks WHERE id = ?",
             (task_id,),
         )
         m_row = cursor.fetchone()
@@ -822,6 +868,28 @@ def update_task(task_id: str, req: TaskUpdate):
                 )
             except Exception:
                 existing_meta = {}
+
+        if req.repo_alias is not None:
+            if m_row and req.repo_alias:
+                _validate_linked_repo_aliases(
+                    cursor,
+                    req.board_slug or m_row["board_slug"],
+                    [req.repo_alias],
+                )
+            updates.append("repo_alias = ?")
+            params.append(req.repo_alias or None)
+            changes.append(f"repo_alias set to {req.repo_alias}")
+
+        if m_row:
+            effective_board = req.board_slug or m_row["board_slug"]
+            if req.target_repos is not None:
+                cleaned_target_repos = _validate_linked_repo_aliases(
+                    cursor, effective_board, req.target_repos
+                )
+            if req.metadata and "target_repos" in req.metadata:
+                _validate_linked_repo_aliases(
+                    cursor, effective_board, req.metadata["target_repos"]
+                )
 
     if req.assignee is not None:
         curr_status = m_row["status"] if m_row else "triage"
@@ -837,11 +905,10 @@ def update_task(task_id: str, req: TaskUpdate):
         changes.append(f"assignee changed to {asgn}")
 
     if req.target_repos is not None:
-        cleaned_target_repos = [
-            str(r).strip() for r in req.target_repos if str(r).strip()
-        ]
-        existing_meta["target_repos"] = cleaned_target_repos
-        changes.append(f"target_repos updated ({len(cleaned_target_repos)} repos)")
+        existing_meta["target_repos"] = cleaned_target_repos or []
+        changes.append(
+            f"target_repos updated ({len(cleaned_target_repos or [])} repos)"
+        )
         meta_changes = True
 
     if req.specification is not None:

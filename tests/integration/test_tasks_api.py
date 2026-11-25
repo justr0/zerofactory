@@ -191,6 +191,16 @@ def test_task_session_routes_share_response_and_not_found_behavior(
 
 def test_task_dependencies(api_client: TestClient, default_board: str):
     """Verify linking and unlinking task dependencies with repo_alias and link_type."""
+    with get_db_conn() as conn:
+        conn.executemany(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+            [
+                (default_board, alias, f"https://example.com/{alias}.git")
+                for alias in ("common-lib", "order-service", "api-gateway")
+            ],
+        )
+        conn.commit()
+
     t1_id = api_client.post(
         "/api/plugins/zerofactory/tasks",
         json={

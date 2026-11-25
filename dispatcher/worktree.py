@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .config import (
@@ -57,6 +57,21 @@ def _find_checked_out_worktree(repo_path: Path, branch_name: str) -> Path | None
     except Exception:
         pass
     return None
+
+
+def _validate_worktree_component(value: str, name: str) -> str:
+    """Reject values that could escape a single worktree path component."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or PureWindowsPath(value).drive
+    ):
+        raise ValueError(f"{name} must be a single safe path component")
+    return value
 
 
 def _get_board_repos_dir(board_slug: str) -> Path:
@@ -218,6 +233,10 @@ def setup_worktree(
     repo_alias: str | None = None,
 ) -> str | None:
     """Ensure git worktree and branch exist for task execution."""
+    task_id = _validate_worktree_component(task_id, "task_id")
+    if repo_alias:
+        repo_alias = _validate_worktree_component(repo_alias, "repo_alias")
+
     valid_profiles = getattr(_d(), "VALID_PROFILES", VALID_PROFILES)
     if not assignee or assignee == "unassigned" or assignee not in valid_profiles:
         assignee = "zf-builder"
@@ -246,10 +265,13 @@ def setup_worktree(
         try:
             cursor.execute("SELECT repo_alias FROM tasks WHERE id = ?", (task_id,))
             t_row = cursor.fetchone()
-            if t_row and t_row[0]:
-                repo_alias = str(t_row[0]).strip()
         except Exception:
             pass
+        else:
+            if t_row and t_row[0]:
+                repo_alias = _validate_worktree_component(
+                    str(t_row[0]).strip(), "repo_alias"
+                )
 
     # Resolve primary repo path
     if not repo_path:
@@ -260,7 +282,9 @@ def setup_worktree(
         steps.end("fail", f"repo path unresolvable: {repo_path}")
         return None
 
-    target_name = repo_alias or repo_path.name
+    target_name = _validate_worktree_component(
+        repo_alias or repo_path.name, "repo_alias"
+    )
     if board_slug:
         try:
             from paths import get_board_worktrees_dir  # type: ignore
@@ -276,6 +300,15 @@ def setup_worktree(
         worktree_base = repo_path.parent / f"{repo_path.name}-worktrees"
     task_root = worktree_base / str(task_id)
     worktree_dir = task_root / target_name
+    resolved_base = worktree_base.resolve()
+    resolved_task_root = task_root.resolve()
+    resolved_worktree_dir = worktree_dir.resolve()
+    if not resolved_task_root.is_relative_to(resolved_base) or not (
+        resolved_worktree_dir.is_relative_to(resolved_task_root)
+    ):
+        raise ValueError(
+            "resolved worktree destination must remain beneath its task root"
+        )
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
     branch_name = f"task/{task_id}"
@@ -1097,6 +1130,7 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
             # Bare "bash" on PATH is often the WSL launcher (System32\bash.exe),
             # which cannot see /c/... paths; prefer Git for Windows' bash.
             import shutil as _shutil
+
             _git = _shutil.which("git")
             if _git:
                 _cand = Path(_git).parent.parent / "bin" / "bash.exe"
