@@ -389,7 +389,12 @@ class TestReviewCapPerCommit:
             ),
             patch.dict(
                 os.environ,
-                {"ZEROFACTORY_SKIP_GIT": "", "ZEROFACTORY_MAX_REVIEW_ROUNDS": "2"},
+                {
+                    "ZEROFACTORY_SKIP_GIT": "",
+                    "ZEROFACTORY_MAX_REVIEW_ROUNDS": "2",
+                    # Legacy path under test: arbitration off -> plain human park.
+                    "ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0",
+                },
             ),
             patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
             patch(
@@ -501,7 +506,12 @@ class TestReviewCapPerCommit:
             ),
             patch.dict(
                 os.environ,
-                {"ZEROFACTORY_SKIP_GIT": "", "ZEROFACTORY_MAX_REVIEW_ROUNDS": "2"},
+                {
+                    "ZEROFACTORY_SKIP_GIT": "",
+                    "ZEROFACTORY_MAX_REVIEW_ROUNDS": "2",
+                    # Legacy path under test: arbitration off -> plain human park.
+                    "ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0",
+                },
             ),
             patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
             patch(

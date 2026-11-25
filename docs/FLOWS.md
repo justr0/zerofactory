@@ -229,6 +229,16 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      remove worktree, clear `blocked_reason` / `blocked_reason_type`, route back to builder on Round 1: `todo` + `assignee=<PR author>` + review-comment
      prompt block. Actionable review feedback from reviewers/humans overrides any prior `approved` status and unparks tasks back to `todo`. When `review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**)
      → escalate: `blocked` + `assignee=human` + `review_cap_reached` (short-circuiting idempotently on subsequent poll cycles until recovered).
+     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **1**) the cap also posts exactly one
+     `[AI:zf-dispatcher] ARBITRATION REQUEST` comment on the PR and parks the task for the arbiter profile
+     (`ZEROFACTORY_REVIEW_CAP_ARBITER`, default `zf-gatekeeper`) instead of the human. Only a verdict comment —
+     a line starting `[AI:<arbiter>] ARBITRATION VERDICT: FIX | MERGE | ESCALATE` — or the request timeout
+     moves the task: **FIX** re-opens one bounded fix round (fresh review budget, verdict injected as the
+     builder's brief), **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and
+     **ESCALATE** / an unanswered request leave it parked for the human. At most
+     `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task (default **2**); beyond that the cap parks
+     for a human as before. Tasks already flagged for human review (`permanently_blocked`, `hitl` /
+     `manual-review` tags, HITL-labelled external issues) are never arbitrated.
    - **`approved` verdict or `reviewDecision == APPROVED` (with no actionable comments)** → `blocked` +
      `assignee=human` ("Reviewer approved; awaiting human merge"). If late non-actionable comments arrive while already parked, they are forwarded to task comments idempotently without re-parking side effects.
 3. **Packaging fallback** (no PR yet, or `done`/`blocked` handoff): deterministic
@@ -561,7 +571,11 @@ runtime → installed deps → simple functions → minimum viable diff) via bun
 | `ZEROFACTORY_SKIP_PRECOMMIT` | unset | gate returns pass without running |
 | `ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS` | `300` | gate hard timeout |
 | `ZEROFACTORY_MAX_PRECOMMIT_RETRIES` | `3` | self-heal retries before blocking |
-| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before human escalation |
+| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before escalation |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `1` | at the review cap, ask an arbiter profile instead of parking for a human |
+| `ZEROFACTORY_REVIEW_CAP_ARBITER` | `zf-gatekeeper` | arbiter profile (role tag on the verdict comment) |
+| `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` | `2` | arbitrations per task before falling back to the human |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` | `24` | unanswered request expires into the human park |
 | `ZEROFACTORY_MAX_CONFLICT_RETRIES` | `3` | merge-conflict resolution attempts |
 | `ZEROFACTORY_TASK_TIMEOUT_SECONDS` | `3600` | max worker runtime |
 | (inactivity) | `900` | max silence before stuck |
