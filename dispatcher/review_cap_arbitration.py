@@ -280,6 +280,23 @@ def state_of(task_meta: dict[str, Any] | None) -> dict[str, Any]:
     return dict(state) if isinstance(state, dict) else {}
 
 
+def is_review_cap_park(
+    task_meta: dict[str, Any] | None, *, status: Any, assignee: Any
+) -> bool:
+    """A task parked at the review cap, arbitrated or not: blocked, held at
+    the human gate, ``review_cap_reached`` set.
+
+    Such a park is a decision wait, never a dependency wait: nothing may hand
+    the task back to a builder merely because its parents completed.
+    """
+    meta = task_meta or {}
+    return (
+        bool(meta.get("review_cap_reached"))
+        and (status or "") == "blocked"
+        and (assignee or "") == "human"
+    )
+
+
 def is_arbitration_park(
     task_meta: dict[str, Any] | None, *, status: Any, assignee: Any
 ) -> bool:
@@ -307,9 +324,16 @@ def voided(state: dict[str, Any] | None, reason: str, now: Any) -> dict[str, Any
     }
 
 
-def request_key(task_id: str, head_sha: str) -> str:
-    """Deterministic identity of one arbitration request."""
-    return f"arbitration:{task_id}:{str(head_sha or '').lower()}"
+def request_key(task_id: str, head_sha: str, attempt: Any) -> str:
+    """Deterministic identity of one arbitration request.
+
+    ``attempt`` is the task's arbitration counter and is required: a key
+    without it names no answerable request. A later request for the same
+    head is a new request with its own key, so the earlier request's comment
+    is never adopted for it and the verdict that answered the earlier one no
+    longer applies.
+    """
+    return f"arbitration:{task_id}:{str(head_sha or '').lower()}:{_coerce_int(attempt)}"
 
 
 def verdict_line(arbiter: str, verdict: str, key: str, head_sha: str) -> str:
@@ -363,7 +387,7 @@ def build_arbitration_request(
         "max_arbitrations": max_arbitrations,
         "requested_at": int(now),
         "request_head": head,
-        "request_key": request_key(task_id, head),
+        "request_key": request_key(task_id, head, attempts + 1),
         "rounds": rounds,
     }
 
@@ -389,7 +413,10 @@ def format_arbitration_request(
     attempt: int,
     max_arbitrations: int,
 ) -> str:
-    key = request_key(task_id, head_sha)
+    # Same identity as the persisted state: an arbiter who pastes the verdict
+    # lines answers THIS attempt, and a retry after a crash can find this
+    # exact comment again by key.
+    key = request_key(task_id, head_sha, attempt)
     head = str(head_sha or "").strip().lower()
     lines = [
         REQUEST_PREFIX,
@@ -522,6 +549,10 @@ def find_arbitration_verdict(
             and first_line.endswith("`")
         ):
             first_line = first_line[1:-1].strip()
+        if first_line == REQUEST_PREFIX:
+            # The dispatcher's request carries the paste-ready verdict lines;
+            # it asks for a decision, it is not one.
+            continue
         entry = {"comment_id": comment["comment_id"], "author": comment["author"]}
         match = _VERDICT_LINE_RE.match(first_line)
         if not match:
@@ -596,6 +627,19 @@ def record_rejections(
     return fresh
 
 
+def attempt_counts(state: dict[str, Any] | None) -> tuple[int, int]:
+    """``(attempts, max_arbitrations)`` as ints; a corrupt value reads as 0.
+
+    Recording a verdict must never fail on the state's shape: an exception
+    here would leave the task parked with neither a decision nor a deadline.
+    """
+    current = state or {}
+    return (
+        _coerce_int(current.get("attempts")),
+        _coerce_int(current.get("max_arbitrations")),
+    )
+
+
 def close_fix_round(task_meta: dict[str, Any] | None, now: Any) -> bool:
     """End the fix round a FIX verdict opened: a reviewer round was recorded
     on its commit, so the verdict is no longer the builder's open brief.
@@ -663,25 +707,34 @@ def post_arbitration_request(
         return None
     authors = {_normalize_login(owner)}
 
-    def _adopt(existing: dict[str, Any]) -> dict[str, Any]:
+    def _found(existing: dict[str, Any], *, adopted: bool) -> dict[str, Any]:
         return {
             "comment_id": existing["comment_id"],
             "author": existing["author"],
             "created_at": parse_github_timestamp(existing.get("created_at")),
-            "adopted": True,
+            "adopted": adopted,
         }
 
     def _existing() -> dict[str, Any] | None:
-        comments = (
-            fetch_pr_conversation_comments(repo_path=repo_path, pr_url=pr_url) or []
-        )
+        # An unreadable thread (None) is treated like an empty one on purpose:
+        # refusing to post on a failed read would turn a slow page fetch into a
+        # human park, while the worst case here is a duplicate comment carrying
+        # the same key - one request, one deadline, either way.
+        comments = fetch_pr_conversation_comments(repo_path=repo_path, pr_url=pr_url)
+        if comments is None:
+            _log.warning(
+                "Arbitration request %s: could not read the PR conversation; "
+                "an earlier copy of this request cannot be ruled out",
+                key,
+            )
+            comments = []
         return find_request_comment(
             comments, key=key, head_sha=head_sha, authors=authors
         )
 
     found = _existing()
     if found is not None:
-        return _adopt(found)
+        return _found(found, adopted=True)
 
     author = owner
     fd, path = tempfile.mkstemp(prefix="zf-arbitration-", suffix=".md")
@@ -713,7 +766,9 @@ def post_arbitration_request(
     # (timeout after GitHub accepted it): reconcile before deciding.
     found = _existing()
     if found is not None:
-        return _adopt(found)
+        # Read back after this call's own POST: a first post, not a crash
+        # recovery, so the audit trail must not call it an adoption.
+        return _found(found, adopted=False)
     url_match = _COMMENT_URL_RE.search((res.stdout if res else "") or "")
     if res is None or res.returncode != 0 or not url_match:
         _log.warning(

@@ -208,7 +208,9 @@ flowchart TD
 
 ### Step 1 — Dependency unblock
 `task_links` DAG: any `blocked` task whose parents are **all** `done` becomes `todo`
-(activity `unblock`).
+(activity `unblock`). A review-cap park (`review_cap_reached`, arbitrated or plain) is the
+exception: it waits on an arbitration verdict, the request timeout or an operator, never on its
+parents, so the sweep leaves it `blocked`.
 
 ### Step 2 — Reap, then claim
 - **Reap** first (see §4). Then select claim candidates:
@@ -242,10 +244,13 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      → escalate: `blocked` + `assignee=human` + `review_cap_reached` (short-circuiting idempotently on subsequent poll cycles until recovered).
      With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **0**: off, and the cap parks the task for a human as before; `1` enables it and needs a `zf-gatekeeper` profile)
      the cap also posts exactly one `[AI:zf-dispatcher] ARBITRATION REQUEST` conversation comment on the PR —
-     carrying the request key `arbitration:<task_id>:<full_head_sha>` and the full head SHA — and parks the task
+     carrying the request key `arbitration:<task_id>:<full_head_sha>:<attempt>` and the full head SHA — and parks the task
      (`blocked` + `assignee=human`) for the arbiter profile (`ZEROFACTORY_REVIEW_CAP_ARBITER`, default
-     `zf-gatekeeper`) instead of the human. While parked (request open or settled) the task is excluded from
-     conflict handling, ordinary review-comment routing and auto-merge; only a bound verdict, the request
+     `zf-gatekeeper`) instead of the human. Each attempt is its own request: when the cap recurs on a head that
+     was already arbitrated, the new request gets a new key, so the earlier request comment is never adopted for
+     it and the verdict that answered the earlier attempt does not apply. While parked (request open or settled)
+     the task is excluded from the Step 1 dependency unblock, conflict handling, ordinary review-comment
+     routing and auto-merge; only a bound verdict, the request
      timeout, a merged/closed PR or an operator recovery moves it. A verdict counts only when the **first line**
      of a PR conversation comment (never an inline review body or review summary) is exactly
      `[AI:<arbiter>] ARBITRATION VERDICT: <FIX|MERGE|ESCALATE> | REQUEST: <key> | HEAD: <full sha>`, posted by an
@@ -253,11 +258,13 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      authenticated as plus the repository owner), with `REQUEST` equal to the task's open request key and `HEAD`
      equal to both the request head and the live PR head; anything else is logged and ignored. **FIX** re-opens
      one bounded fix round (fresh review budget; the verdict body is the builder's entire brief, earlier findings
-     are deferred), **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
+     are deferred) and the round closes once the reviewer answers the fix commit — a recorded review round or an
+     approval — after which the verdict is no longer the brief; **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
      leaves it parked for the human. Before a verdict is consumed the dispatcher re-checks the flag and the
      human-review opt-outs (voiding the request into a plain park), and a reply is applied only inside
      `requested_at + ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` (default **24**), after which the request
-     expires into the human park. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
+     expires into the human park. Expiry is decided only by a poll that could read the PR conversation: when the
+     fetch fails, the poll consumes nothing and expires nothing. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
      (default **2**); beyond that the cap parks for a human as before. Tasks already flagged for human review
      (`permanently_blocked`, `hitl` / `manual-review` tags, HITL-labelled external issues) are never arbitrated,
      and without the arbiter profile on the host the request is not posted.

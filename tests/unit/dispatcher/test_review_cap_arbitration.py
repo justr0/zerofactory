@@ -56,8 +56,8 @@ def _iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _key(task_id: str, head: str = HEAD) -> str:
-    return arb.request_key(task_id, head)
+def _key(task_id: str, head: str = HEAD, attempt: int = 1) -> str:
+    return arb.request_key(task_id, head, attempt)
 
 
 def _verdict_body(
@@ -316,6 +316,32 @@ class TestWireFormat:
             assert f"`{arb.verdict_line(ARBITER, verdict, key, HEAD)}`" in lines
         assert "Task: t1 - feat: x" in lines
 
+    def test_the_posted_request_answers_to_its_own_attempt_key(self):
+        """Everything a retry or an arbiter needs is keyed by the attempt: the
+        formatted comment is found by its own key and by no other attempt's."""
+        body = arb.format_arbitration_request(
+            task_id="t1",
+            title="feat: x",
+            head_sha=HEAD,
+            rounds=2,
+            arbiter=ARBITER,
+            attempt=2,
+            max_arbitrations=2,
+        )
+        assert f"REQUEST: {_key('t1', HEAD, attempt=2)}" in body.splitlines()
+        posted = _convo(9, body)
+        for verdict in arb.VERDICTS:
+            pasted = arb.verdict_line(ARBITER, verdict, _key("t1", HEAD, 2), HEAD)
+            assert pasted in body
+        found = arb.find_request_comment(
+            [posted], key=_key("t1", HEAD, 2), head_sha=HEAD
+        )
+        assert found is not None and found["comment_id"] == "issue_9"
+        assert (
+            arb.find_request_comment([posted], key=_key("t1", HEAD, 1), head_sha=HEAD)
+            is None
+        )
+
     def test_request_needs_a_full_head_and_one_live_request_per_task(self):
         assert (
             arb.build_arbitration_request(
@@ -340,7 +366,7 @@ class TestWireFormat:
         )
         assert state["status"] == arb.STATUS_REQUESTED
         assert state["request_head"] == HEAD
-        assert state["request_key"] == "arbitration:t1:" + HEAD
+        assert state["request_key"] == _key("t1")  # task + head + attempt
         # A task never has two live requests.
         assert (
             arb.build_arbitration_request(
@@ -373,8 +399,53 @@ class TestWireFormat:
         settled = {**first, "status": arb.STATUS_ESCALATED}
         second = build({arb.STATE_KEY: settled}, 200, HEAD_2)
         assert second["attempts"] == 2
-        assert second["request_key"] == _key("t1", HEAD_2)
+        assert second["request_key"] == _key("t1", HEAD_2, attempt=2)
+        assert second["request_key"] != first["request_key"]
         assert build({arb.STATE_KEY: second}, 300, HEAD_3) is None
+
+    def test_each_attempt_is_its_own_request_even_on_the_same_head(self):
+        """A FIX verdict settles attempt 1; a later cap on the SAME head must
+        not let that verdict - or that request comment - stand for attempt 2."""
+
+        def build(meta: dict, now: int):
+            return arb.build_arbitration_request(
+                meta,
+                task_id="t1",
+                arbiter=ARBITER,
+                now=now,
+                head_sha=HEAD,
+                rounds=2,
+                max_arbitrations=2,
+            )
+
+        first = build({}, 100)
+        after_fix = {
+            **first,
+            "status": arb.STATUS_FIX_REQUESTED,
+            "decision": arb.VERDICT_FIX,
+            "decision_comment_id": "issue_501",
+            "fix_round_closed_at": 150,
+        }
+        second = build({arb.STATE_KEY: after_fix}, 200)
+        assert second["attempts"] == 2
+        assert second["request_key"] == f"arbitration:t1:{HEAD}:2"
+        # The old request comment names the old key, so it is not this request's.
+        old_request = _convo(1, _request_body(first["request_key"]))
+        assert (
+            arb.find_request_comment(
+                [old_request],
+                key=second["request_key"],
+                head_sha=HEAD,
+                authors={ALLOWED},
+            )
+            is None
+        )
+        assert (
+            arb.find_request_comment(
+                [old_request], key=first["request_key"], head_sha=HEAD
+            )["comment_id"]
+            == "issue_1"
+        )
 
     def test_settings_come_from_env_like_max_review_rounds(self):
         with patch.dict(os.environ, {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"}):
@@ -921,7 +992,8 @@ class TestRequestPosting:
             "comment_id": "issue_900",
             "author": ALLOWED,
             "created_at": _NOW - 60,
-            "adopted": True,
+            # Read back after this call's own POST: a first post, not an adoption.
+            "adopted": False,
         }
         assert run.call_count == 1
 
@@ -1122,16 +1194,19 @@ class TestArbitrationCycle:
         unset=(),
         package=None,
         arbiter_available=True,
+        review_decision="CHANGES_REQUESTED",
+        thread_unknown=False,
     ) -> SimpleNamespace:
         """Drive ``run_dispatch_cycle`` with gh, the GitHub comment fetch and the
         worktree helpers stubbed. ``conversation`` is what the paginated
         conversation fetch returns (default: the raw form of ``comments``);
+        ``thread_unknown`` makes that fetch fail (None) instead;
         ``package`` replaces ``_package_and_open_pr`` (the commit/push/reviewer
         handoff boundary)."""
         lock_file = db_path.parent / "dispatcher.lock"
         fake_pr_data = {
             "state": pr_state,
-            "reviewDecision": "CHANGES_REQUESTED",
+            "reviewDecision": review_decision,
             "url": PR,
             "mergeable": mergeable,
             "headRefOid": head,
@@ -1142,6 +1217,9 @@ class TestArbitrationCycle:
             if "view" in cmd:
                 return MagicMock(returncode=0, stdout=json.dumps(fake_pr_data))
             gh_calls.append(list(cmd))
+            if "comment" in cmd:
+                # `gh pr comment` prints the new comment's URL.
+                return MagicMock(returncode=0, stdout=f"{PR}#issuecomment-9001\n")
             # git lookups run against a plain temp dir: not a repository.
             return MagicMock(returncode=1 if cmd and cmd[0] == "git" else 0, stdout="")
 
@@ -1206,18 +1284,19 @@ class TestArbitrationCycle:
                     dispatcher, "fetch_pr_review_comments", return_value=list(comments)
                 )
             )
+            thread = None if thread_unknown else list(conversation)
             stack.enter_context(
                 patch.object(
                     dispatcher,
                     "fetch_pr_conversation_comments",
-                    return_value=list(conversation),
+                    return_value=thread,
                 )
             )
             stack.enter_context(
                 patch.object(
                     arb,
                     "fetch_pr_conversation_comments",
-                    return_value=list(conversation),
+                    return_value=thread,
                 )
             )
             stack.enter_context(
@@ -2043,3 +2122,259 @@ class TestArbitrationCycle:
         self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
         assert not _activities(db_path, task_id, "review_cap_arbitration_expired")
         result.post.assert_not_called()
+
+    # -- round-2 review regressions ---------------------------------------------------
+
+    def test_second_arbitration_on_the_same_head_is_a_new_request(self, tmp_path: Path):
+        """Attempt 1 ended in FIX and the cap recurs on the SAME head: the
+        attempt-1 comment must not be adopted and its verdict must not be
+        replayed. Attempt 2 is posted and waits for an answer of its own."""
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-replay"
+        now = int(time.time())
+        _seed(
+            db_path,
+            task_id,
+            {
+                "last_reviewed_commit": HEAD,
+                "review_round": 1,
+                "commit_review_count": 1,
+                "processed_review_comment_ids": [],
+                "blocked_reason_type": "changes-requested",
+                "packaged_by": "zf-builder",
+                arb.STATE_KEY: _parked_state(
+                    task_id,
+                    status=arb.STATUS_FIX_REQUESTED,
+                    requested_at=now - 7200,
+                    decision=arb.VERDICT_FIX,
+                    decision_comment_id="issue_501",
+                    decision_body="1. race in refresh()",
+                    decided_at=now - 3600,
+                    fix_round_closed_at=now - 1800,
+                ),
+            },
+            assignee="zf-reviewer",
+            workspace=str(_managed_workspace(db_path.parent, task_id)),
+        )
+        old_request = _convo(
+            1, _request_body(_key(task_id)), created_at=_iso(now - 7200)
+        )
+        old_verdict = _convo(
+            501, _verdict_body("FIX", task_id), created_at=_iso(now - 3600)
+        )
+        thread = [old_request, old_verdict]
+        # The same comment as the review-comment fetch hands it to the scheduler.
+        old_request_seen = _std(
+            1, _request_body(_key(task_id)), created_at=_iso(now - 7200)
+        )
+
+        # Cycle 1 hits the cap and posts; cycle 2 polls the new request (the
+        # attempt-1 request comes back through the review-comment fetch).
+        result = self._run(
+            db_path,
+            [_ROUND_2, old_request_seen],
+            conversation=thread,
+            real_post=True,
+            cycles=2,
+        )
+
+        state = self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)[
+            arb.STATE_KEY
+        ]
+        # Only the attempt-2 request is on the task; the attempt-1 request
+        # that came back through the fetch was not copied.
+        (on_task,) = _dispatcher_comments(db_path, task_id)
+        assert f"REQUEST: {state['request_key']}" in on_task
+        assert state["attempts"] == 2
+        assert state["request_key"] == _key(task_id, HEAD, attempt=2)
+        assert "decision" not in state
+        assert "adopted" not in state  # the attempt-1 comment was not adopted
+        assert state["requested_at"] >= now  # deadline anchored to the new post
+        assert state["comment_id"] == "issue_9001"
+        (posted,) = [cmd for cmd in result.gh_calls if "comment" in cmd]
+        assert posted[:4] == ["gh", "pr", "comment", PR]
+        result.setup.assert_not_called()
+        (ignored,) = _activities(db_path, task_id, "review_cap_arbitration_ignored")
+        assert "issue_501" in ignored[0] and "request-mismatch" in ignored[0]
+        assert not _activities(db_path, task_id, "review_cap_arbitration")
+
+        # The arbiter answers attempt 2: that verdict is consumed exactly once.
+        answer = _convo(
+            777,
+            _verdict_body("FIX", task_id, key=state["request_key"]),
+            created_at=_iso(int(time.time())),
+        )
+        self._run(db_path, [], conversation=thread + [answer], cycles=2)
+
+        settled = _meta(db_path, task_id)[arb.STATE_KEY]
+        assert settled["status"] == arb.STATUS_FIX_REQUESTED
+        assert settled["decision_comment_id"] == "issue_777"
+        (rounds,) = _activities(db_path, task_id, "review_cap_arbitration")
+        assert "attempt 2/2" in rounds[0]
+
+    @pytest.mark.parametrize("arbitrated", [True, False])
+    def test_dependency_unblock_never_lifts_a_review_cap_park(
+        self, tmp_path: Path, arbitrated: bool
+    ):
+        """All parents done: an ordinary blocked child goes to todo, a
+        review-cap park (arbitrated or plain) stays parked."""
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-links"
+        sibling = "t-links-ordinary"
+        self._seed_parked_with_request(db_path, task_id)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, assignee, metadata) "
+                "VALUES (?, 'ordinary blocked child', 'blocked', 'human', '{}')",
+                (sibling,),
+            )
+            for child in (task_id, sibling):
+                conn.execute(
+                    "INSERT INTO tasks (id, title, status, assignee) "
+                    "VALUES (?, 'parent', 'done', 'zf-builder')",
+                    (f"{child}-parent",),
+                )
+                conn.execute(
+                    "INSERT INTO task_links (parent_id, child_id, link_type) "
+                    "VALUES (?, ?, 'blocks')",
+                    (f"{child}-parent", child),
+                )
+            if not arbitrated:
+                meta = _meta(db_path, task_id)
+                meta.pop(arb.STATE_KEY)
+                conn.execute(
+                    "UPDATE tasks SET metadata = ? WHERE id = ?",
+                    (json.dumps(meta), task_id),
+                )
+            conn.commit()
+
+        result = self._run(
+            db_path,
+            [],
+            cycles=2,
+            env=None if arbitrated else {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"},
+        )
+
+        row = _row(db_path, task_id)
+        assert (row["status"], row["assignee"]) == ("blocked", "human")
+        assert _meta(db_path, task_id)["review_cap_reached"] is True
+        assert not _activities(db_path, task_id, "unblock")
+        # Control: the ordinary blocked child was unblocked as before.
+        assert _row(db_path, sibling)["status"] != "blocked"
+        assert _activities(db_path, sibling, "unblock")
+        if arbitrated:
+            # The open request was neither voided nor answered.
+            assert (
+                _meta(db_path, task_id)[arb.STATE_KEY]["status"] == arb.STATUS_REQUESTED
+            )
+            assert not _activities(db_path, task_id, "review_cap_arbitration_void")
+
+    def test_reviewer_approval_closes_the_fix_round(self, tmp_path: Path):
+        """The reviewer approving the fix commit ends the round exactly like a
+        recorded round does, so a later recovery cannot resurrect the verdict
+        as the builder's brief."""
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-approved"
+        _seed(
+            db_path,
+            task_id,
+            {
+                "last_reviewed_commit": HEAD,
+                "processed_review_comment_ids": [],
+                "packaged_by": "zf-builder",
+                arb.STATE_KEY: _parked_state(
+                    task_id,
+                    status=arb.STATUS_FIX_REQUESTED,
+                    decision=arb.VERDICT_FIX,
+                    decision_body="1. race in refresh()",
+                    decision_comment_id="issue_501",
+                ),
+            },
+            assignee="zf-reviewer",
+            workspace=str(_managed_workspace(db_path.parent, task_id)),
+        )
+        assert arb.fix_round_brief(_meta(db_path, task_id))  # open until answered
+
+        self._run(db_path, [], review_decision="APPROVED")
+
+        row = _row(db_path, task_id)
+        assert (row["status"], row["assignee"]) == ("blocked", "human")
+        meta = json.loads(row["metadata"])
+        assert meta["blocked_reason_type"] == "approved"
+        state = meta[arb.STATE_KEY]
+        assert state["status"] == arb.STATUS_FIX_REQUESTED  # outcome stays on record
+        assert state["fix_round_closed_at"]
+        assert arb.fix_round_brief(meta) is None
+        # What an operator recovery resets: still no brief.
+        recovered = {
+            k: v
+            for k, v in meta.items()
+            if k not in ("review_round", "commit_review_count")
+        }
+        assert arb.fix_round_brief(recovered) is None
+
+    def test_an_unreadable_thread_neither_consumes_nor_expires(self, tmp_path: Path):
+        """Past the deadline with a verdict posted inside the window: a poll
+        that could not read the thread decides nothing; the next readable poll
+        consumes the verdict."""
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-unreadable"
+        now = int(time.time())
+        self._seed_parked_with_request(
+            db_path, task_id, _parked_state(task_id, requested_at=now - 25 * 3600)
+        )
+        verdict = _std(
+            530, _verdict_body("MERGE", task_id), created_at=_iso(now - 2 * 3600)
+        )
+
+        self._run(db_path, [verdict], thread_unknown=True)
+
+        self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
+        assert not _activities(db_path, task_id, "review_cap_arbitration_expired")
+
+        self._run(db_path, [verdict])
+
+        meta = self._assert_still_parked(db_path, task_id, arb.STATUS_MERGE_APPROVED)
+        assert meta[arb.STATE_KEY]["decision"] == "MERGE"
+
+    def test_the_request_comment_is_neither_echoed_nor_an_ignored_verdict(
+        self, tmp_path: Path
+    ):
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-echo"
+        self._seed_parked_with_request(db_path, task_id)
+        request = _std(1, _request_body(_key(task_id)))
+        # An earlier attempt's request: another comment id, same shape.
+        earlier = _std(7, _request_body(_key(task_id, HEAD_3, attempt=1)))
+
+        self._run(db_path, [request, earlier])
+
+        self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
+        assert not _activities(db_path, task_id, "review_cap_arbitration_ignored")
+        with sqlite3.connect(str(db_path)) as conn:
+            copies = conn.execute(
+                "SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (task_id,)
+            ).fetchone()[0]
+        assert copies == 0
+
+    def test_a_corrupt_attempt_counter_does_not_strand_the_task(self, tmp_path: Path):
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-corrupt"
+        self._seed_parked_with_request(
+            db_path, task_id, _parked_state(task_id, attempts="abc")
+        )
+        verdict = _std(540, _verdict_body("FIX", task_id))
+
+        self._run(db_path, [verdict])
+
+        settled = _meta(db_path, task_id)[arb.STATE_KEY]
+        assert settled["status"] == arb.STATUS_FIX_REQUESTED
+        assert settled["decision_comment_id"] == "issue_540"
+        (recorded,) = _activities(db_path, task_id, "review_cap_arbitration")
+        assert "Arbiter verdict FIX (attempt 0/2)" in recorded[0]

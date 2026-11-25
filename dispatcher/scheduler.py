@@ -237,7 +237,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 
                 # 1. Unblock tasks whose parent dependencies are all done
                 cursor.execute("""
-                    SELECT id, title FROM tasks
+                    SELECT id, title, status, assignee, metadata FROM tasks
                     WHERE status = 'blocked'
                     AND id IN (SELECT child_id FROM task_links WHERE link_type = 'blocks' OR link_type IS NULL)
                     AND NOT EXISTS (
@@ -249,6 +249,20 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                     )
                 """)
                 for row in cursor.fetchall():
+                    try:
+                        row_meta = json.loads(row["metadata"] or "{}")
+                    except (TypeError, ValueError):
+                        row_meta = {}
+                    if _cap_arb.is_review_cap_park(
+                        row_meta if isinstance(row_meta, dict) else None,
+                        status=row["status"],
+                        assignee=row["assignee"],
+                    ):
+                        # A review-cap park waits on a merge decision (human or
+                        # arbiter), not on its parents. Unblocking it here
+                        # dispatched a builder with no verdict and voided the
+                        # open request.
+                        continue
                     transition_task(conn, row["id"], "todo", actor="dispatcher")
                     cursor.execute(
                         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'unblock', 'All parent dependencies satisfied; moved to todo', ?)",
@@ -1384,11 +1398,12 @@ def _request_review_cap_arbitration(
         return None
     state["comment_id"] = posted["comment_id"]
     state["posted_by"] = posted.get("author") or ""
+    if posted.get("created_at"):
+        # Anchor the deadline to when the request comment really went up.
+        state["requested_at"] = posted["created_at"]
     if posted.get("adopted"):
-        # The comment already existed (a previous cycle lost its local state):
-        # anchor the deadline to when it was really posted.
+        # The comment already existed (a previous cycle lost its local state).
         state["adopted"] = True
-        state["requested_at"] = posted.get("created_at") or int(now)
     return state, body
 
 
@@ -1421,8 +1436,7 @@ def _apply_review_cap_arbitration_decision(
     title = row["title"]
     arbiter = str(state.get("arbiter") or _cap_arb.DEFAULT_ARBITER)
     verdict = decision["verdict"]
-    attempts = int(state.get("attempts") or 0)
-    max_attempts = int(state.get("max_arbitrations") or 0)
+    attempts, max_attempts = _cap_arb.attempt_counts(state)
     short = " ".join(str(decision.get("rationale") or "").split())[:200]
     verdict_body = str(decision.get("body") or "").strip()[:4000]
     state.update(
@@ -1618,8 +1632,17 @@ def _poll_arbitration_park(
             )
         return True
 
-    # Comments while parked are recorded for visibility only.
+    # Comments while parked are recorded for visibility only - except the
+    # dispatcher's own requests, which the cap branch already put on the task
+    # (an earlier attempt's request included: it asks for a decision, it is
+    # not feedback).
+    own_request_id = state.get("comment_id")
     for comment in new_pr_comments:
+        if comment.get("comment_id") == own_request_id:
+            continue
+        first_line = str(comment.get("body") or "").strip().splitlines()[:1]
+        if first_line and first_line[0].strip() == _cap_arb.REQUEST_PREFIX:
+            continue
         _record(comment)
         dirty = True
 
@@ -1655,8 +1678,17 @@ def _poll_arbitration_park(
     conversation = _disp.fetch_pr_conversation_comments(
         repo_path=repo_path, pr_url=current_pr_url
     )
+    if conversation is None:
+        # Unknown thread: no verdict can be read, and "unanswered" cannot be
+        # established either. Decide nothing on this tick - not even the
+        # deadline - so an API hiccup never discards an in-window verdict.
+        _log.warning(
+            "Task %s: arbitration poll could not read the PR conversation; holding",
+            task_id,
+        )
+        return _hold()
     poll = _cap_arb.find_arbitration_verdict(
-        conversation or [],
+        conversation,
         arbiter=str(state.get("arbiter") or cfg["arbiter"]),
         key=str(state.get("request_key") or ""),
         request_head=str(state.get("request_head") or ""),
@@ -2368,6 +2400,9 @@ def _poll_pr_and_route_review(
 
             task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
             task_meta.pop("reviewer_orphan_recovered", None)
+            # The reviewer answered the fix commit - approved or not, the
+            # arbitration verdict is no longer an open builder brief.
+            _cap_arb.close_fix_round(task_meta, now)
 
             # Check if Auto-Merge is enabled for this task
             board_dict = {}
