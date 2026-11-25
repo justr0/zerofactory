@@ -365,6 +365,73 @@ class TestOpenWikiGate(unittest.TestCase):
             )
         self.assertEqual(resolved, repo_dir.resolve())
 
+    def test_resolve_board_slug_uses_exact_repository_identity_without_argument(self):
+        db_file = self.tmp / "zerofactory.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
+            )
+            conn.execute("INSERT INTO boards (slug) VALUES ('api')")
+            conn.execute("INSERT INTO boards (slug) VALUES ('payments')")
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                ("api", "https://github.com/example/another-api.git"),
+            )
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                ("payments", "https://github.com/example/payments-api.git"),
+            )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.object(
+                self.gate,
+                "_run_cmd",
+                return_value="https://github.com/example/payments-api.git",
+            ),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+        ):
+            slug = self.gate.resolve_board_slug(self.tmp / "payments-api")
+
+        self.assertEqual(slug, "payments")
+
+    def test_ambiguous_exact_repository_identity_does_not_file_task(self):
+        repo_dir = self.tmp / "payments-api"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        db_file = self.tmp / "zerofactory.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
+            )
+            for slug in ("payments", "billing"):
+                conn.execute("INSERT INTO boards (slug) VALUES (?)", (slug,))
+                conn.execute(
+                    "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                    (slug, "https://github.com/example/payments-api.git"),
+                )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(os.environ, {"ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "1"}),
+            patch.object(
+                self.gate,
+                "_run_cmd",
+                return_value="https://github.com/example/payments-api.git",
+            ),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
+            wake, reason = self.gate.check_openwiki_gate(repo_dir)
+
+        self.assertFalse(wake)
+        self.assertIn("Unable to unambiguously resolve a board", reason)
+        create_task.assert_not_called()
+
     def test_multi_repo_openwiki_gate_evaluates_all_repos(self):
         repo_api = self.tmp / "api"
         repo_worker = self.tmp / "worker"
