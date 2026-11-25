@@ -70,8 +70,8 @@ def get_active_scanner_pids() -> dict[str, int]:
 
 
 def kill_board_scanner(board_slug: str) -> bool:
-    """Terminate any active scanner process for board_slug."""
-    proc = _active_scanners.pop(board_slug, None)
+    """Stop a board scanner, returning False while its process remains live."""
+    proc = _active_scanners.get(board_slug)
     if proc is not None and proc.poll() is None:
         try:
             terminate_process_group(proc, proc.pid)
@@ -79,6 +79,7 @@ def kill_board_scanner(board_slug: str) -> bool:
             pass
     logs_dir = get_hermes_home() / "logs"
     pid_file = logs_dir / f"scanner_{board_slug}.pid"
+    pid = None
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
@@ -100,8 +101,31 @@ def kill_board_scanner(board_slug: str) -> bool:
                     except Exception:
                         pass
         except Exception:
-            pass
-        pid_file.unlink(missing_ok=True)
+            pid = None
+
+    # Keep both local and persisted liveness records until the scanner is
+    # confirmed dead. A dashboard may be running in another process, so the
+    # PID file is the dispatcher's only duplicate-spawn guard in that case.
+    still_running = False
+    if pid is not None and is_pid_alive(pid):
+        still_running = process_matches_identity(pid, f"scanner_{board_slug}")
+    if (
+        not still_running
+        and proc is not None
+        and proc.poll() is None
+        and is_pid_alive(proc.pid)
+    ):
+        still_running = process_matches_identity(proc.pid, f"scanner_{board_slug}")
+    if still_running:
+        _log.warning(
+            "Scanner process for board '%s' is still alive after termination attempt; "
+            "retaining its PID record",
+            board_slug,
+        )
+        return False
+
+    _active_scanners.pop(board_slug, None)
+    pid_file.unlink(missing_ok=True)
     cleanup_process_artifacts(f"scanner_{board_slug}")
     return True
 

@@ -97,6 +97,110 @@ def test_kill_board_scanner_does_not_signal_reused_pid(tmp_path):
     assert not pid_file.exists()
 
 
+def test_kill_board_scanner_retains_live_pid_when_signaling_fails_and_suppresses_spawn(
+    tmp_path,
+):
+    """Failed cross-process termination keeps the duplicate-spawn guard."""
+    _active_scanners.clear()
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=True),
+        patch.object(scanner.os, "killpg", side_effect=PermissionError),
+        patch.object(scanner.os, "kill", side_effect=PermissionError),
+        patch.object(scanner, "cleanup_process_artifacts") as mock_cleanup,
+    ):
+        assert scanner.kill_board_scanner("board-a") is False
+        assert pid_file.exists()
+        assert scanner.get_active_scanner_pids() == {"board-a": 424242}
+
+        with (
+            patch.dict(
+                scanner.os.environ,
+                {
+                    "ZEROFACTORY_SKIP_WORKER_SPAWN": "",
+                    "ZEROFACTORY_SKIP_SCANNER_SPAWN": "",
+                },
+            ),
+            patch.object(scanner.subprocess, "Popen") as mock_popen,
+        ):
+            assert scanner.spawn_board_scanner("board-a", tmp_path) is None
+
+    mock_popen.assert_not_called()
+    mock_cleanup.assert_not_called()
+
+
+def test_kill_board_scanner_retains_pid_until_live_process_exits(tmp_path):
+    """A delivered termination signal is not proof that the scanner has exited."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=True),
+        patch.object(scanner.os, "getpgid", return_value=424242),
+        patch.object(scanner.os, "killpg") as mock_killpg,
+        patch.object(scanner, "cleanup_process_artifacts") as mock_cleanup,
+    ):
+        assert scanner.kill_board_scanner("board-a") is False
+
+    mock_killpg.assert_called_once()
+    mock_cleanup.assert_not_called()
+    assert pid_file.exists()
+
+
+def test_kill_board_scanner_retains_pid_when_windows_tree_kill_fails(tmp_path):
+    """A failed Windows tree kill does not erase a still-live scanner PID."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "IS_WINDOWS", True),
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", return_value=True),
+        patch.object(scanner, "process_matches_identity", return_value=True),
+        patch.object(scanner, "kill_tree", return_value=False) as mock_kill,
+        patch.object(scanner, "cleanup_process_artifacts") as mock_cleanup,
+    ):
+        assert scanner.kill_board_scanner("board-a") is False
+
+    mock_kill.assert_called_once_with(424242)
+    mock_cleanup.assert_not_called()
+    assert pid_file.exists()
+
+
+def test_kill_board_scanner_cleans_pid_after_process_is_confirmed_dead(tmp_path):
+    """Successful termination removes the persisted liveness record."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+
+    with (
+        patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+        patch.object(scanner, "is_pid_alive", side_effect=[True, False]),
+        patch.object(scanner, "process_matches_identity", return_value=True),
+        patch.object(scanner.os, "getpgid", return_value=424242),
+        patch.object(scanner.os, "killpg") as mock_killpg,
+        patch.object(scanner, "cleanup_process_artifacts") as mock_cleanup,
+    ):
+        assert scanner.kill_board_scanner("board-a") is True
+
+    mock_killpg.assert_called_once()
+    assert not pid_file.exists()
+    mock_cleanup.assert_called_once_with("scanner_board-a")
+
+
 def test_get_active_scanner_pids_keeps_matching_live_scanner(tmp_path):
     """A persisted PID remains active when the scanner identity matches."""
     logs_dir = tmp_path / "logs"
