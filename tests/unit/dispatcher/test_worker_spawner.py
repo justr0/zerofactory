@@ -11,6 +11,8 @@ from dispatcher.worker_spawner import (
     _inject_langfuse_env,
     spawn_agent_worker,
 )
+import zf_wincompat
+from zf_wincompat import detached_popen_kwargs
 
 
 def test_inject_langfuse_env():
@@ -38,6 +40,21 @@ def test_inject_langfuse_env():
     assert "HERMES_LANGFUSE_SECRET_KEY" not in env
 
 
+def test_detached_popen_kwargs_platform_contract():
+    """Verify both native detached-process options without requiring Windows."""
+    with patch.object(zf_wincompat, "IS_WINDOWS", False):
+        assert detached_popen_kwargs() == {"start_new_session": True}
+
+    with (
+        patch.object(zf_wincompat, "IS_WINDOWS", True),
+        patch.object(zf_wincompat.subprocess, "CREATE_NO_WINDOW", 0x01, create=True),
+        patch.object(
+            zf_wincompat.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x02, create=True
+        ),
+    ):
+        assert detached_popen_kwargs() == {"creationflags": 0x03}
+
+
 def test_spawn_agent_worker_skip_env():
     """When ZEROFACTORY_SKIP_WORKER_SPAWN is set, spawn returns None immediately."""
     with patch.dict(os.environ, {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1"}):
@@ -49,7 +66,7 @@ def test_spawn_agent_worker_skip_env():
 
 
 def test_spawn_agent_worker_cmd_and_session_isolation():
-    """Verify hermes command structure, start_new_session=True, and session matching."""
+    """Verify hermes command structure, detached spawn, and session matching."""
     with (
         tempfile.NamedTemporaryFile(suffix=".db") as tmp_db,
         tempfile.TemporaryDirectory() as tmp_ws,
@@ -116,7 +133,12 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
             assert cmd[0] == "sh"
             assert cmd[1] == "-c"
             assert "zf-runner" in cmd
-            assert kwargs.get("start_new_session") is True
+            isolation_kwargs = {
+                key: kwargs[key]
+                for key in ("start_new_session", "creationflags")
+                if key in kwargs
+            }
+            assert isolation_kwargs == detached_popen_kwargs()
             assert env.get("HERMES_PROFILE") == "zf-reviewer"
 
 
