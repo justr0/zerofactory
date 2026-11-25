@@ -74,6 +74,136 @@ def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
     assert any(t["id"] == task_id for t in filtered_tasks)
 
 
+@pytest.mark.parametrize("unsafe", ["/tmp/outside", "../outside"])
+def test_task_api_rejects_unsafe_path_components(
+    api_client: TestClient, default_board: str, unsafe: str
+):
+    endpoint = "/api/plugins/zerofactory/tasks"
+    for field, value in (
+        ("task_id", unsafe),
+        ("repo_alias", unsafe),
+        ("target_repos", [unsafe]),
+    ):
+        response = api_client.post(
+            endpoint,
+            json={
+                "title": f"Unsafe {field}",
+                "board_slug": default_board,
+                field: value,
+            },
+        )
+        assert response.status_code == 422
+
+    created = api_client.post(
+        endpoint,
+        json={"title": "Safe task for update validation", "board_slug": default_board},
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+    for field, value, expected_status in (
+        ("repo_alias", unsafe, 422),
+        ("target_repos", [unsafe], 422),
+        ("metadata", {"target_repos": [unsafe]}, 400),
+    ):
+        response = api_client.patch(f"{endpoint}/{task_id}", json={field: value})
+        assert response.status_code == expected_status
+
+
+def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
+    api_client: TestClient, default_board: str
+):
+    with get_db_conn() as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, created_at, updated_at) VALUES ('other-board', 1, 1)"
+        )
+        conn.executemany(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+            [
+                (default_board, "frontend", "https://example.com/frontend.git"),
+                ("other-board", "backend", "https://example.com/backend.git"),
+            ],
+        )
+        conn.commit()
+
+    endpoint = "/api/plugins/zerofactory/tasks"
+    for body in (
+        {
+            "title": "Unlinked repository",
+            "board_slug": default_board,
+            "repo_alias": "unlinked",
+        },
+        {
+            "title": "Unlinked target repo",
+            "board_slug": default_board,
+            "metadata": {"target_repos": ["unlinked"]},
+        },
+    ):
+        assert api_client.post(endpoint, json=body).status_code == 400
+
+    created = api_client.post(
+        endpoint,
+        json={
+            "title": "Linked repository task",
+            "board_slug": default_board,
+            "repo_alias": "frontend",
+            "metadata": {"target_repos": ["frontend"]},
+        },
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    updated = api_client.patch(
+        f"{endpoint}/{task_id}",
+        json={
+            "repo_alias": "frontend",
+            "metadata": {"target_repos": ["frontend"]},
+        },
+    )
+    assert updated.status_code == 200
+    assert (
+        api_client.patch(
+            f"{endpoint}/{task_id}",
+            json={"repo_alias": "unlinked"},
+        ).status_code
+        == 400
+    )
+    assert (
+        api_client.patch(
+            f"{endpoint}/{task_id}",
+            json={"metadata": {"target_repos": ["unlinked"]}},
+        ).status_code
+        == 400
+    )
+
+    rejected_move = api_client.patch(
+        f"{endpoint}/{task_id}", json={"board_slug": "other-board"}
+    )
+    assert rejected_move.status_code == 400
+    rejected_targets_move = api_client.patch(
+        f"{endpoint}/{task_id}",
+        json={"board_slug": "other-board", "repo_alias": "backend"},
+    )
+    assert rejected_targets_move.status_code == 400
+
+    moved = api_client.patch(
+        f"{endpoint}/{task_id}",
+        json={
+            "board_slug": "other-board",
+            "repo_alias": "backend",
+            "target_repos": ["backend"],
+        },
+    )
+    assert moved.status_code == 200
+    with get_db_conn() as conn:
+        task = conn.execute(
+            "SELECT board_slug, repo_alias, metadata FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+    assert task["board_slug"] == "other-board"
+    assert task["repo_alias"] == "backend"
+    assert json.loads(task["metadata"])["target_repos"] == ["backend"]
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected_progress"),
     [

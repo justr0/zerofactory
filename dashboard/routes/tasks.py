@@ -169,8 +169,11 @@ def _validate_linked_repo_aliases(
             normalized = _validate_path_component(alias)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if normalized:
-            cleaned.append(normalized)
+        if not normalized:
+            raise HTTPException(
+                status_code=400, detail="Repository aliases must not be empty"
+            )
+        cleaned.append(normalized)
 
     if not cleaned:
         return cleaned
@@ -851,10 +854,11 @@ def update_task(task_id: str, req: TaskUpdate):
 
     meta_changes = False
     cleaned_target_repos: list[str] | None = None
+    cleaned_metadata = dict(req.metadata) if req.metadata is not None else None
     with get_db_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT status, assignee, metadata, board_slug FROM tasks WHERE id = ?",
+            "SELECT status, assignee, metadata, board_slug, repo_alias FROM tasks WHERE id = ?",
             (task_id,),
         )
         m_row = cursor.fetchone()
@@ -869,27 +873,40 @@ def update_task(task_id: str, req: TaskUpdate):
             except Exception:
                 existing_meta = {}
 
-        if req.repo_alias is not None:
-            if m_row and req.repo_alias:
-                _validate_linked_repo_aliases(
-                    cursor,
-                    req.board_slug or m_row["board_slug"],
-                    [req.repo_alias],
-                )
-            updates.append("repo_alias = ?")
-            params.append(req.repo_alias or None)
-            changes.append(f"repo_alias set to {req.repo_alias}")
-
         if m_row:
             effective_board = req.board_slug or m_row["board_slug"]
+            effective_alias = (
+                req.repo_alias if req.repo_alias is not None else m_row["repo_alias"]
+            )
+            board_changed = (
+                req.board_slug is not None and req.board_slug != m_row["board_slug"]
+            )
+            if effective_alias and (req.repo_alias is not None or board_changed):
+                _validate_linked_repo_aliases(
+                    cursor, effective_board, [effective_alias]
+                )
+
             if req.target_repos is not None:
                 cleaned_target_repos = _validate_linked_repo_aliases(
                     cursor, effective_board, req.target_repos
                 )
-            if req.metadata and "target_repos" in req.metadata:
-                _validate_linked_repo_aliases(
-                    cursor, effective_board, req.metadata["target_repos"]
+            if cleaned_metadata and "target_repos" in cleaned_metadata:
+                cleaned_metadata["target_repos"] = _validate_linked_repo_aliases(
+                    cursor, effective_board, cleaned_metadata["target_repos"]
                 )
+            elif (
+                board_changed
+                and req.target_repos is None
+                and existing_meta.get("target_repos") is not None
+            ):
+                _validate_linked_repo_aliases(
+                    cursor, effective_board, existing_meta["target_repos"]
+                )
+
+        if req.repo_alias is not None:
+            updates.append("repo_alias = ?")
+            params.append(req.repo_alias or None)
+            changes.append(f"repo_alias set to {req.repo_alias}")
 
     if req.assignee is not None:
         curr_status = m_row["status"] if m_row else "triage"
@@ -916,8 +933,8 @@ def update_task(task_id: str, req: TaskUpdate):
         changes.append("specification updated")
         meta_changes = True
 
-    if req.metadata is not None:
-        existing_meta.update(req.metadata)
+    if cleaned_metadata is not None:
+        existing_meta.update(cleaned_metadata)
         changes.append("metadata updated")
         meta_changes = True
 

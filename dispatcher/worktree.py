@@ -74,6 +74,22 @@ def _validate_worktree_component(value: str, name: str) -> str:
     return value
 
 
+def _validate_worktree_destination(
+    path: Path, task_root: Path, worktree_base: Path
+) -> Path:
+    """Resolve a worktree path and require it to remain in its task root."""
+    resolved_base = worktree_base.resolve()
+    resolved_task_root = task_root.resolve()
+    resolved_path = path.resolve()
+    if not resolved_task_root.is_relative_to(resolved_base) or not (
+        resolved_path.is_relative_to(resolved_task_root)
+    ):
+        raise ValueError(
+            "resolved worktree destination must remain beneath its task root"
+        )
+    return resolved_path
+
+
 def _get_board_repos_dir(board_slug: str) -> Path:
     """Return a board's repository directory across package and flat imports."""
     try:
@@ -141,6 +157,10 @@ def resolve_task_repo_path(
     repo_alias: str | None = None,
 ) -> Path:
     """Resolve the git repository root for a task given its board_slug, tenant, and repo_alias."""
+    if repo_alias:
+        repo_alias = _validate_worktree_component(repo_alias, "repo_alias")
+        if not board_slug or cursor is None:
+            raise ValueError("repository alias must be linked to a configured board")
     # 0. Check board_repositories if board_slug and cursor are provided
     if board_slug and cursor:
         try:
@@ -152,9 +172,15 @@ def resolve_task_repo_path(
                         (board_slug, repo_alias),
                     )
                     repo_row = cursor.fetchone()
-                except Exception:
-                    pass
-            if not repo_row:
+                except Exception as exc:
+                    raise ValueError(
+                        f"repository alias '{repo_alias}' is not linked to board '{board_slug}'"
+                    ) from exc
+                if not repo_row:
+                    raise ValueError(
+                        f"repository alias '{repo_alias}' is not linked to board '{board_slug}'"
+                    )
+            else:
                 try:
                     cursor.execute(
                         "SELECT repo_alias, git_url, target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC LIMIT 1",
@@ -199,6 +225,8 @@ def resolve_task_repo_path(
                     w_repo = _get_board_repos_dir(board_slug) / alias
                     if w_repo.exists() and (w_repo / ".git").exists():
                         return w_repo
+        except ValueError:
+            raise
         except Exception:
             pass
 
@@ -233,9 +261,36 @@ def setup_worktree(
     repo_alias: str | None = None,
 ) -> str | None:
     """Ensure git worktree and branch exist for task execution."""
-    task_id = _validate_worktree_component(task_id, "task_id")
-    if repo_alias:
-        repo_alias = _validate_worktree_component(repo_alias, "repo_alias")
+    try:
+        task_id = _validate_worktree_component(task_id, "task_id")
+        if repo_alias:
+            repo_alias = _validate_worktree_component(repo_alias, "repo_alias")
+        if not repo_alias and cursor:
+            try:
+                cursor.execute("SELECT repo_alias FROM tasks WHERE id = ?", (task_id,))
+                t_row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                t_row = None
+            if t_row and t_row[0]:
+                repo_alias = _validate_worktree_component(
+                    str(t_row[0]).strip(), "repo_alias"
+                )
+        if repo_alias:
+            if not board_slug or cursor is None:
+                raise ValueError(
+                    "repository alias must be linked to a configured board"
+                )
+            cursor.execute(
+                "SELECT 1 FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
+                (board_slug, repo_alias),
+            )
+            if not cursor.fetchone():
+                raise ValueError(
+                    f"repository alias '{repo_alias}' is not linked to board '{board_slug}'"
+                )
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        _log.warning("Worktree setup rejected for task %s: %s", task_id, exc)
+        return None
 
     valid_profiles = getattr(_d(), "VALID_PROFILES", VALID_PROFILES)
     if not assignee or assignee == "unassigned" or assignee not in valid_profiles:
@@ -260,24 +315,16 @@ def setup_worktree(
     steps = StepTracker(task_id)
     steps.start("worktree.setup", f"assignee={assignee}")
 
-    # Fetch repo_alias from tasks if not explicitly passed
-    if not repo_alias and cursor:
-        try:
-            cursor.execute("SELECT repo_alias FROM tasks WHERE id = ?", (task_id,))
-            t_row = cursor.fetchone()
-        except Exception:
-            pass
-        else:
-            if t_row and t_row[0]:
-                repo_alias = _validate_worktree_component(
-                    str(t_row[0]).strip(), "repo_alias"
-                )
-
     # Resolve primary repo path
-    if not repo_path:
-        repo_path = _d().resolve_task_repo_path(
-            cursor, board_slug, tenant, repo_alias=repo_alias
-        )
+    try:
+        if not repo_path:
+            repo_path = _d().resolve_task_repo_path(
+                cursor, board_slug, tenant, repo_alias=repo_alias
+            )
+    except (TypeError, ValueError) as exc:
+        steps.end("fail", str(exc))
+        _log.warning("Worktree setup rejected for task %s: %s", task_id, exc)
+        return None
     if not repo_path or not repo_path.exists():
         steps.end("fail", f"repo path unresolvable: {repo_path}")
         return None
@@ -285,37 +332,46 @@ def setup_worktree(
     target_name = _validate_worktree_component(
         repo_alias or repo_path.name, "repo_alias"
     )
-    if board_slug:
-        try:
-            from paths import get_board_worktrees_dir  # type: ignore
-        except Exception:
+    try:
+        if board_slug:
             try:
-                from ..paths import get_board_worktrees_dir  # type: ignore
+                from paths import get_board_worktrees_dir  # type: ignore
             except Exception:
-                get_board_worktrees_dir = lambda b: (
-                    Path.home() / ".zerofactory" / "workspaces" / b / "worktrees"
-                )  # type: ignore
-        worktree_base = get_board_worktrees_dir(board_slug)
-    else:
-        worktree_base = repo_path.parent / f"{repo_path.name}-worktrees"
-    task_root = worktree_base / str(task_id)
-    worktree_dir = task_root / target_name
-    resolved_base = worktree_base.resolve()
-    resolved_task_root = task_root.resolve()
-    resolved_worktree_dir = worktree_dir.resolve()
-    if not resolved_task_root.is_relative_to(resolved_base) or not (
-        resolved_worktree_dir.is_relative_to(resolved_task_root)
-    ):
-        raise ValueError(
-            "resolved worktree destination must remain beneath its task root"
+                try:
+                    from ..paths import get_board_worktrees_dir  # type: ignore
+                except Exception:
+                    get_board_worktrees_dir = lambda b: (
+                        Path.home() / ".zerofactory" / "workspaces" / b / "worktrees"
+                    )  # type: ignore
+            worktree_base = get_board_worktrees_dir(board_slug)
+        else:
+            worktree_base = repo_path.parent / f"{repo_path.name}-worktrees"
+        task_root = worktree_base / str(task_id)
+        worktree_base = worktree_base.resolve()
+        task_root = _validate_worktree_destination(task_root, task_root, worktree_base)
+        worktree_dir = _validate_worktree_destination(
+            task_root / target_name, task_root, worktree_base
         )
-    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+        worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, TypeError, ValueError) as exc:
+        steps.end("fail", str(exc))
+        _log.warning("Worktree setup rejected for task %s: %s", task_id, exc)
+        return None
 
     branch_name = f"task/{task_id}"
 
     # If worktree_dir does not exist yet, check if branch is already checked out elsewhere or under task_root
     if not worktree_dir.exists():
         checked_out = _find_checked_out_worktree(repo_path, branch_name)
+        if checked_out:
+            try:
+                checked_out = _validate_worktree_destination(
+                    checked_out, task_root, worktree_base
+                )
+            except (OSError, ValueError) as exc:
+                steps.end("fail", str(exc))
+                _log.warning("Worktree setup rejected for task %s: %s", task_id, exc)
+                return None
         if checked_out and checked_out.exists():
             worktree_dir = checked_out
         elif task_root.exists():
@@ -327,6 +383,16 @@ def setup_worktree(
             except Exception:
                 pass
             for cand in cand_dirs:
+                try:
+                    cand = _validate_worktree_destination(
+                        cand, task_root, worktree_base
+                    )
+                except (OSError, ValueError) as exc:
+                    steps.end("fail", str(exc))
+                    _log.warning(
+                        "Worktree setup rejected for task %s: %s", task_id, exc
+                    )
+                    return None
                 if cand.exists() and (
                     (cand / ".git").is_file() or (cand / ".git").is_dir()
                 ):
@@ -458,12 +524,20 @@ def setup_worktree(
                             else str(err_bytes)
                         )
                     m = re.search(r"is already checked out at '([^']+)'", err_msg)
-                    if m and Path(m.group(1)).exists():
-                        worktree_dir = Path(m.group(1))
+                    if m:
+                        existing_path = _validate_worktree_destination(
+                            Path(m.group(1)), task_root, worktree_base
+                        )
+                    else:
+                        existing_path = None
+                    if existing_path and existing_path.exists():
+                        worktree_dir = existing_path
                     else:
                         existing_wt = _find_checked_out_worktree(repo_path, branch_name)
                         if existing_wt:
-                            worktree_dir = existing_wt
+                            worktree_dir = _validate_worktree_destination(
+                                existing_wt, task_root, worktree_base
+                            )
                         else:
                             subprocess.run(
                                 ["git", "worktree", "prune"],
@@ -495,12 +569,21 @@ def setup_worktree(
                                 m2 = re.search(
                                     r"is already checked out at '([^']+)'", err_msg2
                                 )
-                                if m2 and Path(m2.group(1)).exists():
-                                    worktree_dir = Path(m2.group(1))
+                                if m2:
+                                    existing_path = _validate_worktree_destination(
+                                        Path(m2.group(1)), task_root, worktree_base
+                                    )
+                                else:
+                                    existing_path = None
+                                if existing_path and existing_path.exists():
+                                    worktree_dir = existing_path
                                 else:
                                     raise
             # Sync existing worktree with latest default branch if assignee is builder
             if assignee == "zf-builder" and worktree_dir.exists():
+                worktree_dir = _validate_worktree_destination(
+                    worktree_dir, task_root, worktree_base
+                )
                 _d().pull_and_merge_main(worktree_dir, repo_path, default_branch)
         else:
             if not worktree_dir.exists():
@@ -529,12 +612,20 @@ def setup_worktree(
                             else str(err_bytes)
                         )
                     m = re.search(r"is already checked out at '([^']+)'", err_msg)
-                    if m and Path(m.group(1)).exists():
-                        worktree_dir = Path(m.group(1))
+                    if m:
+                        existing_path = _validate_worktree_destination(
+                            Path(m.group(1)), task_root, worktree_base
+                        )
+                    else:
+                        existing_path = None
+                    if existing_path and existing_path.exists():
+                        worktree_dir = existing_path
                     else:
                         existing_wt = _find_checked_out_worktree(repo_path, branch_name)
                         if existing_wt:
-                            worktree_dir = existing_wt
+                            worktree_dir = _validate_worktree_destination(
+                                existing_wt, task_root, worktree_base
+                            )
                         else:
                             subprocess.run(
                                 [
@@ -552,6 +643,9 @@ def setup_worktree(
                             )
             # Sync newly created worktree with latest default branch if assignee is builder
             if assignee == "zf-builder" and worktree_dir.exists():
+                worktree_dir = _validate_worktree_destination(
+                    worktree_dir, task_root, worktree_base
+                )
                 _d().pull_and_merge_main(worktree_dir, repo_path, default_branch)
 
         # Provision side-by-side sibling repositories
@@ -566,7 +660,10 @@ def setup_worktree(
                     s_alias = (s.get("repo_alias") or "").strip()
                     if not s_alias:
                         continue
-                    s_dir = task_root / s_alias
+                    s_alias = _validate_worktree_component(s_alias, "repo_alias")
+                    s_dir = _validate_worktree_destination(
+                        task_root / s_alias, task_root, worktree_base
+                    )
                     if not s_dir.exists():
                         s_repo = _d().resolve_task_repo_path(
                             cursor, board_slug, tenant, repo_alias=s_alias
@@ -628,6 +725,9 @@ def setup_worktree(
                     "Error provisioning sibling worktrees for %s: %s", board_slug, e
                 )
 
+        worktree_dir = _validate_worktree_destination(
+            worktree_dir, task_root, worktree_base
+        )
         cursor.execute(
             "UPDATE tasks SET workspace_kind = 'dir', workspace_path = ?, branch_name = ? WHERE id = ?",
             (str(worktree_dir), branch_name, task_id),
