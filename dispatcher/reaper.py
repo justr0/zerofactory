@@ -655,7 +655,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
         )
 
         if is_stuck:
-            _d().terminate_worker_process(proc, pid)
+            _d().terminate_worker_process(proc, pid, task_id=task_id)
             _active_workers.pop(task_id, None)
             meta = _d()._mark_task_session_ended(meta, now, "timed_out")
             fail_retries = int(meta.get("worker_failure_retries", 0)) + 1
@@ -962,7 +962,7 @@ def reap_stuck_tasks(
                         if task_id or item["is_stuck"]:
                             proc = _active_workers.pop(t_id, None)
                             pid = item["worker_pid"]
-                            _d().terminate_worker_process(proc, pid)
+                            _d().terminate_worker_process(proc, pid, task_id=t_id)
 
                             reason = (
                                 item["stuck_reason"]

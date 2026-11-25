@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 # Ensure zerofactory plugin root is in sys.path for direct module imports
@@ -77,7 +77,13 @@ def _validate_path_component(value: str | None) -> str | None:
     if value is None:
         return None
     value = value.strip()
-    if value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+    if (
+        value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or PureWindowsPath(value).drive
+    ):
         raise ValueError("must be a single safe path component")
     return value
 
@@ -253,6 +259,20 @@ class TaskCreate(BaseModel):
     task_id: str | None = None
     metadata: dict[str, Any] | None = None
 
+    @field_validator("task_id", "repo_alias")
+    @classmethod
+    def validate_path_components(cls, value: str | None) -> str | None:
+        return _validate_path_component(value)
+
+    @field_validator("target_repos")
+    @classmethod
+    def validate_target_repo_components(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        return [_validate_path_component(alias) or "" for alias in value]
+
 
 class TaskUpdate(BaseModel):
     title: str | None = None
@@ -271,6 +291,20 @@ class TaskUpdate(BaseModel):
     tenant: str | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+
+    @field_validator("repo_alias")
+    @classmethod
+    def validate_repo_alias(cls, value: str | None) -> str | None:
+        return _validate_path_component(value)
+
+    @field_validator("target_repos")
+    @classmethod
+    def validate_target_repo_components(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        return [_validate_path_component(alias) or "" for alias in value]
 
 
 class TaskMove(BaseModel):
