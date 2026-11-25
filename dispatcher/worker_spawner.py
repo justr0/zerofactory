@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -44,10 +45,20 @@ def build_worker_command(
         raise ValueError("ZEROFACTORY_WORKER_ARGS must be valid JSON") from exc
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         raise ValueError("ZEROFACTORY_WORKER_ARGS must be a JSON array of strings")
+    placeholders = {
+        "prompt": prompt,
+        "task_id": task_id,
+        "workspace": workspace,
+        "role": role,
+    }
     return [
         executable,
         *(
-            arg.format(prompt=prompt, task_id=task_id, workspace=workspace, role=role)
+            re.sub(
+                r"\{(prompt|task_id|workspace|role)\}",
+                lambda match: placeholders[match.group(1)],
+                arg,
+            )
             for arg in args
         ),
     ]

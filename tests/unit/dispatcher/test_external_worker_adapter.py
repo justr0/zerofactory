@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from dispatcher.worker_spawner import build_worker_command
@@ -19,6 +21,35 @@ def test_external_worker_command_expands_protocol_placeholders(monkeypatch):
         "/repo",
         "task-1",
         "zf-builder",
+    ]
+
+
+def test_external_worker_command_preserves_literal_braces(monkeypatch):
+    monkeypatch.setenv("ZEROFACTORY_WORKER_COMMAND", "omp")
+    monkeypatch.setenv(
+        "ZEROFACTORY_WORKER_ARGS",
+        json.dumps(
+            [
+                "run",
+                "--config",
+                '{"model":"x"}',
+                "--prompt",
+                "{prompt}",
+                "--label",
+                "literal-{unknown}",
+            ]
+        ),
+    )
+
+    assert build_worker_command("do {task_id}", "task-1", "/repo", "zf-builder") == [
+        "omp",
+        "run",
+        "--config",
+        '{"model":"x"}',
+        "--prompt",
+        "do {task_id}",
+        "--label",
+        "literal-{unknown}",
     ]
 
 
