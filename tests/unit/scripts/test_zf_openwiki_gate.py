@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,6 +57,24 @@ class TestOpenWikiGate(unittest.TestCase):
             )
             self.assertFalse(wake)
             self.assertIn("uncommitted changes", reason)
+
+    def test_failed_git_status_is_not_treated_as_clean(self):
+        (self.tmp / ".git").mkdir()
+        (self.tmp / "openwiki").mkdir()
+        with patch.object(self.gate.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                ["git", "status", "--porcelain"],
+                128,
+                stdout="",
+                stderr="not a git repository",
+            )
+            wake, reason = self.gate.check_openwiki_gate(
+                self.tmp, board_slug="test-board"
+            )
+
+        self.assertFalse(wake)
+        self.assertIn("Unable to inspect git working tree", reason)
+        mock_run.assert_called_once()
 
     def test_force_flag(self):
         (self.tmp / ".git").mkdir()
@@ -114,6 +133,37 @@ class TestOpenWikiGate(unittest.TestCase):
             )
             self.assertFalse(wake)
             self.assertIn("No code changes", reason)
+
+    def test_failed_diff_log_requests_refresh_instead_of_no_changes(self):
+        (self.tmp / ".git").mkdir()
+        (self.tmp / "openwiki").mkdir()
+        self.state_file.write_text(
+            json.dumps({"test-board": {"last_scanned_sha": "base1234"}}),
+            encoding="utf-8",
+        )
+
+        def _fake_run(cmd, cwd=None, **kwargs):
+            if cmd[:2] == ["git", "status"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="head5678\n", stderr=""
+                )
+            if "log" in cmd and ":(exclude)openwiki" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="", stderr="bad revision"
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch.object(self.gate.subprocess, "run", side_effect=_fake_run):
+            wake, reason = self.gate.check_openwiki_gate(
+                self.tmp, board_slug="test-board", auto_create_task=False
+            )
+
+        self.assertTrue(wake)
+        self.assertIn("Unable to inspect Git log", reason)
+        self.assertIn("conservatively requesting an OpenWiki refresh", reason)
+        self.assertNotIn("No code changes", reason)
 
     def test_branch_updates_detected_creates_task(self):
         (self.tmp / ".git").mkdir()

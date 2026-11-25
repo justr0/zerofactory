@@ -165,7 +165,7 @@ def create_openwiki_task(
         return None
 
 
-def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str:
+def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str | None:
     try:
         res = subprocess.run(
             cmd,
@@ -175,9 +175,9 @@ def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str:
             text=True,
             timeout=10,
         )
-        return res.stdout.strip() if res.returncode == 0 else ""
+        return res.stdout.strip() if res.returncode == 0 else None
     except Exception:
-        return ""
+        return None
 
 
 def get_state_file() -> Path:
@@ -347,6 +347,11 @@ def evaluate_single_repo_openwiki(
 
     # 4. Check git working tree cleanliness
     status_porcelain = _run_cmd(["git", "status", "--porcelain"], cwd=repo_dir)
+    if status_porcelain is None:
+        return (
+            False,
+            f"Unable to inspect git working tree at {repo_dir}; skipping OpenWiki update.",
+        )
     if status_porcelain:
         return (
             False,
@@ -364,7 +369,7 @@ def evaluate_single_repo_openwiki(
         ["git", "log", "-n", "200", "--format=%H%x09%s"],
         cwd=repo_dir,
     )
-    for line in marker_log.splitlines():
+    for line in (marker_log or "").splitlines():
         sha, _, subject = line.partition("\t")
         if subject.startswith("docs(openwiki): sync"):
             sync_commit = sha
@@ -419,6 +424,19 @@ def evaluate_single_repo_openwiki(
         ],
         cwd=repo_dir,
     )
+    if diff_log is None:
+        reason = (
+            f"Unable to inspect Git log since last OpenWiki commit ({base_commit[:8]}); "
+            f"conservatively requesting an OpenWiki refresh{alias_label}."
+        )
+        if auto_create_task:
+            task = create_openwiki_task(slug, "", repo_alias=repo_alias)
+            if task and task.get("id"):
+                return (
+                    False,
+                    f"{reason} Created task '{task['id']}' in 'todo' for zf-builder.",
+                )
+        return True, reason
     if not diff_log:
         return (
             False,
