@@ -63,23 +63,32 @@ def get_active_scanner_pids() -> dict[str, int]:
     if logs_dir.exists():
         for pf in logs_dir.glob("scanner_*.pid"):
             slug = pf.stem.removeprefix("scanner_")
-            pid = _read_scanner_pid_file(pf)
-            if pid is None:
-                _unlink_scanner_pid_file(pf, None)
-                continue
-            try:
-                if is_pid_alive(pid) and process_matches_identity(
-                    pid, f"scanner_{slug}"
-                ):
-                    active[slug] = pid
-                else:
-                    _unlink_scanner_pid_file(pf, pid)
-            except Exception:
+            pid = _get_active_pid_from_file(pf, slug)
+            if pid is not None:
                 active[slug] = pid
     for slug, proc in list(_active_scanners.items()):
         if proc is not None and proc.poll() is None:
             active[slug] = proc.pid
     return active
+
+
+def _get_active_pid_from_file(pid_file: Path, slug: str) -> int | None:
+    """Resolve a persisted PID, retrying when stale cleanup loses a race."""
+    for _ in range(3):
+        pid = _read_scanner_pid_file(pid_file)
+        if pid is None:
+            if _unlink_scanner_pid_file(pid_file, None):
+                return None
+            continue
+        try:
+            if is_pid_alive(pid) and process_matches_identity(pid, f"scanner_{slug}"):
+                return pid
+        except Exception:
+            # Inspection failure is not evidence that the PID is stale.
+            return pid
+        if _unlink_scanner_pid_file(pid_file, pid):
+            return None
+    raise OSError(f"Scanner PID record for board '{slug}' changed during cleanup")
 
 
 @contextmanager
@@ -100,7 +109,9 @@ def _read_scanner_pid_file(pid_file: Path) -> int | None:
     try:
         with _scanner_pid_file_lock(pid_file):
             return int(pid_file.read_text().strip())
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except ValueError:
         return None
 
 
@@ -148,7 +159,15 @@ def kill_board_scanner(board_slug: str) -> bool:
             pass
     logs_dir = get_hermes_home() / "logs"
     pid_file = logs_dir / f"scanner_{board_slug}.pid"
-    pid = _read_scanner_pid_file(pid_file)
+    try:
+        pid = _read_scanner_pid_file(pid_file)
+    except OSError as exc:
+        _log.warning(
+            "Unable to confirm scanner PID record for board '%s'; retaining it: %s",
+            board_slug,
+            exc,
+        )
+        return False
     pid_matched_identity = False
     if pid is not None:
         try:
@@ -223,7 +242,10 @@ def reap_active_scanners() -> int:
             slug = pf.stem.removeprefix("scanner_")
             if slug in _active_scanners:
                 continue
-            pid = _read_scanner_pid_file(pf)
+            try:
+                pid = _read_scanner_pid_file(pf)
+            except OSError:
+                continue
             if pid is None:
                 if _unlink_scanner_pid_file(pf, None):
                     reaped += 1
@@ -324,7 +346,15 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         return None
 
     # Cross-process duplicate prevention check
-    active_pids = get_active_scanner_pids()
+    try:
+        active_pids = get_active_scanner_pids()
+    except OSError as exc:
+        _log.warning(
+            "Unable to resolve scanner PID records; skipping spawn for '%s': %s",
+            board_slug,
+            exc,
+        )
+        return None
     if board_slug in active_pids:
         _log.debug(
             "Scanner already active for board '%s' (PID: %d); skipping spawn",

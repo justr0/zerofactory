@@ -190,6 +190,47 @@ def test_kill_board_scanner_retains_pid_when_windows_tree_kill_fails(tmp_path):
     assert pid_file.exists()
 
 
+def test_unreadable_pid_record_blocks_stop_and_spawn(tmp_path, monkeypatch):
+    """Lock failures preserve the PID record and fail closed for spawning."""
+    _active_scanners.clear()
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    try:
+        with (
+            patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+            patch.object(
+                scanner, "_scanner_pid_file_lock", side_effect=PermissionError
+            ),
+            patch.dict(
+                scanner.os.environ,
+                {
+                    "ZEROFACTORY_SKIP_WORKER_SPAWN": "",
+                    "ZEROFACTORY_SKIP_SCANNER_SPAWN": "",
+                    "ZEROFACTORY_SCAN_ON_IDLE": "true",
+                },
+            ),
+            patch.object(
+                scanner,
+                "get_scanner_cron_config",
+                return_value={"scan_on_idle": True},
+            ) as mock_config,
+            patch.object(scanner.subprocess, "Popen") as mock_popen,
+        ):
+            assert scanner.kill_board_scanner("board-a") is False
+            assert pid_file.read_text() == "424242"
+            assert scanner.spawn_board_scanner("board-a", tmp_path) is None
+
+        mock_config.assert_not_called()
+        mock_popen.assert_not_called()
+        assert pid_file.read_text() == "424242"
+    finally:
+        _active_scanners.clear()
+
+
 def test_kill_board_scanner_cleans_pid_after_process_is_confirmed_dead(tmp_path):
     """Successful termination removes the persisted liveness record."""
     logs_dir = tmp_path / "logs"
@@ -319,6 +360,58 @@ def test_spawn_board_scanner_ignores_reused_pid_file(tmp_path, monkeypatch):
         assert pid == 515151
         mock_popen.assert_called_once()
         assert (logs_dir / "scanner_board-a.pid").read_text() == "515151"
+    finally:
+        _active_scanners.clear()
+
+
+def test_spawn_board_scanner_rechecks_pid_replaced_during_stale_cleanup(
+    tmp_path, monkeypatch
+):
+    """A live replacement discovered after stale cleanup suppresses spawning."""
+    _active_scanners.clear()
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    pid_file = logs_dir / "scanner_board-a.pid"
+    pid_file.write_text("424242")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cleanup_raced = False
+
+    def replace_stale_record(path, expected_pid):
+        nonlocal cleanup_raced
+        if path == pid_file and expected_pid == 424242 and not cleanup_raced:
+            cleanup_raced = True
+            scanner._write_scanner_pid_file(path, 515151)
+            return False
+        return original_unlink(path, expected_pid)
+
+    original_unlink = scanner._unlink_scanner_pid_file
+    try:
+        with (
+            patch.dict(
+                scanner.os.environ,
+                {
+                    "ZEROFACTORY_SKIP_WORKER_SPAWN": "",
+                    "ZEROFACTORY_SKIP_SCANNER_SPAWN": "",
+                    "ZEROFACTORY_SCAN_ON_IDLE": "true",
+                },
+            ),
+            patch.object(scanner, "get_hermes_home", return_value=tmp_path),
+            patch.object(
+                scanner, "is_pid_alive", side_effect=lambda pid: pid == 515151
+            ),
+            patch.object(scanner, "process_matches_identity", return_value=True),
+            patch.object(
+                scanner, "_unlink_scanner_pid_file", side_effect=replace_stale_record
+            ),
+            patch.object(scanner, "get_scanner_cron_config") as mock_config,
+            patch.object(scanner.subprocess, "Popen") as mock_popen,
+        ):
+            assert scanner.spawn_board_scanner("board-a", tmp_path) is None
+
+        assert cleanup_raced
+        assert pid_file.read_text() == "515151"
+        mock_config.assert_not_called()
+        mock_popen.assert_not_called()
     finally:
         _active_scanners.clear()
 
