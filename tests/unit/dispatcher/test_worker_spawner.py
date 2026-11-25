@@ -1,4 +1,4 @@
-"""Unit tests for dispatcher/worker_spawner.py: agent worker spawning, session isolation, and environment injection."""
+"""Unit tests for dispatcher/worker_spawner.py worker spawning and session isolation."""
 
 import os
 import sqlite3
@@ -7,35 +7,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from dispatcher.worker_spawner import (
-    _inject_langfuse_env,
-    spawn_agent_worker,
-)
-
-
-def test_inject_langfuse_env():
-    """Verify Langfuse env injection when enabled vs disabled."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER)"
-    )
-    conn.execute("INSERT INTO settings VALUES ('langfuse_enabled', 'true', 1000)")
-    conn.execute("INSERT INTO settings VALUES ('langfuse_public_key', 'pk-123', 1000)")
-    conn.execute("INSERT INTO settings VALUES ('langfuse_secret_key', 'sk-456', 1000)")
-    conn.commit()
-
-    env = {}
-    _inject_langfuse_env(env, conn_or_cursor=conn)
-    assert env["HERMES_LANGFUSE_PUBLIC_KEY"] == "pk-123"
-    assert env["HERMES_LANGFUSE_SECRET_KEY"] == "sk-456"
-
-    # Now disable
-    conn.execute("UPDATE settings SET value = 'false' WHERE key = 'langfuse_enabled'")
-    conn.commit()
-    _inject_langfuse_env(env, conn_or_cursor=conn)
-    assert "HERMES_LANGFUSE_PUBLIC_KEY" not in env
-    assert "HERMES_LANGFUSE_SECRET_KEY" not in env
+from dispatcher.worker_spawner import spawn_agent_worker
 
 
 def test_spawn_agent_worker_skip_env():

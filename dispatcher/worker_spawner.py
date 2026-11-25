@@ -9,7 +9,6 @@ import subprocess
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any
 
 from .config import (
     _active_workers,
@@ -108,48 +107,6 @@ def is_unattended_approvals_enabled() -> bool:
     except Exception:
         pass
     return False
-
-
-def _inject_langfuse_env(env: dict[str, str], conn_or_cursor: Any = None) -> None:
-    """Inject active Langfuse credentials and configuration into worker subprocess environment."""
-    try:
-        if conn_or_cursor is None:
-            try:
-                from ..dashboard.plugin_api import get_db_conn
-            except (ImportError, ValueError):
-                from dashboard.plugin_api import get_db_conn
-            with get_db_conn() as conn:
-                settings = load_settings(conn)
-        else:
-            settings = load_settings(conn_or_cursor)
-
-        if settings.get("langfuse_enabled"):
-            env["HERMES_LANGFUSE_PUBLIC_KEY"] = str(
-                settings.get("langfuse_public_key") or ""
-            ).strip()
-            env["HERMES_LANGFUSE_SECRET_KEY"] = str(
-                settings.get("langfuse_secret_key") or ""
-            ).strip()
-            env["HERMES_LANGFUSE_BASE_URL"] = str(
-                settings.get("langfuse_base_url") or "https://cloud.langfuse.com"
-            ).strip()
-            env["HERMES_LANGFUSE_CAPTURE"] = str(
-                settings.get("langfuse_capture_mode") or "sanitized"
-            ).strip()
-            env["HERMES_LANGFUSE_ENV"] = str(
-                settings.get("langfuse_env") or "zerofactory"
-            ).strip()
-        else:
-            for k in (
-                "HERMES_LANGFUSE_PUBLIC_KEY",
-                "HERMES_LANGFUSE_SECRET_KEY",
-                "HERMES_LANGFUSE_BASE_URL",
-                "HERMES_LANGFUSE_CAPTURE",
-                "HERMES_LANGFUSE_ENV",
-            ):
-                env.pop(k, None)
-    except Exception as e:
-        _log.debug("Could not inject Langfuse env: %s", e)
 
 
 def spawn_agent_worker(

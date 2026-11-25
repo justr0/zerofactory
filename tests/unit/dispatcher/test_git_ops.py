@@ -538,9 +538,7 @@ def test_sync_repo_main_fetch_uses_non_prompting_credential_env(tmp_path: Path):
 
     def rec(cmd, *args, **kwargs):
         calls.append((list(cmd), kwargs))
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout="", stderr=""
-        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("dispatcher.git_ops.subprocess.run", new=rec):
         go.sync_repo_main(tmp_path, default_branch="main")

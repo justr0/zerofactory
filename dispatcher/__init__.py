@@ -180,10 +180,7 @@ from .slop_gate import (
     build_diff_hygiene_scorecard,
     run_deterministic_slop_gate,
 )
-from .worker_spawner import (
-    _inject_langfuse_env,
-    spawn_agent_worker,
-)
+from .worker_spawner import spawn_agent_worker
 from .worktree import (
     _delete_remote_branch,
     _find_checked_out_worktree,
@@ -271,7 +268,6 @@ __all__ = [
     "terminate_process_group",
     "terminate_worker_process",
     "stop_task_worker",
-    "_inject_langfuse_env",
     # State Machine
     "VALID_TRANSITIONS",
     "InvalidStateTransitionError",
