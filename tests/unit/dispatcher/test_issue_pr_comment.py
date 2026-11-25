@@ -61,7 +61,8 @@ def _gh_mock(
             return MagicMock(returncode=0, stdout="")
         if "issue" in cmd and "view" in cmd:
             # Dedup check: `gh issue view <id> --repo <r> --json comments`
-            return MagicMock(returncode=0, stdout=json.dumps(view_comments or []))
+            comments = [{"body": body} for body in (view_comments or [])]
+            return MagicMock(returncode=0, stdout=json.dumps({"comments": comments}))
         if "issue" in cmd and "comment" in cmd:
             gh_calls.append(cmd)
             return MagicMock(
@@ -304,7 +305,9 @@ def test_helper_dedup_marker_present_skips_comment():
             # Existing comment already carries the marker (earlier dispatcher run)
             return MagicMock(
                 returncode=0,
-                stdout=json.dumps([{"body": f"🔀 PR opened\n\n{MARKER}"}]),
+                stdout=json.dumps(
+                    {"comments": [{"body": f"🔀 PR opened\n\n{MARKER}"}]}
+                ),
             )
         return MagicMock(returncode=0, stdout="")
 
@@ -322,6 +325,37 @@ def test_helper_dedup_marker_present_skips_comment():
 
     assert ok is True
     assert gh_calls == []
+
+
+@pytest.mark.parametrize("fetch_failure", ["nonzero", "exception"])
+def test_helper_posts_when_issue_comment_fetch_fails(fetch_failure: str):
+    gh_calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cmd = [str(c) for c in cmd]
+        if "issue" in cmd and "view" in cmd:
+            if fetch_failure == "exception":
+                raise OSError("GitHub CLI unavailable")
+            return MagicMock(returncode=1, stdout="", stderr="fetch failed")
+        if "issue" in cmd and "comment" in cmd:
+            gh_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run):
+        ok = post_issue_pr_comment(
+            TASK_ID,
+            {
+                "source": "github",
+                "id": ISSUE_ID,
+                "has_ai_request": True,
+                "repo_or_project": "foo/bar",
+            },
+            PR_URL,
+        )
+
+    assert ok is True
+    assert len(gh_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -343,7 +377,7 @@ def test_helper_posts_once_and_repo_fallback_from_board_url(
         if "issue" in cmd and "comment" in cmd:
             return MagicMock(returncode=0, stdout="")
         if "issue" in cmd and "view" in cmd:
-            return MagicMock(returncode=0, stdout=json.dumps([]))
+            return MagicMock(returncode=0, stdout=json.dumps({"comments": []}))
         return MagicMock(returncode=0, stdout="")
 
     with patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run):

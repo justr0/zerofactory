@@ -951,7 +951,8 @@ def _zf_issue_has_pr_marker(issue_id: str, target_repo: str, marker: str) -> boo
         )
         if res.returncode != 0:
             return False
-        comments = json.loads(res.stdout or "[]")
+        response = json.loads(res.stdout or "{}")
+        comments = response.get("comments", []) if isinstance(response, dict) else []
         if not isinstance(comments, list):
             return False
         return any(
