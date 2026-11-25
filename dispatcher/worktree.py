@@ -1085,8 +1085,26 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
     }
 
     try:
+        script_arg = str(script_path)
+        bash_exe = "bash"
+        if os.name == "nt":
+            # git-bash (MSYS) strips backslashes from Windows paths passed as
+            # argv ("C:\x\y" arrives as "C:xy"); hand it a POSIX-style path.
+            normalized = script_arg.replace("\\", "/")
+            drive, _, rest = normalized.partition("/")
+            script_arg = f"/{drive[:1].lower()}/{rest}"
+            # Bare "bash" on PATH is often the WSL launcher (System32\bash.exe),
+            # which cannot see /c/... paths; prefer Git for Windows' bash.
+            import shutil as _shutil
+            _git = _shutil.which("git")
+            if _git:
+                _cand = Path(_git).parent.parent / "bin" / "bash.exe"
+                if not _cand.exists():
+                    _cand = Path(_git).parent.parent / "usr" / "bin" / "bash.exe"
+                if _cand.exists():
+                    bash_exe = str(_cand)
         res = subprocess.run(
-            ["bash", str(script_path)],
+            [bash_exe, script_arg],
             cwd=str(workspace_path),
             capture_output=True,
             text=True,
