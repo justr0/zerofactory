@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -265,10 +266,76 @@ def _is_one_off_cli_invocation() -> bool:
     return any(arg == "zerofactory" for arg in sys.argv[1:5])
 
 
+# Scripts and modules that are the gateway runtime itself: no ``gateway`` subcommand to read.
+_GATEWAY_ENTRYPOINTS = frozenset(
+    {"hermes-gateway", "hermes-gateway.exe", "gateway/run.py", "desktop-gateway.py"}
+)
+_PYTHON_EXE = re.compile(r"pythonw?(\d+(\.\d+)*)?(\.exe)?")
+# Options that consume the following token: ``hermes``'s profile selector and the
+# interpreter's value-taking flags.
+_OPTIONS_WITH_VALUE = frozenset({"-p", "--profile", "-X", "-W", "-Q"})
+
+
+def _gateway_action() -> Optional[str]:
+    """The ``hermes gateway`` action this process runs with (``"run"`` for a gateway
+    runtime), or None when this process is not a Hermes gateway.
+
+    ``gateway`` must be the first subcommand: a token that merely equals
+    ``"gateway"`` (a prompt, an option value) is not a gateway. Dedicated
+    gateway entrypoints and the interpreter spellings Hermes itself accepts
+    (``python -m hermes_cli.main gateway run``, ``python …/hermes_cli/main.py``)
+    are read the same way.
+    """
+    argv = sys.argv
+    args = argv[1:]
+    exe = (Path(argv[0]).name if argv and argv[0] else "").lower()
+    if exe in _GATEWAY_ENTRYPOINTS:
+        return "run"
+    if _PYTHON_EXE.fullmatch(exe):
+        # python [flags] -m hermes_cli.main <args> | python [flags] …/hermes_cli/main.py <args>
+        skip_value = False
+        for i, arg in enumerate(args):
+            if skip_value:
+                skip_value = False
+                continue
+            if arg == "-m":
+                module = args[i + 1 : i + 2]
+                if module == ["hermes_cli.main"]:
+                    args = args[i + 2 :]
+                elif module == ["gateway.run"]:
+                    return "run"
+                else:
+                    return None
+                break
+            if arg.replace("\\", "/").endswith("hermes_cli/main.py"):
+                args = args[i + 1 :]
+                break
+            if arg in _OPTIONS_WITH_VALUE:
+                skip_value = True
+        else:
+            return None
+    elif exe not in ("hermes", "hermes.exe"):
+        return None
+    while args and args[0].startswith("-"):
+        args = args[2:] if args[0] in _OPTIONS_WITH_VALUE else args[1:]
+    if not args or args[0].lower() != "gateway" or {"-h", "--help"} & set(args[1:]):
+        return None
+    return next((arg for arg in args[1:] if not arg.startswith("-")), "run")
+
+
 def _should_auto_start_dispatcher() -> bool:
-    """Return True only in a long-lived process when zerofactory.db exists and
-    auto_start_dispatcher is enabled."""
+    """Return True only in the gateway runtime process when zerofactory.db exists
+    and auto_start_dispatcher is enabled.
+
+    The gateway is the dispatcher's one host. Any other long-lived process that
+    loads the plugin (``hermes dashboard``, a chat, a desktop bridge) would get its
+    own worker registry and its own polling loop, and would keep dispatching from
+    the code loaded at ITS start after the gateway has been restarted onto fixed
+    code. Those processes keep the dashboard's explicit "start dispatcher" control.
+    """
     if _is_one_off_cli_invocation():
+        return False
+    if _gateway_action() != "run":
         return False
     if os.environ.get("ZEROFACTORY_SKIP_DISPATCHER") or os.environ.get(
         "ZEROFACTORY_DISABLE_DISPATCHER"

@@ -104,7 +104,7 @@ npm ci
 The active Python environment may be uv-managed and have no `pip` module, so use `uv pip` rather than `pip install`. The precommit test phase checks these requirements and prints remediation commands when they are missing; missing UI dependencies warn but do not fail environments that intentionally skip browser tests.
 
 ### 3. Start the Dispatcher & Open the Kanban Dashboard
-The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal (or enable `auto_start_dispatcher` in Settings):
+The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal, or enable `auto_start_dispatcher` in Settings: the gateway process then starts it when it loads the plugin. No other process starts it on its own, the dashboard included — it keeps its explicit "start dispatcher" control:
 ```bash
 hermes zerofactory start
 ```
