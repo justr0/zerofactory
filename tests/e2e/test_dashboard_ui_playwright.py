@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import threading
@@ -227,6 +228,163 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             page.get_by_role("button", name="⚙️ Settings").click()
             page.get_by_text("Zero Factory Global Settings").wait_for(timeout=10000)
 
+            assert page_errors == [], f"Uncaught page errors: {page_errors}"
+            browser.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwright(
+    tmp_path, monkeypatch
+):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    if not (REACT_UMD.is_file() and REACT_DOM_UMD.is_file()):
+        pytest.skip("React UMD assets not found in node_modules")
+    if not (DIST_DIR / "index.js").is_file():
+        pytest.skip("dashboard/dist/index.js not built")
+
+    chromium_bin = _find_chromium_executable()
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    db_path = tmp_path / "zf_ui.db"
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
+    monkeypatch.setenv("ZEROFACTORY_DISABLE_DISPATCHER", "1")
+
+    import profile_manager
+    from dashboard.db import init_db
+
+    monkeypatch.setattr(
+        profile_manager, "check_gh_auth_status", lambda use_cache=True: True
+    )
+    init_db(force=True)
+
+    now = int(time.time())
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, created_at, updated_at) VALUES ('demo', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) "
+            "VALUES ('demo', 'main', 'https://example.com/demo.git', ?, ?)",
+            (now, now),
+        )
+        conn.executemany(
+            """
+            INSERT INTO tasks (
+                id, board_slug, title, status, assignee, workspace_path,
+                created_at, updated_at
+            ) VALUES (?, 'demo', ?, 'running', 'zf-builder', ?, ?, ?)
+            """,
+            [
+                (
+                    "task-ui-newest",
+                    "Newest concurrent task",
+                    "/work/newest",
+                    now,
+                    now,
+                ),
+                (
+                    "task-ui-older",
+                    "Older concurrent task",
+                    "/work/older",
+                    now - 1,
+                    now - 1,
+                ),
+            ],
+        )
+        conn.commit()
+
+    httpd, thread, port = _start_http_bridge(_build_test_app())
+    stop_requests: list[str] = []
+
+    def add_session_for_other_task(route) -> None:
+        response = route.fetch()
+        payload = response.json()
+        builder = next(
+            agent for agent in payload["agents"] if agent["name"] == "zf-builder"
+        )
+        builder["active_session"] = {
+            "session_id": "session-for-task-ui-older",
+            "model": "test",
+        }
+        route.fulfill(
+            status=response.status,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    def intercept_stop(route) -> None:
+        stop_requests.append(route.request.url)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "message": "intercepted test stop"}),
+        )
+
+    try:
+        with sync_api.sync_playwright() as p:
+            launch_kwargs: dict[str, object] = {"headless": True}
+            if chromium_bin:
+                launch_kwargs["executable_path"] = chromium_bin
+            browser = p.chromium.launch(**launch_kwargs)
+            page = browser.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda err: page_errors.append(str(err)))
+            page.add_init_script(
+                """
+                const originalFetch = window.fetch.bind(window);
+                window.fetch = (input, init) => {
+                  const url = typeof input === "string" ? input : input.url;
+                  if (url.endsWith("/tasks/task-ui-newest/stop")) {
+                    return new Promise((resolve, reject) => {
+                      setTimeout(() => originalFetch(input, init).then(resolve, reject), 500);
+                    });
+                  }
+                  return originalFetch(input, init);
+                };
+                """
+            )
+            page.route("**/api/plugins/zerofactory/agents*", add_session_for_other_task)
+            page.route("**/tasks/task-ui-newest/stop", intercept_stop)
+
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.get_by_role("button", name="🤖 Agents").click()
+
+            newest_task = page.get_by_role("button", name="📋 Newest concurrent task ↗")
+            older_task = page.get_by_role("button", name="📋 Older concurrent task ↗")
+            newest_task.wait_for(timeout=10000)
+            older_task.wait_for(timeout=10000)
+
+            newest_task.click()
+            newest_dialog = page.get_by_role("dialog")
+            newest_dialog.get_by_text("task-ui-newest", exact=True).wait_for()
+            newest_dialog.get_by_role(
+                "heading", name="Newest concurrent task"
+            ).wait_for()
+            page.get_by_role("button", name="Close dialog").click()
+            page.get_by_role("button", name="🤖 Agents").click()
+
+            older_task.click()
+            older_dialog = page.get_by_role("dialog")
+            older_dialog.get_by_text("task-ui-older", exact=True).wait_for()
+            older_dialog.get_by_role("heading", name="Older concurrent task").wait_for()
+            page.get_by_role("button", name="Close dialog").click()
+            page.get_by_role("button", name="🤖 Agents").click()
+
+            stop_button = page.get_by_role("button", name="Stop task task-ui-newest")
+            stop_button.click()
+            page.get_by_role("button", name="Stop Session").click()
+            assert stop_button.is_disabled()
+            assert "Stopping..." in stop_button.inner_text()
+            assert stop_requests == []
+            stop_button.get_by_text("Stop", exact=True).wait_for(timeout=5000)
+            assert len(stop_requests) == 1
+            assert stop_requests[0].endswith("/tasks/task-ui-newest/stop")
             assert page_errors == [], f"Uncaught page errors: {page_errors}"
             browser.close()
     finally:

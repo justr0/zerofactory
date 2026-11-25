@@ -185,6 +185,8 @@ export function SessionsView(props) {
               : (agentInfo.current_task ? [agentInfo.current_task] : []);
             const currentTask = currentTasks[0] || null;
             const activeSession = agentInfo.active_session || agentSessions.find(s => s.status === "ongoing" || s.is_active);
+            const stopTargetLabel = currentTask ? "task " + currentTask.id : "session";
+            const stopTargetId = currentTask ? currentTask.id : activeSession?.session_id;
             const totalAgentTurns = agentSessions.reduce((acc, s) => acc + (s.turn_count || 0), 0);
 
             return React.createElement(
@@ -235,16 +237,20 @@ export function SessionsView(props) {
                       "button",
                       {
                         type: "button",
-                        disabled: stoppingSessionId === ((activeSession && activeSession.session_id) || (currentTask && currentTask.id)),
+                        "aria-label": "Stop " + stopTargetLabel,
+                        disabled: stoppingSessionId === stopTargetId,
                         className: "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-800/80 hover:border-rose-800/60 transition-colors shadow-xs cursor-pointer disabled:opacity-50",
-                        title: "Stop running AI session for this agent",
+                        title: "Stop " + stopTargetLabel,
                         onClick: (e) => {
                           e.stopPropagation();
-                          handleStopTaskSession(currentTask && currentTask.id, activeSession && activeSession.session_id);
+                          handleStopTaskSession(
+                            currentTask ? currentTask.id : null,
+                            currentTask ? null : activeSession?.session_id
+                          );
                         }
                       },
                       React.createElement("span", { className: "text-[9px]" }, "⏹"),
-                      React.createElement("span", null, stoppingSessionId === ((activeSession && activeSession.session_id) || (currentTask && currentTask.id)) ? "Stopping..." : "Stop")
+                      React.createElement("span", null, stoppingSessionId === stopTargetId ? "Stopping..." : "Stop")
                     )
                   )
                 ),
