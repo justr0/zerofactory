@@ -257,7 +257,7 @@ def test_issue_comment_skipped_for_jira_task(tmp_path: Path):
 def test_issue_comment_no_duplicate_on_retry_when_marker_present(tmp_path: Path):
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
-    meta = _github_meta(issue_pr_comment_posted=True)
+    meta = _github_meta()
     _seed_task(db_path, meta, tmp_path)
     # Existing issue comment already carries the marker from the first run
     fake_run, gh_calls = _gh_mock(tmp_path, view_comments=[f"🔀 PR opened\n{MARKER}"])
