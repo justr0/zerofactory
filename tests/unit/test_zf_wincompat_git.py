@@ -15,7 +15,9 @@ import time
 
 import pytest
 
-wincompat = pytest.importorskip("zf_wincompat", reason="Windows port compatibility layer")
+wincompat = pytest.importorskip(
+    "zf_wincompat", reason="Windows port compatibility layer"
+)
 
 
 def test_git_env_disables_every_prompt_path_and_preserves_caller_settings():
@@ -36,7 +38,9 @@ def test_git_env_disables_every_prompt_path_and_preserves_caller_settings():
     # Pre-existing GIT_CONFIG_* entries are kept; ours are appended after them.
     assert (env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]) == ("core.x", "y")
     assert env["GIT_CONFIG_COUNT"] == "4"
-    pairs = [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(1, 4)]
+    pairs = [
+        (env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(1, 4)
+    ]
     assert pairs[0] == ("credential.helper", "")  # empty value resets helper-selector
     assert ("credential.interactive", "never") in pairs
     assert ("credential.https://github.com.helper", "!gh auth git-credential") in pairs
@@ -50,14 +54,19 @@ def test_git_env_defaults_batch_mode_ssh_and_does_not_mutate_os_environ():
 
 
 def test_run_git_success_path_matches_subprocess_run_shape():
-    res = wincompat.run_git([sys.executable, "-c", "import sys; print('ok'); sys.stderr.write('e')"], timeout=30)
+    res = wincompat.run_git(
+        [sys.executable, "-c", "import sys; print('ok'); sys.stderr.write('e')"],
+        timeout=30,
+    )
     assert isinstance(res, subprocess.CompletedProcess)
     assert res.returncode == 0
     assert res.stdout.strip() == "ok"
     assert res.stderr.strip() == "e"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="taskkill tree-kill is Windows-only")
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="taskkill tree-kill is Windows-only"
+)
 def test_run_git_timeout_is_bounded_when_grandchild_holds_the_pipes():
     # The child spawns a grandchild that inherits stdout/stderr and sleeps. Killing
     # only the child (what subprocess.run(timeout=) does) leaves the pipes open, so
@@ -79,4 +88,6 @@ def test_run_git_timeout_is_bounded_when_grandchild_holds_the_pipes():
     deadline = time.monotonic() + 10
     while wincompat.is_pid_alive(grandchild_pid) and time.monotonic() < deadline:
         time.sleep(0.2)
-    assert not wincompat.is_pid_alive(grandchild_pid), "grandchild survived the tree kill"
+    assert not wincompat.is_pid_alive(grandchild_pid), (
+        "grandchild survived the tree kill"
+    )

@@ -1005,6 +1005,21 @@ export function ZeroFactoryKanbanApp() {
       }
     }, [fetchJSON]);
 
+    const loadBoardData = useCallback((boardSlug) => {
+      loadTasksAndStats(boardSlug);
+      loadMemories(boardSlug);
+      loadSessions(boardSlug);
+      loadAgents(boardSlug);
+    }, [loadTasksAndStats, loadMemories, loadSessions, loadAgents]);
+
+    const handleSelectBoard = useCallback((boardSlug) => {
+      if (boardSlug === selectedBoardRef.current) {
+        loadBoardData(boardSlug);
+      } else {
+        setSelectedBoard(boardSlug);
+      }
+    }, [loadBoardData]);
+
     const handleDeleteMemory = useCallback(async (memId) => {
       const ok = await confirmAction({
         title: "Delete Repository Memory",
@@ -1087,28 +1102,31 @@ export function ZeroFactoryKanbanApp() {
       if (prevSelectedBoard.current === selectedBoard) return;
       prevSelectedBoard.current = selectedBoard;
       if (selectedBoard) {
-        loadTasksAndStats(selectedBoard);
-        loadMemories(selectedBoard);
-        loadSessions(selectedBoard);
-        loadAgents(selectedBoard);
+        loadBoardData(selectedBoard);
       }
-    }, [selectedBoard, loadTasksAndStats, loadMemories, loadSessions, loadAgents]);
+    }, [selectedBoard, loadBoardData]);
 
     // Fetch activities on view switch or filter changes
     useEffect(() => {
       if (activeView === "activities") {
         loadActivities();
-      } else if (activeView === "sessions" || activeView === "agents") {
-        loadSessions(selectedBoard);
-        loadAgents(selectedBoard);
-        loadMemories(selectedBoard);
-        const sTimer = setInterval(() => {
-          loadSessions(selectedBoard);
-          loadAgents(selectedBoard);
-        }, 3500);
-        return () => clearInterval(sTimer);
       }
-    }, [activeView, activityActorFilter, activityActionFilter, activityBoardFilter, activityPage, loadActivities, loadSessions, loadAgents, loadMemories, selectedBoard]);
+    }, [activeView, activityActorFilter, activityActionFilter, activityBoardFilter, activityPage, loadActivities]);
+
+    // Load session/agent data when entering the view; board changes are handled above.
+    useEffect(() => {
+      if (activeView !== "sessions" && activeView !== "agents") return;
+      const boardSlug = selectedBoardRef.current;
+      loadSessions(boardSlug);
+      loadAgents(boardSlug);
+      loadMemories(boardSlug);
+      const sTimer = setInterval(() => {
+        const currentBoard = selectedBoardRef.current;
+        loadSessions(currentBoard);
+        loadAgents(currentBoard);
+      }, 3500);
+      return () => clearInterval(sTimer);
+    }, [activeView, loadSessions, loadAgents, loadMemories]);
 
     // Auto-refresh interval
     useEffect(() => {
@@ -1927,7 +1945,7 @@ export function ZeroFactoryKanbanApp() {
         loadMemories,
         boards,
         selectedBoard,
-        setSelectedBoard,
+        onSelectBoard: handleSelectBoard,
         handleOpenEditBoard,
         handleOpenNewBoardModal,
         setShowCronModal,
@@ -1944,8 +1962,7 @@ export function ZeroFactoryKanbanApp() {
         isTogglingDispatcher,
         handleStartDispatcher,
         handleStopDispatcher,
-        loadBoards,
-        loadTasksAndStats
+        loadBoards
       }),
       activeView === "activities"
         ? React.createElement(ActivitiesView, {

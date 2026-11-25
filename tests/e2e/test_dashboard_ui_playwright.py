@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import shutil
 import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import FastAPI
@@ -182,6 +184,15 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             "VALUES ('demo', 'main', 'https://example.com/demo.git', ?, ?)",
             (now, now),
         )
+        conn.execute(
+            "INSERT INTO boards (slug, created_at, updated_at) VALUES ('other', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) "
+            "VALUES ('other', 'main', 'https://example.com/other.git', ?, ?)",
+            (now, now),
+        )
         conn.commit()
 
     httpd, thread, port = _start_http_bridge(_build_test_app())
@@ -222,6 +233,61 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             assert "All Human Gates (0 Tokens)" in (lane_info.text_content() or "")
             info_btn.click()
             lane_info.wait_for(state="hidden", timeout=10000)
+
+            api_requests: list[str] = []
+            page.on(
+                "request",
+                lambda request: (
+                    api_requests.append(request.url)
+                    if "/api/plugins/zerofactory/" in request.url
+                    else None
+                ),
+            )
+
+            def select_board(slug: str) -> None:
+                api_requests.clear()
+                page.locator('button[aria-haspopup="listbox"]').click()
+                if slug == "all":
+                    page.get_by_role(
+                        "button", name="All Boards", exact=False
+                    ).last.click()
+                else:
+                    page.get_by_text(slug, exact=True).last.click()
+                page.wait_for_load_state("networkidle")
+                expected = (
+                    [
+                        "/tasks",
+                        "/stats",
+                        "/boards/all/memories?limit=100",
+                        "/sessions?limit=15",
+                        "/agents",
+                    ]
+                    if slug == "all"
+                    else [
+                        f"/tasks?board={slug}",
+                        f"/stats?board={slug}",
+                        f"/boards/{slug}/memories?limit=100",
+                        f"/sessions?limit=15&board_slug={slug}",
+                        f"/agents?board_slug={slug}",
+                    ]
+                )
+                paths = [
+                    urlparse(url).path.removeprefix("/api/plugins/zerofactory")
+                    + (f"?{urlparse(url).query}" if urlparse(url).query else "")
+                    for url in api_requests
+                ]
+                actual = Counter(path for path in paths if path in expected)
+                assert actual == Counter(expected)
+
+            # Board-view changes and same-board selections each refresh once.
+            select_board("demo")
+            select_board("demo")
+            select_board("all")
+
+            # Sessions/Agents view must not add a second board-change refresh.
+            page.get_by_role("button", name="🤖 Agents").click()
+            page.wait_for_load_state("networkidle")
+            select_board("other")
 
             # 5. Open Settings modal and verify it renders without errors
             page.get_by_role("button", name="⚙️ Settings").click()
