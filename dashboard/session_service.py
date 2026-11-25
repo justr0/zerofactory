@@ -23,12 +23,14 @@ if _DASHBOARD_ROOT not in sys.path:
 try:
     from ..paths import (  # type: ignore
         AGENT_ROLES,
+        _coerce_task_metadata,
         normalize_assignee,
         resolve_profile_state_db,
     )
 except (ImportError, ValueError):
     from paths import (  # type: ignore
         AGENT_ROLES,
+        _coerce_task_metadata,
         normalize_assignee,
         resolve_profile_state_db,
     )
@@ -82,12 +84,7 @@ def _compute_stuck_status(
 ) -> tuple[int, int, bool, str | None]:
     """Compute running/idle duration and stuck status for a task."""
     now = int(time.time())
-    meta = task.get("metadata") or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(task.get("metadata"))
 
     started = (
         meta.get("started_at")
@@ -159,12 +156,7 @@ def resolve_task_all_sessions(
     task: dict[str, Any], backfill: bool = True
 ) -> list[dict[str, Any]]:
     """Extract all execution sessions (finished and ongoing) for a task across all agent profiles."""
-    meta = task.get("metadata") or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(task.get("metadata"))
 
     task_id = str(task.get("id") or "")
     task_title = str(task.get("title") or "")
@@ -459,12 +451,7 @@ def resolve_task_session_progress(
     task: dict[str, Any], backfill: bool = True
 ) -> dict[str, Any]:
     """Extract real-time execution progress, turn counts, tool calls, and all historical/ongoing sessions for a task."""
-    meta = task.get("metadata") or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(task.get("metadata"))
 
     assignee = task.get("assignee") or "zf-builder"
     task_id = task.get("id") or ""

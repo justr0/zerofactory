@@ -107,3 +107,11 @@ def test_log_tail_large_file_does_not_read_full_file(
 
 def test_log_tail_missing_file(hermes_home: Path, no_sessions):
     assert _call_progress("t-missing")["log_tail"] == ""
+
+
+def test_session_telemetry_coerces_task_metadata(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(session_service, "AGENT_ROLES", [])
+    for metadata in ({"session_id": "active"}, '{"session_id":"active"}', "{", "[]"):
+        task = {"id": "metadata-coercion", "status": "done", "metadata": metadata}
+        progress = session_service.resolve_task_session_progress(task, backfill=False)
+        assert bool(progress["session_id"]) == ("session_id" in str(metadata))
