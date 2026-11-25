@@ -109,6 +109,25 @@ def test_get_default_branch_origin_head():
         assert get_default_branch(Path("/tmp/fake_repo")) == "main"
 
 
+def test_get_default_branch_origin_head_preserves_slashes(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/release/v1",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    assert get_default_branch(repo) == "release/v1"
+
+
 def test_get_default_branch_origin_main_showref():
     rec = _ProcRecorder(
         {
@@ -538,9 +557,7 @@ def test_sync_repo_main_fetch_uses_non_prompting_credential_env(tmp_path: Path):
 
     def rec(cmd, *args, **kwargs):
         calls.append((list(cmd), kwargs))
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout="", stderr=""
-        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("dispatcher.git_ops.subprocess.run", new=rec):
         go.sync_repo_main(tmp_path, default_branch="main")
