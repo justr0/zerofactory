@@ -186,6 +186,83 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
         assert child["status"] in ("todo", "running")
 
 
+def test_run_dispatch_cycle_defers_todo_with_unfinished_blocking_parent(
+    tmp_path: Path,
+):
+    """Todo tasks wait for every blocking parent, but not relates_to parents."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running) VALUES ('b1', 'Board 1', 10)"
+        )
+        for task_id, status in (
+            ("parent-done", "done"),
+            ("parent-unfinished", "todo"),
+        ):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, ?, '', ?, 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+                (task_id, task_id, status, now, now),
+            )
+        for task_id in ("child-blocked", "child-relates"):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, ?, '', 'todo', 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+                (task_id, task_id, now, now),
+            )
+        conn.executemany(
+            "INSERT INTO task_links (parent_id, child_id, link_type, created_at) VALUES (?, ?, ?, ?)",
+            (
+                ("parent-done", "child-blocked", "blocks", now),
+                ("parent-unfinished", "child-blocked", "blocks", now),
+                ("parent-unfinished", "child-relates", "relates_to", now),
+            ),
+        )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+    import dispatcher
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(
+            os.environ,
+            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
+        ),
+    ):
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        statuses = dict(conn.execute("SELECT id, status FROM tasks"))
+    assert statuses["child-blocked"] == "todo"
+    assert statuses["child-relates"] == "running"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = 'parent-unfinished'")
+        conn.commit()
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(
+            os.environ,
+            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
+        ),
+    ):
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        child_status = conn.execute(
+            "SELECT status FROM tasks WHERE id = 'child-blocked'"
+        ).fetchone()[0]
+    assert child_status == "running"
+
+
 def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
     """Eligible todo task is promoted to running."""
     db_path = tmp_path / "test.db"
