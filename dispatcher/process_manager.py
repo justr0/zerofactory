@@ -32,6 +32,143 @@ class ProcessState(str, enum.Enum):
     CRASHED = "CRASHED"
 
 
+# Workers the dispatcher stopped on purpose: one marker file per task id,
+# holding the worker pid.  Recording the pid *before* signaling lets the reaper
+# tell "stopped by the dispatcher" apart from a crashed worker: a deliberate
+# stop is booked as ``worker_stopped`` and never spends the task's failure
+# budget, which used to retry the same role (duplicate reviews) and park tasks
+# after three stops.  The markers live beside the dispatcher lock file rather
+# than in memory because the stop and the reaping usually happen in different
+# processes (dashboard stop button, CLI ``move``, gateway-owned reaper).
+_STOP_MARKER_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _stop_markers_dir() -> Path:
+    from .config import get_dispatcher_lock_path
+
+    return Path(f"{get_dispatcher_lock_path()}.stops")
+
+
+def _stop_marker_path(task_id: str) -> Path:
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in task_id)
+    return _stop_markers_dir() / f"{safe}.stop"
+
+
+def _sweep_stale_stop_markers() -> None:
+    """Drop markers nobody consumed (e.g. a worker pid that was never reaped)."""
+    cutoff = time.time() - _STOP_MARKER_MAX_AGE_SECONDS
+    try:
+        for marker in _stop_markers_dir().glob("*.stop"):
+            try:
+                if marker.stat().st_mtime < cutoff:
+                    marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _read_stop_marker(task_id: str) -> int | None:
+    try:
+        return int(_stop_marker_path(task_id).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def mark_deliberate_stop(task_id: str | None, pid: int | None) -> None:
+    """Record that the dispatcher is about to stop ``task_id``'s worker."""
+    if not task_id:
+        return
+    try:
+        stopped_pid = int(pid) if pid is not None else 0
+    except (TypeError, ValueError):
+        return
+    if stopped_pid <= 0:
+        return
+    marker = _stop_marker_path(str(task_id))
+    tmp = marker.with_name(f"{marker.name}.{os.getpid()}.tmp")
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(f"{stopped_pid}\n")
+        os.replace(tmp, marker)
+        _sweep_stale_stop_markers()
+    except OSError as e:
+        # Fail open: the stop still happens, it is only booked as a failure.
+        _log.warning("mark_deliberate_stop: could not write %s: %s", marker, e)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def forget_deliberate_stop(task_id: str | None, pid: int | str | None) -> None:
+    """Drop a stop marker again when nothing was signalled after all."""
+    if task_id and _as_pid(pid) == _read_stop_marker(str(task_id)):
+        try:
+            _stop_marker_path(str(task_id)).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _as_pid(pid: int | str | None) -> int | None:
+    """Task metadata stores the worker pid as JSON: accept int or digit string."""
+    try:
+        value = int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        return None
+    return value if value is not None and value > 0 else None
+
+
+def consume_deliberate_stop(task_id: str, pid: int | str | None) -> bool:
+    """True exactly once for the worker pid the dispatcher stopped on purpose.
+
+    The marker is always removed: a stale marker (different pid) must never
+    mask a genuine crash of a later worker for the same task.
+    """
+    reaped_pid = _as_pid(pid)
+    if reaped_pid is None:
+        return False
+    stopped_pid = _read_stop_marker(task_id)
+    if stopped_pid is None:
+        return False
+    try:
+        _stop_marker_path(task_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return reaped_pid == stopped_pid
+
+
+def _pid_is_ancestor(pid: int) -> bool:
+    """True when ``pid`` is this process or one of its parents.
+
+    ``hermes zerofactory block <own task>`` runs as a tool command of the very
+    worker whose task it transitions.  Tool commands get their own session, so
+    the ``getpgrp`` guard does not see the relationship; the command then
+    SIGTERMed its own worker mid-command and the reaper booked the stop as a
+    crash.  Walking the parent chain catches that case.
+    """
+    if pid <= 1:
+        return False
+    my_pid = os.getpid()
+    if pid in (my_pid, os.getppid()):
+        return True
+    if not Path("/proc/self/stat").exists():
+        return False
+    current = my_pid
+    for _ in range(64):
+        try:
+            data = Path(f"/proc/{current}/stat").read_bytes()
+            ppid = int(data[data.rfind(b")") + 2 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if ppid <= 1:
+            return False
+        if ppid == pid:
+            return True
+        current = ppid
+    return False
+
+
 def build_shell_wrapper(cmd: list[str], exit_prefix: Path | str) -> list[str]:
     """Wrap command in a POSIX shell invocation that atomically writes integer exit code on exit/signal."""
     if IS_WINDOWS:
@@ -173,7 +310,7 @@ def get_process_exit_code(
 
 def terminate_process_group(
     proc: subprocess.Popen | None, pid: int | None, grace: float = 2.0
-) -> None:
+) -> bool:
     """Terminate a worker's ENTIRE process group (session), not just the child.
 
     All Zero Factory spawn sites run children with ``start_new_session=True``
@@ -183,6 +320,10 @@ def terminate_process_group(
 
     Because ``start_new_session=True`` puts the child in a NEW session whose
     PGID equals its PID, ``os.killpg`` on that group reaches every descendant.
+
+    Returns True only when a signal was actually sent to the worker; False
+    when nothing was signalled (own process group, called from inside the
+    worker's own process tree, already-dead pid).
     """
     pgid: int | None = None
     if proc is not None and isinstance(proc.pid, int):
@@ -199,7 +340,7 @@ def terminate_process_group(
             proc,
             pid,
         )
-        return
+        return False
 
     my_pid = os.getpid()
     if hasattr(os, "getpgrp"):
@@ -217,7 +358,18 @@ def terminate_process_group(
             pgid,
             pid,
         )
-        return
+        return False
+
+    # A worker's own tool command transitioning its task (self ``block``/``move``)
+    # lives in its own session: refuse to kill the worker it is running inside.
+    for candidate in (pid, pgid):
+        if isinstance(candidate, int) and candidate > 0 and _pid_is_ancestor(candidate):
+            _log.warning(
+                "terminate_process_group: refusing to signal worker pid %s from inside "
+                "its own process tree (task transition issued by the worker itself)",
+                candidate,
+            )
+            return False
 
     # Windows: no process groups or group signals — one hard tree kill.
     if IS_WINDOWS:
@@ -228,12 +380,13 @@ def terminate_process_group(
                 proc.wait(timeout=5)
             except Exception:
                 pass
-        return
+        return True
 
     # Cheap guard: probe group existence before signalling
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
+        signalled = False
         if pid:
             if not is_pid_alive(pid):
                 try:
@@ -241,9 +394,10 @@ def terminate_process_group(
                         os.waitpid(pid, os.WNOHANG)
                 except (ChildProcessError, OSError):
                     pass
-                return
+                return False
             try:
                 os.kill(pid, signal.SIGTERM)
+                signalled = True
                 time.sleep(min(grace, 0.5))
                 os.kill(pid, signal.SIGKILL)
             except OSError:
@@ -253,20 +407,21 @@ def terminate_process_group(
                     os.waitpid(pid, os.WNOHANG)
             except (ChildProcessError, OSError):
                 pass
-        return
+        return signalled
     except OSError as e:
         _log.debug("terminate_process_group: probe on group %s failed: %s", pgid, e)
+        return False
 
     try:
         os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, OSError) as e:
         _log.debug("terminate_process_group: SIGTERM to group %s failed: %s", pgid, e)
-        return
+        return False
 
     if proc is not None and isinstance(proc.pid, int):
         try:
             proc.wait(timeout=grace)
-            return  # group exited gracefully within grace window
+            return True  # group exited gracefully within grace window
         except Exception:
             pass
     elif grace > 0:
@@ -288,6 +443,7 @@ def terminate_process_group(
                 os.waitpid(pid, os.WNOHANG)
         except (ChildProcessError, OSError):
             pass
+    return True
 
 
 def terminate_worker_process(
@@ -321,8 +477,12 @@ def terminate_worker_process(
                 cmdline,
             )
             return
+    # Register before signalling: the reaper runs on another thread and can
+    # observe the death before this call returns.
+    mark_deliberate_stop(task_id, pid)
     try:
-        terminate_process_group(proc, pid)
+        if not terminate_process_group(proc, pid):
+            forget_deliberate_stop(task_id, pid)
     except Exception as e:
         _log.debug("terminate_worker_process: group termination raised: %s", e)
 
@@ -339,7 +499,9 @@ def terminate_task_worker(task_id: str, pid: int | None) -> None:
             )
             cleanup_process_artifacts(task_id)
             return
-        terminate_process_group(None, pid)
+        mark_deliberate_stop(task_id, pid)
+        if not terminate_process_group(None, pid):
+            forget_deliberate_stop(task_id, pid)
     cleanup_process_artifacts(task_id)
 
 

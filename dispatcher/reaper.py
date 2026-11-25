@@ -18,9 +18,48 @@ from .config import (
 from .process_manager import (
     ProcessState,
     cleanup_process_artifacts,
+    consume_deliberate_stop,
     get_process_exit_code,
 )
 from .state_machine import transition_task
+
+
+def _record_deliberate_stop(
+    cursor: sqlite3.Cursor,
+    task_id: str,
+    pid: int | None,
+    meta: dict[str, Any],
+    now: int,
+    detail: str,
+) -> None:
+    """Book a dispatcher-initiated worker stop without spending the failure budget.
+
+    The dispatcher stops workers on purpose when it re-routes their task (new
+    review round, PR merged, verdict recorded). The killed process exits with a
+    signal status, which the reaper used to book as a crash: retrying the same
+    role (duplicate reviews) and parking the task after three stops.
+    """
+    meta = _mark_task_session_ended(meta, now, "stopped")
+    meta["last_worker_stop"] = {"pid": pid, "stopped_at": now}
+    cursor.execute(
+        "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(meta), now, task_id),
+    )
+    cursor.execute(
+        "INSERT INTO task_activity (task_id, actor, action, details, created_at) "
+        "VALUES (?, 'dispatcher', 'worker_stopped', ?, ?)",
+        (
+            task_id,
+            f"Worker stopped by the dispatcher (pid {pid}, {detail}); not counted as a failure",
+            now,
+        ),
+    )
+    _log.info(
+        "Worker for task %s was stopped by the dispatcher (pid %s, %s); not a failure",
+        task_id,
+        pid,
+        detail,
+    )
 
 
 def _worker_log_path(task_id: str) -> Path:
@@ -334,6 +373,12 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 t_check = cursor.fetchone()
                 curr_stat = t_check["status"] if t_check else row_status
+                if consume_deliberate_stop(task_id, pid):
+                    _record_deliberate_stop(
+                        cursor, task_id, pid, meta, now, f"exit code {retcode}"
+                    )
+                    reaped += 1
+                    continue
                 if curr_stat in ("todo", "done"):
                     meta = _d()._mark_task_session_ended(meta, now, "finished")
                     cursor.execute(
@@ -468,6 +513,12 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
             proc_state, _ = get_process_exit_code(task_id, pid)
             if proc_state == ProcessState.CRASHED or not _d().is_pid_alive(int(pid)):
                 if row_status == "running" and meta.get("awaiting_pr"):
+                    continue
+                if consume_deliberate_stop(task_id, pid):
+                    _record_deliberate_stop(
+                        cursor, task_id, int(pid), meta, now, "process gone"
+                    )
+                    reaped += 1
                     continue
                 meta = _d()._mark_task_session_ended(meta, now, "lost")
                 fail_retries = int(meta.get("worker_failure_retries", 0)) + 1
