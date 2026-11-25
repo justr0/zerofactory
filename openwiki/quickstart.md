@@ -1,42 +1,234 @@
 ---
-type: guide
-title: Repository quickstart
-description: Entry point for Zero Factory agents, routing to architecture, task workflows, conventions, and verification instructions.
-tags: [quickstart, navigation, development]
-verified:
-  - by: openwiki/0.9.0
-    at: 2026-11-22T19:30:17.111Z
+type: quickstart
+title: Quickstart
+description: Install the Zero Factory Hermes plugin, provision the zf-* specialist profiles, open the dashboard, verify the deterministic precommit gate, and use the core CLI surface to operate the factory.
+tags: [quickstart, installation, cli, dashboard, precommit, tests, hermes-plugin]
 sources:
   - id: openwiki-source-4942bcbe129130ccad2b7e2a
     resource: repo://__init__.py
+  - id: openwiki-source-9ab161c6e9774cf771b19ced
+    resource: repo://.zerofactory/precommit.sh
+  - id: openwiki-source-4de239baa4d579276db7cf80
+    resource: repo://dashboard/memory_service.py
+  - id: openwiki-source-c705147b9966f3d6f300034a
+    resource: repo://dashboard/routes/tasks.py
+  - id: openwiki-source-e7a6784a6e1f7f421dd572ed
+    resource: repo://dispatcher/reaper.py
+  - id: openwiki-source-9f9b3c9d5afeac588f3cdae1
+    resource: repo://dispatcher/scheduler.py
+  - id: openwiki-source-0445f3be32f0f8efe9dfeca4
+    resource: repo://dispatcher/slop_gate.py
+  - id: openwiki-source-81127d20a2ccc07b7626fc4e
+    resource: repo://plugin.yaml
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "hermes", at: "2026-11-22T19:30:17.111Z" }
+  - id: openwiki-source-f0a6e7dc03522b2682f88655
+    resource: repo://tests/conftest.py
+generated: { by: "hermes", at: "2026-11-23T15:15:28.452Z" }
+verified:
+  - by: openwiki/0.6.0
+    at: 2026-11-22T15:24:22.005Z
 ---
 
-# Repository quickstart
+# Quickstart
 
-Zero Factory is a Hermes plugin that coordinates specialized agents to implement, test, and review software changes. Begin with the page matching the task:
+> [!WARNING]
+> **Active Beta & High-Frequency Changes**  
+> Zero Factory is currently in **active beta** and subject to **high-frequency changes**. APIs, CLI commands, agent prompt templates, and internal orchestration mechanics evolve rapidly. Please keep your installation up to date.
 
-- System components and persistence boundaries: [System architecture](architecture/overview.md).
-- Task statuses, dispatch, worker lifecycle, and PR feedback: [Task lifecycle and dispatch](architecture/task-lifecycle.md).
-- Testing, precommit, and dashboard builds: [Development and verification](operations/development.md).
-- Shared code, test, and portability patterns: [Engineering conventions](conventions.md).
+This is the canonical entry point to the Zero Factory knowledge base. Use it to
+get the factory running and to navigate to the deeper pages. The architecture
+lives in [Architecture](/openwiki/architecture.md); the moving parts in
+[Dispatch Engine](/openwiki/components/dispatcher.md) and
+[Dashboard, Cron & Automation](/openwiki/components/dashboard-cron.md); and the
+coding rules in [Conventions](/openwiki/conventions.md).
 
-## Essential checks
+## What it is
 
-From the repository root, run `./.zerofactory/precommit.sh` to execute formatting/linting, Python compilation, and pytest. For dashboard source or asset changes, also run `npm run build` as appropriate. See `README.md` for user-facing installation and CLI documentation; inspect current source and focused tests when a contract is uncertain.
+Zero Factory is a self-contained **Hermes Agent plugin** that runs a 24/7
+multi-agent software factory. Four specialist profiles — `zf-orchestrator`
+(decomposes goals, audits specs, and scans for tech debt), `zf-goldfish`
+(adversarial spec gatekeeper), `zf-builder` (writes code + tests), and
+`zf-reviewer` (thematic PR review, up to 2 rounds) — operate on a durable
+Kanban board, each in an isolated Git worktree. No external Node.js daemon or
+profile-manager is required.
 
-For Playwright UI tests and dashboard builds on a fresh install, run from the repository root:
+## Install
 
 ```bash
-uv pip install --python "$(command -v python3)" playwright
-python3 -m playwright install chromium
-npm ci
+# 1. Install the plugin into Hermes
+hermes plugins install hotcode-dev/zerofactory
+
+# 2. Verify or pre-create the zf-* profiles (bootstraps on first run, inheriting
+#    the default LLM settings from ~/.hermes/config.yaml)
+hermes zerofactory setup
+
+# 3. Open the Kanban dashboard
+hermes dashboard
+# → open http://localhost:9119/zerofactory
 ```
 
-The active Python environment may be uv-managed and have no `pip` module; install Playwright with `uv pip`, not `pip install`. Precommit reports any missing Playwright package, Chromium browser, or React UMD assets with the matching fix command. These are warnings rather than hard failures so environments that intentionally omit browser tests remain usable.
+## Add a codebase board
 
-## Repository map
+A *board* is one repository the factory works on. Create one and provision its
+standard artifacts (the deterministic precommit gate and the `openwiki/`
+agent docs):
 
-`__init__.py` is the plugin and CLI entrypoint. `dashboard/` contains the API, persistence layer, and UI. `dispatcher/` owns task scheduling and execution orchestration. `scripts/` contains automation helpers. `tests/` is split into unit, integration, and end-to-end suites.
+```bash
+# Add a board (a custom --slug, cross-service --architecture notes, and
+# --target-branch for a non-main base are optional; sibling repositories are
+# linked side-by-side via the dashboard / POST /boards/{slug}/repositories)
+hermes zerofactory board create <git_url> [--slug <slug>] [--target-branch <branch>] [--architecture <arch>]
+
+# File a P0 task that generates .zerofactory/precommit.sh for the board
+hermes zerofactory setup-repo --board <slug> [--repo <alias>]
+
+# File a P0 task that generates openwiki/ agent documentation (the OpenWiki MCP
+# lifecycle) for the board
+hermes zerofactory setup-openwiki --board <slug> [--repo <alias>]
+```
+
+## Run the deterministic precommit gate
+
+Every task's output is gated by `.zerofactory/precommit.sh` **before** a commit
+or PR is opened. It runs three phases in order and exits non-zero on the first
+failure:
+
+1. **format** — `ruff check --fix .` then `ruff format .` (pinned ruff; auto-
+   installed if missing).
+2. **build** — `python3 -m compileall -q .` (static compile, stdlib only).
+3. **test** — `python3 -m pytest tests/ -q`.
+
+```bash
+.zerofactory/precommit.sh        # run all three phases
+# or a single phase:
+.zerofactory/precommit.sh format    # / build / test / install-hook
+```
+
+If the gate fails, the dispatcher re-spawns `zf-builder` with the exact error
+output (up to 3 precommit retries) before the work may become a PR.
+
+After precommit passes, the packaging phase runs a second zero-token gate —
+the deterministic **anti-slop gate** (wired into `_package_and_open_pr` with the
+resolved board target branch, the task's spec/description text, and a
+`skip_untested_check` flag; `repo://dispatcher/scheduler.py#L1962-L1993`): it
+blocks leftover debugger statements (`breakpoint()`, `pdb.set_trace()`,
+`import pdb`, `debugger;`), unresolved `TODO`/`FIXME`/`XXX`/`HACK` placeholder
+comments, skipped tests, assertion-free newly added test functions, production
+diffs that add more than 20 net lines with zero test lines, and modifications of
+files named in the task spec's "Do Not Touch" / "Non-Goals" section
+(`repo://dispatcher/slop_gate.py#L733-L773`); enforces a net-line budget that
+defaults to 800 lines (`DEFAULT_MAX_DIFF_LINES`, overridable via
+`ZEROFACTORY_MAX_DIFF_LINES`, ≤ 0 disables); and flags large diffs, net
+test-line deletions, dependency-manifest changes, new lint/type suppressors, and
+mock-heavy test additions as warnings. Its compact diff-hygiene scorecard
+(`repo://dispatcher/slop_gate.py#L775`) is pre-digested into the `zf-reviewer`
+prompt so review starts from a quantitative diff summary. Violations re-spawn
+`zf-builder` within the same 3-retry budget before any commit or PR is
+authored.
+
+## Run the tests
+
+pytest is the framework (defined by `tests/conftest.py`), and the suite is
+hermetic — `conftest.py` pins the repository's own `tests` package
+(`import tests`) and sets `ZEROFACTORY_SKIP_GIT`, `ZEROFACTORY_SKIP_CRON_SYNC`,
+`ZEROFACTORY_DISABLE_DISPATCHER`, and `ZEROFACTORY_SKIP_WORKER_SPAWN` so tests
+run without a live factory. Three tiers: `tests/unit/`, `tests/integration/`
+(FastAPI REST), `tests/e2e/` (multi-agent workflow + resilience).
+
+```bash
+pytest tests/                 # full suite
+pytest tests/unit/            # or a single tier: integration/ / e2e/
+```
+
+The precommit gate enforces the full suite in its `test` phase — keep the
+suite green before opening a PR.
+
+## Core CLI surface
+
+```bash
+# Tasks
+hermes zerofactory list [--status <status>] [--assignee <profile>]
+hermes zerofactory create "Implement Feature X" [--tags automerge,hitl]
+hermes zerofactory import-gh-issue 42 [--repo owner/repo] [--board <slug>] [--status triage] [--priority P1] [--assignee zf-builder] [--sync] [--force]
+hermes zerofactory approve <task_id> [--split]          # release gate: promote single-repo triage to todo or split multi-repo
+hermes zerofactory reject <task_id> --feedback "..."   # send a triage spec back to zf-orchestrator for revision
+hermes zerofactory triage <task_id> [--mode grill|egm]  # dispatch triage: grill (small tasks) or egm (epics)
+hermes zerofactory stats                               # Kanban board statistics
+hermes zerofactory migrate [--status]                  # run or inspect SQLite database migrations
+hermes zerofactory update <task_id> [--title "..."] [--description "..."] [--assignee <profile>] [--priority P1] [--status <status>]
+hermes zerofactory move <task_id> <status> [--reason "..."] [--assignee <profile>]
+hermes zerofactory block <task_id> --reason "..."
+hermes zerofactory comment <task_id> "Note..."
+hermes zerofactory split <task_id> [--repos r1,r2]   # decompose a Triage task into per-repo sub-tasks
+hermes zerofactory recover <task_id> [--guidance "..."]  # route a stuck/blocked task back to todo with builder advice
+hermes zerofactory report-bug --task <task_id> --title "..." [--body "..."] [--create-issue]  # report an internal defect to GitHub
+
+# Boards
+hermes zerofactory board list
+hermes zerofactory board update <slug> [--description "..."] [--target-branch <branch>] [--architecture <arch>]
+hermes zerofactory board delete <slug>
+hermes zerofactory setup-gh-issues --board <slug>   # file a P0 zf-builder task that ships the issue templates + labels
+
+# Repository memory (the per-board knowledge substrate)
+hermes zerofactory memory list --board <slug> [--category <cat>] [-q <query>]
+hermes zerofactory memory add --board <slug> "<content>" --category convention --tags "test,lint"
+hermes zerofactory memory delete <memory_id>
+
+# Automation / dispatch
+hermes zerofactory start             # run the foreground dispatcher loop (requires setup)
+hermes zerofactory dispatch          # trigger an immediate dispatch cycle
+hermes zerofactory check-stuck       # audit hung worker processes
+hermes zerofactory cron list         # view periodic health & scanner jobs
+hermes zerofactory cron sync         # sync cron jobs with the Hermes scheduler
+hermes zerofactory cron run <job_id> # run a cron scanner immediately
+
+# Profiles
+hermes zerofactory setup             # check/initialize zf-* profiles
+hermes zerofactory sync-profiles     # update system prompts from templates
+```
+
+`import-gh-issue` deterministically ingests a GitHub issue (number, `#42`, URL,
+or `owner/repo#42`) into a board as a Kanban task — stable task id, `issue:`
+dedup key, label-inferred priority/category — so re-imports report
+"Duplicate Skipped" instead of double-filing; `--sync` bulk-imports all open
+issues flagged with the AI-request label. `update` edits task fields in one
+call; its `--status` option routes through the `move_task` code path in the
+CLI handler (the API `PATCH /tasks/{id}` refuses status changes with a 400,
+pointing at `POST /tasks/{id}/move`) so lifecycle side effects — worker stop,
+flag cleanup, dispatch trigger — always apply. `move` accepts `--assignee` to
+reassign ownership while transitioning columns
+([External Issue Import](/openwiki/components/issues-importer.md)). `reject`
+records the revision request as a task comment and, as a side effect,
+auto-records the human feedback as a `rejected_path` board memory
+(`repo://dashboard/routes/tasks.py#L2225`,
+`repo://dashboard/memory_service.py#L619`) so future triage runs on the board
+avoid repeating the rejected approach.
+
+OpenWiki architecture docs stay in sync automatically: the per-board
+`zero-factory-openwiki-update-<slug>` cron job runs the deterministic
+`zf_openwiki_gate.py` wake-gate daily; when new commits land on the default
+branch it files at most one P2 `zf-builder` doc-sync task (0 LLM tokens when
+nothing changed or an OpenWiki task is already active). See
+[Dashboard, Cron & Automation](/openwiki/components/dashboard-cron.md).
+
+## Task lifecycle
+
+`triage → todo → running (zf-builder) → running (zf-reviewer) → blocked (human
+merge) → done`. The `ready` status is retired; `done` is **strictly terminal**.
+When an agent actor reports completion the task deliberately stays `running`
+with `awaiting_pr` set — the **packaging phase** — during which the dispatcher
+runs the deterministic pipeline (precommit → commit → push → PR → route to
+reviewer) via `_package_and_open_pr`. Approved PRs park in `blocked` awaiting a
+human merge on GitHub; the dispatcher moves them to `done` through
+`_finalize_terminal_done` (which only cleans up — closing the open PR when
+`close_pr` is set — and never re-opens review) and prunes the worktree. The
+packaging step retries up to 3 times on git/PR failure before parking the task
+in `blocked` for a human. Tasks that exhaust their retry budget (worker
+crash/timeout, repeated precommit failures, merge conflicts) are routed to the
+`recovery` stage owned by `zf-orchestrator`, which gets exactly one autonomous
+diagnosis attempt — `hermes zerofactory recover <task_id> [--guidance "..."]`
+sends the task back to `todo` for `zf-builder` — before escalating to
+`blocked` for a human. Details
+in [Architecture](/openwiki/architecture.md#session-per-handoff-model)
+and [Dispatch Engine](/openwiki/components/dispatcher.md).

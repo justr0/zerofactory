@@ -186,7 +186,7 @@ def _list_builtin_jobs_with_conn(conn: sqlite3.Connection) -> List[Dict[str, Any
         jobs.append(
             {
                 "id": f"zero-factory-improvement-scanner-{slug}",
-                "name": f"Improvement Scanner ({slug})",
+                "name": f"{slug}: Improvement Scanner",
                 "category": "scanner",
                 "description": f"Autonomously scans {slug} for technical debt and creates tasks using Ponytail principles",
                 "schedule": {"kind": "idle", "minutes": cooldown},
@@ -212,7 +212,7 @@ def _list_builtin_jobs_with_conn(conn: sqlite3.Connection) -> List[Dict[str, Any
         jobs.append(
             {
                 "id": openwiki_job_id,
-                "name": f"OpenWiki Sync ({slug})",
+                "name": f"{slug}: OpenWiki Sync",
                 "category": "openwiki",
                 "description": f"Synchronizes architectural documentation in openwiki/ for board {slug}",
                 "schedule": {"kind": "interval", "minutes": 60},
