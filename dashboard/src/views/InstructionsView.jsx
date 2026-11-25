@@ -483,7 +483,8 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
               React.createElement("span", { className: "text-indigo-200 bg-slate-950 px-2 py-1 rounded-md border border-slate-700 font-bold select-all" }, agent.dir)
             )
           )
-        )
+        ),
+        React.createElement("p", { className: "col-span-full text-xs text-slate-300 leading-relaxed m-0" }, "The Agents dashboard links every running task assigned to each specialist. Its /agents API response lists all tasks in current_tasks; current_task remains the first item for backwards compatibility.")
       );
     };
 

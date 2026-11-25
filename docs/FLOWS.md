@@ -547,6 +547,11 @@ the pinned test stack — the dispatcher's bare `python3` may lack project depen
 All three share the **Ponytail Ladder of Laziness** (7 rungs: YAGNI → reuse → stdlib → native
 runtime → installed deps → simple functions → minimum viable diff) via bundled skills.
 
+The Agents dashboard's `/agents` telemetry returns every running task assigned to each specialist
+in `current_tasks`, ordered by latest update time and then task ID. The legacy `current_task` field
+continues to expose the first task for backwards compatibility; each task is linked from its agent
+card.
+
 ---
 
 ## 15. Environment Knobs & Storage (`ZEROFACTORY_*`)

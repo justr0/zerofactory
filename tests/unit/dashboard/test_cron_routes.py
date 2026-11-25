@@ -44,11 +44,7 @@ def test_get_cron_jobs(api_client: TestClient, default_board: str):
 
     # Check for board OpenWiki sync
     openwiki = next(
-        (
-            j
-            for j in jobs
-            if j["id"] == f"zero-factory-openwiki-update-{default_board}"
-        ),
+        (j for j in jobs if j["id"] == f"zero-factory-openwiki-update-{default_board}"),
         None,
     )
     assert openwiki is not None

@@ -180,7 +180,10 @@ export function SessionsView(props) {
             const agentInfo = agentsList.find(a => a.name === meta.id) || {};
             const agentSessions = boardFilteredSessions.filter(s => s.agent === meta.id);
             const isAgentActive = agentInfo.is_active || (agentInfo.status === "active") || agentSessions.some(s => s.status === "ongoing" || s.is_active);
-            const currentTask = agentInfo.current_task;
+            const currentTasks = Array.isArray(agentInfo.current_tasks) && agentInfo.current_tasks.length > 0
+              ? agentInfo.current_tasks
+              : (agentInfo.current_task ? [agentInfo.current_task] : []);
+            const currentTask = currentTasks[0] || null;
             const activeSession = agentInfo.active_session || agentSessions.find(s => s.status === "ongoing" || s.is_active);
             const totalAgentTurns = agentSessions.reduce((acc, s) => acc + (s.turn_count || 0), 0);
 
@@ -257,18 +260,24 @@ export function SessionsView(props) {
                     React.createElement("span", null, isAgentActive ? "Current Work" : "Status"),
                     isAgentActive && React.createElement("span", { className: "text-emerald-400 font-mono text-[10px]" }, "Executing")
                   ),
-                  currentTask
+                  currentTasks.length > 0
                     ? React.createElement(
-                      "button",
-                      {
-                        type: "button",
-                        className: "text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer",
-                        onClick: () => {
-                          setActiveView("board");
-                          loadTaskDetails(currentTask.id);
-                        }
-                      },
-                      "📋 " + currentTask.title + " ↗"
+                      "div",
+                      { className: "space-y-1" },
+                      currentTasks.map((task) => React.createElement(
+                        "button",
+                        {
+                          key: task.id,
+                          type: "button",
+                          className: "block text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer w-full",
+                          onClick: () => {
+                            setActiveView("board");
+                            loadTaskDetails(task.id);
+                          },
+                          title: task.title
+                        },
+                        "📋 " + task.title + " ↗"
+                      ))
                     )
                     : activeSession
                       ? React.createElement(

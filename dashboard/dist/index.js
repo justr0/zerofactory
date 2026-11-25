@@ -1509,7 +1509,8 @@ var ZeroFactoryDashboard = (function(exports) {
 			const agentInfo = agentsList.find((a) => a.name === meta.id) || {};
 			const agentSessions = boardFilteredSessions.filter((s) => s.agent === meta.id);
 			const isAgentActive = agentInfo.is_active || agentInfo.status === "active" || agentSessions.some((s) => s.status === "ongoing" || s.is_active);
-			const currentTask = agentInfo.current_task;
+			const currentTasks = Array.isArray(agentInfo.current_tasks) && agentInfo.current_tasks.length > 0 ? agentInfo.current_tasks : agentInfo.current_task ? [agentInfo.current_task] : [];
+			const currentTask = currentTasks[0] || null;
 			const activeSession = agentInfo.active_session || agentSessions.find((s) => s.status === "ongoing" || s.is_active);
 			const totalAgentTurns = agentSessions.reduce((acc, s) => acc + (s.turn_count || 0), 0);
 			return React.createElement("div", {
@@ -1524,14 +1525,16 @@ var ZeroFactoryDashboard = (function(exports) {
 					e.stopPropagation();
 					handleStopTaskSession(currentTask && currentTask.id, activeSession && activeSession.session_id);
 				}
-			}, React.createElement("span", { className: "text-[9px]" }, "⏹"), React.createElement("span", null, stoppingSessionId === (activeSession && activeSession.session_id || currentTask && currentTask.id) ? "Stopping..." : "Stop")))), React.createElement("p", { className: "text-xs text-slate-400 leading-relaxed" }, meta.role), React.createElement("div", { className: "bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-1.5" }, React.createElement("div", { className: "text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between" }, React.createElement("span", null, isAgentActive ? "Current Work" : "Status"), isAgentActive && React.createElement("span", { className: "text-emerald-400 font-mono text-[10px]" }, "Executing")), currentTask ? React.createElement("button", {
+			}, React.createElement("span", { className: "text-[9px]" }, "⏹"), React.createElement("span", null, stoppingSessionId === (activeSession && activeSession.session_id || currentTask && currentTask.id) ? "Stopping..." : "Stop")))), React.createElement("p", { className: "text-xs text-slate-400 leading-relaxed" }, meta.role), React.createElement("div", { className: "bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-1.5" }, React.createElement("div", { className: "text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between" }, React.createElement("span", null, isAgentActive ? "Current Work" : "Status"), isAgentActive && React.createElement("span", { className: "text-emerald-400 font-mono text-[10px]" }, "Executing")), currentTasks.length > 0 ? React.createElement("div", { className: "space-y-1" }, currentTasks.map((task) => React.createElement("button", {
+				key: task.id,
 				type: "button",
-				className: "text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer",
+				className: "block text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer w-full",
 				onClick: () => {
 					setActiveView("board");
-					loadTaskDetails(currentTask.id);
-				}
-			}, "📋 " + currentTask.title + " ↗") : activeSession ? React.createElement("div", {
+					loadTaskDetails(task.id);
+				},
+				title: task.title
+			}, "📋 " + task.title + " ↗"))) : activeSession ? React.createElement("div", {
 				className: "text-xs text-slate-300 truncate",
 				title: activeSession.last_action || activeSession.title
 			}, "⚡ " + (activeSession.last_action || activeSession.title || "Working on session...")) : React.createElement("div", { className: "text-xs text-slate-500 italic" }, "Ready for next dispatch cycle"))), React.createElement("div", { className: "grid grid-cols-3 gap-2 pt-2 border-t border-slate-800/80 text-center" }, React.createElement("div", null, React.createElement("span", { className: "text-[10px] text-slate-500 uppercase tracking-wider block" }, "Sessions"), React.createElement("span", { className: "text-xs font-bold text-slate-200" }, agentSessions.length)), React.createElement("div", null, React.createElement("span", { className: "text-[10px] text-slate-500 uppercase tracking-wider block" }, "Turns"), React.createElement("span", { className: "text-xs font-bold text-amber-300" }, totalAgentTurns)), React.createElement("div", null, React.createElement("span", { className: "text-[10px] text-slate-500 uppercase tracking-wider block" }, "State"), React.createElement("span", { className: "text-xs font-bold " + (isAgentActive ? "text-emerald-400" : "text-slate-400") }, isAgentActive ? "Busy" : "Ready"))));
@@ -2234,7 +2237,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			}, React.createElement("div", { className: "flex items-center justify-between gap-2" }, React.createElement("h3", { className: "text-base font-bold text-white font-mono m-0" }, agent.name), React.createElement("span", { className: "text-xs font-bold px-2.5 py-1 rounded-full border shadow-xs " + agent.color }, agent.badge)), React.createElement("p", { className: "text-xs font-bold text-slate-200 m-0" }, agent.title), React.createElement("p", { className: "text-xs text-slate-100 leading-relaxed m-0 flex-1 font-normal" }, agent.desc), React.createElement("div", { className: "space-y-2 pt-3 border-t border-slate-700/80" }, React.createElement("span", { className: "text-xs font-bold text-slate-200 uppercase tracking-wider block" }, "Core Responsibilities:"), React.createElement("ul", { className: "list-disc list-inside space-y-1.5 text-xs text-slate-200 m-0 p-0 leading-relaxed font-normal" }, agent.responsibilities.map((r, idx) => React.createElement("li", {
 				key: idx,
 				className: "leading-relaxed"
-			}, r)))), React.createElement("div", { className: "pt-3 text-xs font-mono text-slate-300 border-t border-slate-700/70 flex items-center justify-between gap-2" }, React.createElement("span", { className: "font-semibold text-slate-300" }, "Profile Path:"), React.createElement("span", { className: "text-indigo-200 bg-slate-950 px-2 py-1 rounded-md border border-slate-700 font-bold select-all" }, agent.dir)))));
+			}, r)))), React.createElement("div", { className: "pt-3 text-xs font-mono text-slate-300 border-t border-slate-700/70 flex items-center justify-between gap-2" }, React.createElement("span", { className: "font-semibold text-slate-300" }, "Profile Path:"), React.createElement("span", { className: "text-indigo-200 bg-slate-950 px-2 py-1 rounded-md border border-slate-700 font-bold select-all" }, agent.dir)))), React.createElement("p", { className: "col-span-full text-xs text-slate-300 leading-relaxed m-0" }, "The Agents dashboard links every running task assigned to each specialist. Its /agents API response lists all tasks in current_tasks; current_task remains the first item for backwards compatibility."));
 		};
 		const renderLifecycleSection = () => {
 			return React.createElement("div", { className: "space-y-6" }, React.createElement("div", { className: "bg-slate-900/70 border border-slate-700/80 rounded-2xl p-4 sm:p-6 space-y-4 shadow-md" }, React.createElement("h3", { className: "text-sm font-bold text-white m-0 flex items-center gap-2 tracking-wide" }, "🔄 4-Column Actor-Based Kanban Workflow"), React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pt-1" }, [
@@ -4321,7 +4324,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			const form = cronEditForms[job.id] || {};
 			const isScanner = job.id.startsWith("zero-factory-improvement-scanner-") || job.category === "scanner";
 			const isOpenWiki = job.id.startsWith("zero-factory-openwiki-update-") || job.category === "openwiki";
-			const boardSlug = isScanner ? job.id.slice("zero-factory-improvement-scanner-".length) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
+			const boardSlug = isScanner ? job.id.slice(33) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
 			const isRunning = runningCronId === job.id;
 			return React.createElement("div", {
 				key: job.id,
