@@ -153,9 +153,10 @@ def test_spawn_board_scanner_ignores_reused_pid_file(tmp_path):
         _active_scanners.clear()
 
 
-def test_spawn_board_scanner_closes_log_when_popen_raises(tmp_path):
+def test_spawn_board_scanner_closes_log_when_popen_raises(tmp_path, monkeypatch):
     """A failed scanner spawn does not leak its open log file."""
     _active_scanners.clear()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     try:
         with (
@@ -166,7 +167,6 @@ def test_spawn_board_scanner_closes_log_when_popen_raises(tmp_path):
                     "ZEROFACTORY_SKIP_SCANNER_SPAWN": "",
                 },
             ),
-            patch.object(scanner, "get_hermes_home", return_value=tmp_path),
             patch.object(
                 scanner,
                 "get_scanner_cron_config",
