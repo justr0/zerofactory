@@ -437,13 +437,21 @@ def ensure_script_files() -> dict[str, Any]:
 
 def update_env_file(
     env_path: Path, updates: dict[str, str], remove_keys: set[str] | None = None
-) -> None:
-    """Update or insert key=value pairs in an environment file while preserving comments and other keys."""
+) -> bool:
+    """Update or insert key=value pairs in an environment file while preserving comments and other keys.
+
+    Returns True when the file content changed. An unchanged result is NOT rewritten:
+    the gateway reconciles served profiles on config/.env changes, so every
+    redundant rewrite of a live zf-* profile .env risks a rescan that tears down the
+    profile's running workers. Callers that sync on every provisioning rely on this
+    being a no-op when the desired state is already on disk."""
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
+    existing_raw: str | None = None
     if env_path.exists():
         try:
-            existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+            existing_raw = env_path.read_text(encoding="utf-8")
+            existing_lines = existing_raw.splitlines()
         except Exception as e:
             _log.warning("Could not read %s: %s", env_path, e)
 
@@ -467,11 +475,14 @@ def update_env_file(
         new_lines.append(f"{key}={val}")
 
     content = "\n".join(new_lines).strip() + "\n"
+    if content == existing_raw:
+        return False
     env_path.write_text(content, encoding="utf-8")
     try:
         os.chmod(str(env_path), 0o600)
     except OSError:
         pass
+    return True
 
 
 def update_config_yaml_plugins(
