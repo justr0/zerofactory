@@ -331,14 +331,7 @@ def terminate_task_worker(task_id: str, pid: int | None) -> None:
     """Safely terminate any active worker process group for a task and clean up artifacts."""
     _active_workers.pop(task_id, None)
     if pid and is_pid_alive(pid):
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = (
-                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
-                )
-        except (OSError, ValueError):
-            cmdline = ""
-        if task_id not in cmdline:
+        if not process_matches_identity(pid, task_id):
             _log.warning(
                 "terminate_task_worker: PID %s no longer matches task %s; skipping signal (stale/recycled PID)",
                 pid,

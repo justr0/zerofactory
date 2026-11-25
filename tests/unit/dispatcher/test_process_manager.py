@@ -5,7 +5,7 @@ import os
 import signal
 import sqlite3
 import subprocess
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 from dispatcher.config import _active_workers
 from dispatcher.process_manager import (
@@ -272,17 +272,74 @@ def test_cleanup_process_artifacts(tmp_path):
         assert not (logs_dir / f"worker_{task_id}.exit.tmp").exists()
 
 
-def test_terminate_task_worker():
-    """Verify terminate_task_worker calls process group termination and artifact cleanup."""
+def test_terminate_task_worker_with_matching_identity(tmp_path):
+    """Matching live task workers are terminated and their artifacts cleaned."""
+    task_id = "task-xyz"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    exit_file = logs_dir / f"worker_{task_id}.exit"
+    tmp_file = logs_dir / f"worker_{task_id}.exit.tmp"
+    exit_file.write_text("0")
+    tmp_file.write_text("0")
     with (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", mock_open(read_data=b"hermes -q task-xyz")),
+        patch(
+            "dispatcher.process_manager.Path.stat",
+            return_value=MagicMock(st_mode=0o040755),
+        ),
+        patch(
+            "dispatcher.process_manager.Path.read_bytes",
+            return_value=b"sh -c worker_task-xyz.exit",
+        ),
+        patch("dispatcher.process_manager.get_hermes_home", return_value=tmp_path),
         patch("dispatcher.process_manager.terminate_process_group") as mock_term,
-        patch("dispatcher.process_manager.cleanup_process_artifacts") as mock_cleanup,
     ):
         terminate_task_worker("task-xyz", 9876)
         mock_term.assert_called_once_with(None, 9876)
-        mock_cleanup.assert_called_once_with("task-xyz")
+    assert not exit_file.exists()
+    assert not tmp_file.exists()
+
+
+def test_terminate_task_worker_rejects_live_pid_without_task_identity(tmp_path):
+    """A live recycled PID without its task exit marker is never signaled."""
+    task_id = "task-xyz"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    exit_file = logs_dir / f"worker_{task_id}.exit"
+    tmp_file = logs_dir / f"worker_{task_id}.exit.tmp"
+    exit_file.write_text("0")
+    tmp_file.write_text("0")
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch(
+            "dispatcher.process_manager.Path.stat",
+            return_value=MagicMock(st_mode=0o040755),
+        ),
+        patch(
+            "dispatcher.process_manager.Path.read_bytes",
+            return_value=b"unrelated process command line",
+        ),
+        patch("dispatcher.process_manager.get_hermes_home", return_value=tmp_path),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+    ):
+        terminate_task_worker(task_id, 9876)
+        mock_term.assert_not_called()
+    assert not exit_file.exists()
+    assert not tmp_file.exists()
+
+
+def test_terminate_task_worker_preserves_best_effort_without_procfs():
+    """Identity checks remain best-effort when procfs is confirmed absent."""
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch("dispatcher.process_manager.Path.stat", side_effect=FileNotFoundError),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+    ):
+        terminate_task_worker("task-xyz", 9876)
+    mock_term.assert_called_once_with(None, 9876)
 
 
 def test_terminate_process_group_refuses_self_pgid():
