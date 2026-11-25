@@ -263,6 +263,57 @@ def test_run_dispatch_cycle_defers_todo_with_unfinished_blocking_parent(
     assert child_status == "running"
 
 
+def test_run_dispatch_cycle_does_not_claim_task_if_blocker_is_added_during_setup(
+    tmp_path: Path,
+):
+    """A hard dependency added during setup prevents the atomic task claim."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        for task_id, status in (("parent", "blocked"), ("child", "todo")):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, ?, '', ?, 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+                (task_id, task_id, status, now, now),
+            )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+    import dispatcher
+
+    def add_blocking_dependency_during_setup(*args, **kwargs):
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id, link_type, created_at) "
+                "VALUES ('parent', 'child', 'blocks', ?)",
+                (now,),
+            )
+        return str(tmp_path)
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": "1"}),
+        patch.object(
+            dispatcher,
+            "setup_worktree",
+            side_effect=add_blocking_dependency_during_setup,
+        ) as setup_worktree,
+        patch.object(dispatcher, "spawn_agent_worker") as spawn_agent_worker,
+    ):
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+        setup_worktree.assert_called_once()
+        spawn_agent_worker.assert_not_called()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        child_status = conn.execute(
+            "SELECT status FROM tasks WHERE id = 'child'"
+        ).fetchone()[0]
+    assert child_status == "todo"
+
+
 def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
     """Eligible todo task is promoted to running."""
     db_path = tmp_path / "test.db"

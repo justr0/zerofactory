@@ -410,7 +410,19 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                             meta["triage_phase"] = "goldfish_auditing"
 
                         cursor.execute(
-                            "UPDATE tasks SET status = ?, updated_at = ?, metadata = ? WHERE id = ? AND (status = 'todo' OR (status = 'triage' AND assignee = 'zf-orchestrator'))",
+                            """
+                            UPDATE tasks
+                            SET status = ?, updated_at = ?, metadata = ?
+                            WHERE id = ?
+                            AND (status = 'todo' OR (status = 'triage' AND assignee = 'zf-orchestrator'))
+                            AND NOT EXISTS (
+                                SELECT 1 FROM task_links tl
+                                JOIN tasks parent ON parent.id = tl.parent_id
+                                WHERE tl.child_id = tasks.id
+                                AND (tl.link_type = 'blocks' OR tl.link_type IS NULL)
+                                AND parent.status != 'done'
+                            )
+                            """,
                             (
                                 target_dispatch_status,
                                 now,
