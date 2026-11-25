@@ -300,11 +300,24 @@ def test_hermes_home_profiles_subdir_not_stripped_and_worker_env_no_yolo_reaper_
         )
         assert pid is not None
 
-        # Wait for stub hermes to finish and write capture + log
+        # Wait for stub hermes to finish and write capture + log. The child's stdout
+        # is redirected straight into the worker log, so the "approval" line lands
+        # while the interpreter is still tearing down; reaping in that window sees a
+        # live PID and leaves the task running. Wait for the process to have exited
+        # (long window: concurrent gate runs on a saturated box slow start-up).
         capture_path = Path({str(capture_file)!r})
         log_path = Path(os.environ["HERMES_HOME"]) / "logs" / "worker_t-yolo-check.log"
-        for _ in range(50):
-            if capture_path.exists() and log_path.exists() and "approval" in log_path.read_text(encoding="utf-8"):
+        from dispatcher.worker_spawner import _active_workers
+
+        stub_proc = _active_workers.get("t-yolo-check")
+        for _ in range(300):
+            stub_exited = stub_proc is None or stub_proc.poll() is not None
+            if (
+                stub_exited
+                and capture_path.exists()
+                and log_path.exists()
+                and "approval" in log_path.read_text(encoding="utf-8")
+            ):
                 break
             time.sleep(0.1)
 

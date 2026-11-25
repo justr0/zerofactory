@@ -34,8 +34,16 @@ class TestConcurrencyAndResilienceE2E(unittest.TestCase):
         self.td = tempfile.mkdtemp(prefix="zf-resilience-e2e-")
         self.db_path = Path(self.td) / "resilience.db"
         self.lock_path = Path(self.td) / "resilience_lock.lock"
+        # Hermetic Hermes home: the settings routes sync Langfuse keys into the zf-*
+        # profile dirs under the active Hermes home. Resolving the real ~/.hermes here
+        # rewrote the LIVE worker profiles from a test (langfuse_env=e2e-test), the
+        # gateway legitimately rescanned those profiles and killed every running
+        # zf-builder worker on each flip. Keep every home-relative write under tmp.
+        self.hermes_home = Path(self.td) / "hermes_home"
+        (self.hermes_home / "profiles" / "zf-builder").mkdir(parents=True)
 
         self.orig_env = {
+            "HERMES_HOME": os.environ.get("HERMES_HOME"),
             "ZEROFACTORY_DB": os.environ.get("ZEROFACTORY_DB"),
             "ZEROFACTORY_LOCK_PATH": os.environ.get("ZEROFACTORY_LOCK_PATH"),
             "ZEROFACTORY_DISABLE_DISPATCHER": os.environ.get(
@@ -46,6 +54,7 @@ class TestConcurrencyAndResilienceE2E(unittest.TestCase):
             ),
         }
 
+        os.environ["HERMES_HOME"] = str(self.hermes_home)
         os.environ["ZEROFACTORY_DB"] = str(self.db_path)
         os.environ["ZEROFACTORY_LOCK_PATH"] = str(self.lock_path)
         os.environ["ZEROFACTORY_DISABLE_DISPATCHER"] = "1"

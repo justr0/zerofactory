@@ -96,6 +96,41 @@ class TestProfileManagerUnit(unittest.TestCase):
             self.assertNotIn("HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-sample", lines2)
             self.assertIn("OPENROUTER_API_KEY=existing-key", lines2)
 
+    def test_update_env_file_is_noop_when_unchanged(self):
+        """Re-applying the same desired state must not rewrite the file.
+
+        The gateway rescans a served profile whenever its .env changes, which tears
+        down that profile's running workers; a sync that rewrites identical content on
+        every provisioning must therefore be a no-op (returns False, mtime untouched)."""
+        with tempfile.TemporaryDirectory() as td:
+            env_p = Path(td) / ".env"
+            updates = {"HERMES_LANGFUSE_ENV": "zerofactory"}
+
+            self.assertTrue(PM.update_env_file(env_p, updates), "first apply writes")
+            changed = {"HERMES_LANGFUSE_ENV": "e2e-test"}
+            self.assertTrue(PM.update_env_file(env_p, changed), "changed value writes")
+            self.assertIn("HERMES_LANGFUSE_ENV=e2e-test", env_p.read_text("utf-8"))
+
+            stable_mtime = env_p.stat().st_mtime_ns
+            self.assertFalse(
+                PM.update_env_file(env_p, changed), "identical state is not rewritten"
+            )
+            self.assertEqual(env_p.stat().st_mtime_ns, stable_mtime)
+
+            # Removing keys that are absent is likewise a no-op.
+            self.assertFalse(
+                PM.update_env_file(
+                    env_p, {}, remove_keys={"HERMES_LANGFUSE_SECRET_KEY"}
+                )
+            )
+            self.assertEqual(env_p.stat().st_mtime_ns, stable_mtime)
+
+            # A real change (removing a present key) writes again.
+            self.assertTrue(
+                PM.update_env_file(env_p, {}, remove_keys={"HERMES_LANGFUSE_ENV"})
+            )
+            self.assertNotIn("HERMES_LANGFUSE_ENV", env_p.read_text(encoding="utf-8"))
+
     def test_check_setup_status_detects_outdated_profiles(self):
         """check_setup_status flags zf-* profiles whose SOUL.md differs from templates."""
         with tempfile.TemporaryDirectory() as td:
