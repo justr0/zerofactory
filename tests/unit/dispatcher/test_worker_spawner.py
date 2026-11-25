@@ -2,15 +2,20 @@
 
 import os
 import sqlite3
+import sys
 import tempfile
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import dispatcher.process_manager as process_manager
+import dispatcher.worker_spawner as worker_spawner
 from dispatcher.worker_spawner import (
     _inject_langfuse_env,
     spawn_agent_worker,
 )
+import zf_wincompat
+from zf_wincompat import detached_popen_kwargs
 
 
 def test_inject_langfuse_env():
@@ -38,6 +43,21 @@ def test_inject_langfuse_env():
     assert "HERMES_LANGFUSE_SECRET_KEY" not in env
 
 
+def test_detached_popen_kwargs_platform_contract():
+    """Verify both native detached-process options without requiring Windows."""
+    with patch.object(zf_wincompat, "IS_WINDOWS", False):
+        assert detached_popen_kwargs() == {"start_new_session": True}
+
+    with (
+        patch.object(zf_wincompat, "IS_WINDOWS", True),
+        patch.object(zf_wincompat.subprocess, "CREATE_NO_WINDOW", 0x01, create=True),
+        patch.object(
+            zf_wincompat.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x02, create=True
+        ),
+    ):
+        assert detached_popen_kwargs() == {"creationflags": 0x03}
+
+
 def test_spawn_agent_worker_skip_env():
     """When ZEROFACTORY_SKIP_WORKER_SPAWN is set, spawn returns None immediately."""
     with patch.dict(os.environ, {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1"}):
@@ -48,13 +68,15 @@ def test_spawn_agent_worker_skip_env():
         assert sess is None
 
 
-def test_spawn_agent_worker_cmd_and_session_isolation():
-    """Verify hermes command structure, start_new_session=True, and session matching."""
-    with (
-        tempfile.NamedTemporaryFile(suffix=".db") as tmp_db,
-        tempfile.TemporaryDirectory() as tmp_ws,
-    ):
-        conn = sqlite3.connect(tmp_db.name)
+def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
+    """Verify platform-specific argv, detach options, and session matching."""
+    tmp_ws = tmp_path / "workspace"
+    tmp_ws.mkdir()
+    hermes_home = tmp_path / "hermes"
+
+    for windows in (False, True):
+        db_path = tmp_path / f"profile-state-{windows}.db"
+        conn = sqlite3.connect(db_path)
         conn.execute(
             """
             CREATE TABLE sessions (
@@ -74,7 +96,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
         # Session for target task
         conn.execute(
             "INSERT INTO sessions VALUES ('sess-mine', 'Task ID: zf-mine', ?, ?)",
-            (tmp_ws, now),
+            (str(tmp_ws), now),
         )
         conn.commit()
         conn.close()
@@ -82,9 +104,28 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
         import dispatcher
 
         with (
+            patch.object(zf_wincompat, "IS_WINDOWS", windows),
+            patch.object(process_manager, "IS_WINDOWS", windows),
             patch.object(
-                dispatcher, "resolve_profile_state_db", return_value=Path(tmp_db.name)
+                zf_wincompat.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True
             ),
+            patch.object(
+                zf_wincompat.subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0x00000200,
+                create=True,
+            ),
+            patch.object(dispatcher, "resolve_profile_state_db", return_value=db_path),
+            patch(
+                "dispatcher.worker_spawner.build_worker_command", return_value=None
+            ) as mock_build_command,
+            patch.object(
+                worker_spawner, "resolve_hermes_bin", return_value="hermes-test"
+            ),
+            patch.object(
+                worker_spawner, "is_unattended_approvals_enabled", return_value=False
+            ),
+            patch("paths.get_hermes_home", return_value=hermes_home),
             patch("subprocess.Popen") as mock_popen,
             patch.dict(os.environ, {}, clear=False),
         ):
@@ -100,7 +141,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
                 assignee="zf-reviewer",
                 priority="P0",
                 description="Test isolation",
-                workspace_path=tmp_ws,
+                workspace_path=str(tmp_ws),
                 branch_name="task/zf-mine",
             )
 
@@ -108,15 +149,45 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
             assert sess == "sess-mine"
             assert mock_popen.called
             args, kwargs = mock_popen.call_args
+            prompt = mock_build_command.call_args.args[0]
+            native_cmd = [
+                "hermes-test",
+                "-p",
+                "zf-reviewer",
+                "--cli",
+                "chat",
+                "-q",
+                prompt,
+            ]
+            exit_prefix = hermes_home / "logs" / "worker_zf-mine"
             cmd = args[0]
+            if windows:
+                assert cmd == [
+                    sys.executable,
+                    str(Path(worker_spawner.__file__).with_name("_worker_wrapper.py")),
+                    str(exit_prefix),
+                    *native_cmd,
+                ]
+                expected_isolation = {"creationflags": 0x08000200}
+            else:
+                expected_wrapper = process_manager.build_shell_wrapper(
+                    native_cmd, exit_prefix
+                )
+                assert cmd == expected_wrapper
+                assert cmd[:2] == ["sh", "-c"]
+                assert cmd[3:5] == ["zf-runner", str(exit_prefix)]
+                assert cmd[5:] == native_cmd
+                expected_isolation = {"start_new_session": True}
+
             env = kwargs.get("env", {})
 
-            assert "--yolo" not in cmd
-            assert "--accept-hooks" not in cmd
-            assert cmd[0] == "sh"
-            assert cmd[1] == "-c"
-            assert "zf-runner" in cmd
-            assert kwargs.get("start_new_session") is True
+            isolation_kwargs = {
+                key: kwargs[key]
+                for key in ("start_new_session", "creationflags")
+                if key in kwargs
+            }
+            assert isolation_kwargs == expected_isolation
+            assert isolation_kwargs == detached_popen_kwargs()
             assert env.get("HERMES_PROFILE") == "zf-reviewer"
 
 
