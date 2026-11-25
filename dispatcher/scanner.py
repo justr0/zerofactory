@@ -142,9 +142,9 @@ def reap_active_scanners() -> int:
     return reaped
 
 
-def _global_llm_occupancy(running_tasks: int) -> int:
-    """LLM workers currently tracked across all Zero Factory processes."""
-    return running_tasks + len(get_active_scanner_pids())
+def _global_llm_occupancy(running_agent_tasks: int) -> int:
+    """Agent-running tasks and active scanners currently using LLM capacity."""
+    return running_agent_tasks + len(get_active_scanner_pids())
 
 
 def get_scanner_cron_config(board_slug: str, cursor: Any = None) -> dict[str, Any]:

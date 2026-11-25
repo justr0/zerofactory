@@ -24,6 +24,11 @@ try:
 except (ImportError, ValueError):
     from git_url import parse_git_url
 
+try:
+    from ..paths import derive_task_stage
+except (ImportError, ValueError):
+    from paths import derive_task_stage
+
 from .config import (
     DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
     DEFAULT_IDLE_SCAN_MAX_TODO,
@@ -46,6 +51,20 @@ from .config import (
 )
 from .process_manager import is_pid_alive
 from .state_machine import transition_task
+
+
+def _count_running_agent_tasks(cursor: sqlite3.Cursor) -> int:
+    """Count running tasks in agent stages, excluding deterministic packaging."""
+    rows = cursor.execute(
+        "SELECT status, assignee, pr_url, metadata FROM tasks WHERE status = 'running'"
+    ).fetchall()
+    return sum(
+        derive_task_stage(
+            row["status"], row["assignee"], row["pr_url"], row["metadata"]
+        )
+        != "packaging"
+        for row in rows
+    )
 
 
 def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
@@ -144,7 +163,9 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 
                 cursor.execute("SELECT COUNT(*) FROM tasks WHERE status = 'running'")
                 active_count = cursor.fetchone()[0]
-                llm_workers = _disp._global_llm_occupancy(active_count)
+                llm_workers = _disp._global_llm_occupancy(
+                    _count_running_agent_tasks(cursor)
+                )
 
                 # Per-board concurrent running caps (boards.max_concurrent_running, default 1).
                 board_max_running: dict[str, int] = {}
@@ -764,7 +785,9 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                 active_count = cursor.execute(
                     "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
                 ).fetchone()[0]
-                llm_workers = _disp._global_llm_occupancy(active_count)
+                llm_workers = _disp._global_llm_occupancy(
+                    _count_running_agent_tasks(cursor)
+                )
 
                 try:
                     b_rows = cursor.execute(
@@ -2147,9 +2170,16 @@ def _package_and_open_pr(
                         )
                         ssh_push_cmd = ["git", "push", "-u", ssh_url, f"task/{task_id}"]
                         ssh_push_env = _disp.git_subprocess_env()
-                        _run_git = getattr(fcntl, "run_git", None)  # Windows port: tree-kill timeout
+                        _run_git = getattr(
+                            fcntl, "run_git", None
+                        )  # Windows port: tree-kill timeout
                         push_ssh = (
-                            _run_git(ssh_push_cmd, cwd=workspace_path, timeout=180, env=ssh_push_env)
+                            _run_git(
+                                ssh_push_cmd,
+                                cwd=workspace_path,
+                                timeout=180,
+                                env=ssh_push_env,
+                            )
                             if _run_git is not None
                             else subprocess.run(
                                 ssh_push_cmd,
