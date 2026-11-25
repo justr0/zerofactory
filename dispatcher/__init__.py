@@ -119,6 +119,7 @@ from .git_ops import (
     get_default_branch,
     get_git_dir,
     get_status_files,
+    git_subprocess_env,
     pull_and_merge_main,
     sync_repo_main,
 )

@@ -415,6 +415,12 @@ def test_clone_board(req: BoardTestClone):
                 "path": str(existing_path),
             }
 
+        # Unattended git env (Windows port: never prompt for credentials; see zf_wincompat.git_env)
+        try:
+            from ..dispatcher import git_subprocess_env
+        except (ImportError, ValueError):
+            from dispatcher import git_subprocess_env  # type: ignore
+
         # 2. Check remote connectivity first via git ls-remote
         ls_res = subprocess.run(
             ["git", "ls-remote", "--heads", git_url],
@@ -422,7 +428,7 @@ def test_clone_board(req: BoardTestClone):
             text=True,
             timeout=15,
             stdin=subprocess.DEVNULL,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=git_subprocess_env(),
         )
         if ls_res.returncode != 0:
             err_msg = (
@@ -443,7 +449,7 @@ def test_clone_board(req: BoardTestClone):
             text=True,
             timeout=120,
             stdin=subprocess.DEVNULL,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=git_subprocess_env(),
         )
 
         if (
