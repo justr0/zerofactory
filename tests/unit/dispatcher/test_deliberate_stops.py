@@ -11,7 +11,7 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -183,10 +183,9 @@ def test_terminate_task_worker_marks_the_stop_when_it_signals():
 
 
 def test_terminate_worker_process_marks_only_after_a_signal_was_sent():
-    cmdline = mock_open(read_data=f"hermes -q {TASK_ID}".encode())
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", cmdline),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch("dispatcher.process_manager.terminate_process_group", return_value=True),
     ):
         terminate_worker_process(None, 9876, task_id=TASK_ID)
@@ -194,12 +193,25 @@ def test_terminate_worker_process_marks_only_after_a_signal_was_sent():
 
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", cmdline),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch("dispatcher.process_manager.terminate_process_group", return_value=False),
     ):
         terminate_worker_process(None, 9876, task_id=TASK_ID)
     # Nothing was signalled (e.g. own process group, pid already gone): the
     # worker's later exit must still be judged on its own merits.
+    assert _stop_marker_path(TASK_ID).exists() is False
+
+
+def test_terminate_worker_process_skips_mismatched_identity():
+    with (
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch(
+            "dispatcher.process_manager.process_matches_identity", return_value=False
+        ),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+    ):
+        terminate_worker_process(None, 9876, task_id=TASK_ID)
+    mock_term.assert_not_called()
     assert _stop_marker_path(TASK_ID).exists() is False
 
 
