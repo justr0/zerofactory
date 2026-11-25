@@ -1,12 +1,12 @@
 """Unit tests for dispatcher/scheduler.py: dispatch cycle, concurrency flock, dependency unblocking, and WIP limits."""
 
-import fcntl
 import json
 import os
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from dispatcher import fcntl
 from dispatcher.scheduler import run_dispatch_cycle
 
 
@@ -114,6 +114,12 @@ def _init_test_db(db_path: Path):
         conn.commit()
 
 
+def _task_workspace(root: Path, task_id: str) -> Path:
+    workspace = root / "b1" / "worktrees" / task_id / "repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
 def test_run_dispatch_cycle_concurrent_flock_skipped(tmp_path: Path):
     """When cross-process lock is already held, cycle skips with concurrent_cycle_active."""
     db_path = tmp_path / "test.db"
@@ -187,38 +193,111 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
 
 
 def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
-    """Eligible todo task is promoted to running."""
+    """Bad repo metadata does not prevent a later valid task from dispatching."""
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
 
     now = 1000
+    workspace_root = tmp_path / "workspaces"
+    valid_workspace = _task_workspace(workspace_root, "t-todo")
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
             "INSERT INTO tasks "
             + _TASK_COLS
-            + " VALUES ('t-todo', 'Work Item', '', 'todo', 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
-            (now, now),
+            + " VALUES ('t-todo', 'Work Item', '', 'todo', 'zf-builder', 'P0', '{}', '[]', '', ?, '', 'b1', '', '', ?, ?)",
+            (str(valid_workspace), now, now),
         )
+        conn.execute(
+            "INSERT INTO tasks (id, title, description, status, assignee, priority, metadata, skills, workspace_path, board_slug, repo_alias, updated_at, created_at) "
+            "VALUES ('a-invalid', 'Invalid repo', '', 'todo', 'zf-builder', 'P0', '{}', '[]', ?, 'b1', 'removed', ?, ?)",
+            (str(tmp_path), now, now),
+        )
+        conn.execute("UPDATE tasks SET repo_alias = 'linked' WHERE id = 't-todo'")
         conn.commit()
 
     lock_file = tmp_path / "dispatcher.lock"
     import dispatcher
 
+    def resolve_repo(_cursor, _board, _tenant, repo_alias=None):
+        if repo_alias == "removed":
+            raise ValueError("repository alias is not linked")
+        return tmp_path
+
     with (
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.dict(
             os.environ,
-            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
+            {
+                "ZEROFACTORY_SKIP_WORKER_SPAWN": "1",
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
         ),
+        patch.object(dispatcher, "resolve_task_repo_path", side_effect=resolve_repo),
+        patch.object(
+            dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
+        ),
+        patch.object(dispatcher, "pull_and_merge_main", return_value=(True, [], "")),
+        patch.object(dispatcher, "spawn_agent_worker", return_value=(1234, "session")),
     ):
         res = run_dispatch_cycle(db_path)
         assert res["ok"] is True
-        assert res.get("dispatched", 0) >= 1
+        assert res.get("dispatched", 0) == 1
 
     with sqlite3.connect(str(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT status FROM tasks WHERE id = 't-todo'").fetchone()
-        assert row["status"] == "running"
+        assert dict(conn.execute("SELECT id, status FROM tasks")) == {
+            "a-invalid": "todo",
+            "t-todo": "running",
+        }
+
+
+def test_packaging_recovery_rejects_same_board_cross_task_symlink(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    workspace_root = tmp_path / "workspaces"
+    task_root = workspace_root / "b1" / "worktrees" / "recover-task"
+    other_task = workspace_root / "b1" / "worktrees" / "other-task"
+    (other_task / "repo" / ".git").mkdir(parents=True)
+    task_root.symlink_to(other_task, target_is_directory=True)
+    persisted_task_root = workspace_root / "b1" / "worktrees" / "persisted-task"
+    persisted_task_root.symlink_to(other_task, target_is_directory=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        for task_id, workspace in (
+            ("recover-task", ""),
+            ("persisted-task", str(persisted_task_root / "repo")),
+        ):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, 'Recover checkout', '', 'blocked', 'zf-builder', 'P1', '{}', '[]', '', ?, '', 'b1', '', '', ?, ?)",
+                (task_id, workspace, now, now),
+            )
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    import dispatcher
+
+    with (
+        patch.object(
+            dispatcher, "get_dispatcher_lock_path", return_value=tmp_path / "lock"
+        ),
+        patch.dict(os.environ, {"ZEROFACTORY_WORKSPACES_DIR": str(workspace_root)}),
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=repo),
+        patch.object(dispatcher, "_find_checked_out_worktree", return_value=None),
+        patch("dispatcher.subprocess.run") as git_run,
+    ):
+        assert run_dispatch_cycle(db_path)["ok"] is True
+        git_run.assert_not_called()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        assert conn.execute(
+            "SELECT workspace_path FROM tasks WHERE id = 'recover-task'"
+        ).fetchone()[0] in (None, "")
+        assert conn.execute(
+            "SELECT workspace_path FROM tasks WHERE id = 'persisted-task'"
+        ).fetchone()[0] == str(persisted_task_root / "repo")
 
 
 def test_run_dispatch_cycle_reverts_task_when_worker_spawn_fails(tmp_path: Path):
@@ -330,12 +409,14 @@ def test_run_dispatch_cycle_routes_blocked_human_pr_conflict_to_builder(tmp_path
     _init_test_db(db_path)
 
     now = 1000
+    workspace_root = tmp_path / "workspaces"
+    workspace = _task_workspace(workspace_root, "t-conf-blocked")
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
             "INSERT INTO tasks "
             + _TASK_COLS
             + " VALUES ('t-conf-blocked', 'Feature', '', 'blocked', 'human', 'P0', '{}', '[]', '', ?, '', 'b1', '', 'https://github.com/foo/bar/pull/20', ?, ?)",
-            (str(tmp_path), now, now),
+            (str(workspace), now, now),
         )
         conn.commit()
 
@@ -360,7 +441,11 @@ def test_run_dispatch_cycle_routes_blocked_human_pr_conflict_to_builder(tmp_path
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.dict(
             os.environ,
-            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": ""},
+            {
+                "ZEROFACTORY_SKIP_WORKER_SPAWN": "1",
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
         ),
         patch("dispatcher.resolve_task_repo_path", return_value=tmp_path),
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run),
@@ -381,12 +466,14 @@ def test_run_dispatch_cycle_routes_blocked_builder_pr_conflict_to_builder(
     _init_test_db(db_path)
 
     now = 1000
+    workspace_root = tmp_path / "workspaces"
+    workspace = _task_workspace(workspace_root, "t-conf-builder-blocked")
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
             "INSERT INTO tasks "
             + _TASK_COLS
             + " VALUES ('t-conf-builder-blocked', 'Feature', '', 'blocked', 'zf-builder', 'P0', '{}', '[]', '', ?, '', 'b1', '', 'https://github.com/foo/bar/pull/30', ?, ?)",
-            (str(tmp_path), now, now),
+            (str(workspace), now, now),
         )
         conn.commit()
 
@@ -411,7 +498,11 @@ def test_run_dispatch_cycle_routes_blocked_builder_pr_conflict_to_builder(
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.dict(
             os.environ,
-            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": ""},
+            {
+                "ZEROFACTORY_SKIP_WORKER_SPAWN": "1",
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
         ),
         patch("dispatcher.resolve_task_repo_path", return_value=tmp_path),
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run),
@@ -472,6 +563,8 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
     _init_test_db(db_path)
 
     now = 1000
+    workspace_root = tmp_path / "workspaces"
+    workspace = _task_workspace(workspace_root, "t-conf-res")
     with sqlite3.connect(str(db_path)) as conn:
         # 'running' + awaiting_pr marks builder-finished work in the dispatcher
         # packaging phase (PR sync); 'done' is strictly terminal.
@@ -479,7 +572,7 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
             "INSERT INTO tasks "
             + _TASK_COLS
             + " VALUES ('t-conf-res', 'Fix feature', 'desc', 'running', 'zf-builder', 'P1', '{\"conflict_retries\": 1, \"awaiting_pr\": true}', '[]', '', ?, '', 'b1', '', 'https://github.com/foo/bar/pull/50', ?, ?)",
-            (str(tmp_path), now, now),
+            (str(workspace), now, now),
         )
         conn.commit()
 
@@ -500,7 +593,13 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
 
     with (
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
-        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
+        patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
+        ),
         patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
         patch.object(dispatcher, "clean_stale_git_locks"),
@@ -519,7 +618,7 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
         res = run_dispatch_cycle(db_path)
         assert res["ok"] is True
         assert res["prs_opened"] == 1
-        mock_status_files.assert_called_once_with(tmp_path)
+        mock_status_files.assert_called_once_with(workspace)
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -617,12 +716,14 @@ def test_run_dispatch_cycle_awaiting_pr_handles_conflicting_pr(tmp_path: Path):
     _init_test_db(db_path)
 
     now = 1000
+    workspace_root = tmp_path / "workspaces"
+    workspace = _task_workspace(workspace_root, "t-rev-conf")
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
             "INSERT INTO tasks "
             + _TASK_COLS
             + " VALUES ('t-rev-conf', 'Fix conflict', 'desc', 'running', 'zf-builder', 'P1', '{\"awaiting_pr\": true}', '[]', '', ?, '', 'b1', '', 'https://github.com/foo/bar/pull/50', ?, ?)",
-            (str(tmp_path), now, now),
+            (str(workspace), now, now),
         )
         conn.commit()
 
@@ -650,7 +751,13 @@ def test_run_dispatch_cycle_awaiting_pr_handles_conflicting_pr(tmp_path: Path):
 
     with (
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
-        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
+        patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
+        ),
         patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
         patch.object(dispatcher, "clean_stale_git_locks"),
@@ -1106,8 +1213,8 @@ def test_clean_exit_after_prior_failure_is_packaged(tmp_path: Path):
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
 
-    ws = tmp_path / "ws"
-    ws.mkdir()
+    workspace_root = tmp_path / "workspaces"
+    ws = _task_workspace(workspace_root, "t-gh91")
 
     now = 1000
     stale_meta = json.dumps(
@@ -1159,7 +1266,13 @@ def test_clean_exit_after_prior_failure_is_packaged(tmp_path: Path):
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch("dispatcher.scheduler._package_and_open_pr", side_effect=fake_package),
         patch.object(dispatcher, "resolve_task_repo_path", return_value=ws),
-        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
+        patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
+        ),
     ):
         res = run_dispatch_cycle(db_path)
         assert res["ok"] is True

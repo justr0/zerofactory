@@ -22,23 +22,6 @@ if str(PLUGIN_ROOT) not in sys.path:
 # imports inside test modules (order-dependent ModuleNotFoundError).
 import tests  # noqa: E402
 
-# Upstream tests ``import fcntl`` directly (POSIX-only). The Windows port ships
-# ``zf_wincompat`` as the flock shim for production code; register it as
-# ``fcntl`` here too so the same suite collects on Windows.
-if sys.platform == "win32":
-    try:
-        import fcntl  # noqa: F401
-    except ImportError:
-        import types
-
-        import zf_wincompat as _wincompat
-
-        _shim = types.ModuleType("fcntl")
-        for _name, _value in vars(_wincompat).items():
-            if not _name.startswith("__"):
-                setattr(_shim, _name, _value)
-        sys.modules["fcntl"] = _shim
-
 # Ensure hermetic defaults before any tests run
 os.environ.setdefault("ZEROFACTORY_SKIP_GIT", "1")
 os.environ.setdefault("ZEROFACTORY_SKIP_CRON_SYNC", "1")

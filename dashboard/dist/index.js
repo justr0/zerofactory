@@ -2155,7 +2155,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					title: "Thematic Review",
 					badge: "Running: review",
 					bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); unresolved Round 2 escalates to Human (blocked); approval moves to Human (awaiting_merge)."
+					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge)."
 				},
 				{
 					num: "7",
