@@ -25,26 +25,69 @@ wincompat = pytest.importorskip(
 def test_is_pid_alive_preserves_pointer_width_process_handle(
     monkeypatch, exit_code, query_succeeds, expected_alive
 ):
-    process_handle = 0x1_2345_6789
-    kernel32 = SimpleNamespace(
-        OpenProcess=Mock(return_value=process_handle),
-        GetExitCodeProcess=Mock(return_value=query_succeeds),
-        CloseHandle=Mock(return_value=True),
-    )
-    monkeypatch.setattr(
-        ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
-    )
+    if ctypes.sizeof(wintypes.HANDLE) <= ctypes.sizeof(ctypes.c_uint32):
+        pytest.skip("requires a pointer wider than 32 bits")
 
-    def set_exit_code(_handle, exit_code_pointer):
+    process_handle = 0x1_2345_6789
+    assert process_handle > 0xFFFF_FFFF
+    opened = []
+    queried = []
+    closed = []
+
+    def open_process(access, inherit, pid):
+        opened.append((access, inherit, pid))
+        return process_handle
+
+    def get_exit_code(handle, exit_code_pointer):
+        queried.append(handle)
+        if handle != process_handle:
+            return False
         ctypes.cast(
             exit_code_pointer, ctypes.POINTER(wintypes.DWORD)
         ).contents.value = exit_code
         return query_succeeds
 
-    kernel32.GetExitCodeProcess.side_effect = set_exit_code
+    def close_handle(handle):
+        closed.append(handle)
+        return True
+
+    winfunctype = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+
+    def dll_function(restype, argtypes, callback):
+        native_callback = winfunctype(restype, *argtypes)(callback)
+        address = ctypes.cast(native_callback, ctypes.c_void_p).value
+        assert address is not None
+        function = winfunctype(ctypes.c_int, *argtypes)(address)
+        return native_callback, function
+
+    open_callback, open_api = dll_function(
+        wintypes.HANDLE,
+        [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD],
+        open_process,
+    )
+    exit_code_pointer = ctypes.POINTER(wintypes.DWORD)
+    exit_callback, exit_api = dll_function(
+        wintypes.BOOL,
+        [wintypes.HANDLE, exit_code_pointer],
+        get_exit_code,
+    )
+    close_callback, close_api = dll_function(
+        wintypes.BOOL, [wintypes.HANDLE], close_handle
+    )
+    kernel32 = SimpleNamespace(
+        OpenProcess=open_api,
+        GetExitCodeProcess=exit_api,
+        CloseHandle=close_api,
+    )
+    assert open_api.restype is ctypes.c_int
+    monkeypatch.setattr(
+        ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
 
     assert wincompat.is_pid_alive(1234) is expected_alive
 
+    # Keep the native callback objects alive for the duration of the calls.
+    assert open_callback and exit_callback and close_callback
     assert kernel32.OpenProcess.restype is wintypes.HANDLE
     assert kernel32.OpenProcess.argtypes == [
         wintypes.DWORD,
@@ -59,10 +102,9 @@ def test_is_pid_alive_preserves_pointer_width_process_handle(
     assert kernel32.CloseHandle.restype is wintypes.BOOL
     assert kernel32.CloseHandle.argtypes == [wintypes.HANDLE]
 
-    kernel32.OpenProcess.assert_called_once_with(0x1000, False, 1234)
-    kernel32.GetExitCodeProcess.assert_called_once()
-    assert kernel32.GetExitCodeProcess.call_args.args[0] == process_handle
-    kernel32.CloseHandle.assert_called_once_with(process_handle)
+    assert opened == [(0x1000, False, 1234)]
+    assert queried == [process_handle]
+    assert closed == [process_handle]
 
 
 def test_is_pid_alive_returns_false_when_open_process_fails(monkeypatch):
