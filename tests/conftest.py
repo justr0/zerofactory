@@ -58,6 +58,34 @@ def isolated_env() -> Iterator[dict]:
         os.environ.update(orig)
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_dispatcher_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep dispatcher lock state out of the real ``~/.hermes``.
+
+    The dispatcher lock file lives at ``ZEROFACTORY_LOCK_PATH`` (default: the
+    Hermes home) and stop markers are written beside it.  Tests that reach
+    those code paths must not touch - or leave files in - the operator's real
+    home.  Tests about the lock itself override this with their own path.
+    """
+    monkeypatch.setenv(
+        "ZEROFACTORY_LOCK_PATH", str(tmp_path / "zerofactory_dispatcher.lock")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_default_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests that request no DB fixture off the operator's board database.
+
+    Worker precommit runs inherit ``ZEROFACTORY_DB`` (the live board DB). A
+    test that reaches ``init_db()`` without the ``initialized_db`` fixture would
+    otherwise migrate and seed the real database and fail intermittently with
+    ``sqlite3.OperationalError: database is locked`` whenever the running
+    dispatcher holds a write transaction. Tests about DB path resolution
+    override this with ``monkeypatch.delenv``/``setenv`` of their own.
+    """
+    monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zerofactory_default.db"))
+
+
 @pytest.fixture
 def test_db_path(tmp_path: Path) -> Path:
     """Provide a path to a fresh SQLite database for tests."""

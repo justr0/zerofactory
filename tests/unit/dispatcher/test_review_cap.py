@@ -245,6 +245,12 @@ def _init_test_db(db_path: Path):
         conn.commit()
 
 
+def _managed_workspace(repo_path: Path, task_id: str) -> Path:
+    workspace = repo_path.parent / f"{repo_path.name}-worktrees" / task_id
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
 class TestReviewCapPerCommit:
     def test_structured_changes_requested_routes_without_comments(self, tmp_path: Path):
         """Signal-first routing: the reviewer's `block --reason changes-requested`
@@ -254,6 +260,7 @@ class TestReviewCapPerCommit:
         lock_file = tmp_path / "dispatcher.lock"
 
         task_id = "t-structured-verdict"
+        workspace = _managed_workspace(tmp_path, task_id)
         initial_meta = {
             "processed_review_comment_ids": [],
             "blocked_reason_type": "changes-requested",
@@ -270,12 +277,10 @@ class TestReviewCapPerCommit:
                     task_id,
                     "feat: structured verdict",
                     json.dumps(initial_meta),
-                    str(tmp_path / "wt"),
+                    str(workspace),
                 ),
             )
             conn.commit()
-
-        (tmp_path / "wt").mkdir(parents=True, exist_ok=True)
 
         fake_pr_data = {
             "state": "OPEN",
@@ -329,6 +334,7 @@ class TestReviewCapPerCommit:
 
         # Task already completed Round 1 review on commit 'commit_sha_123'
         task_id = "t-cap-test"
+        workspace = _managed_workspace(tmp_path, task_id)
         initial_meta = {
             "last_reviewed_commit": "commit_sha_123",
             "review_round": 1,
@@ -347,12 +353,10 @@ class TestReviewCapPerCommit:
                     task_id,
                     "feat: test review cap",
                     json.dumps(initial_meta),
-                    str(tmp_path / "wt"),
+                    str(workspace),
                 ),
             )
             conn.commit()
-
-        (tmp_path / "wt").mkdir(parents=True, exist_ok=True)
 
         fake_pr_data = {
             "state": "OPEN",
@@ -442,6 +446,7 @@ class TestReviewCapPerCommit:
         lock_file = tmp_path / "dispatcher.lock"
 
         task_id = "t-new-commit"
+        workspace = _managed_workspace(tmp_path, task_id)
         initial_meta = {
             "last_reviewed_commit": "old_commit_111",
             "review_round": 1,
@@ -460,12 +465,10 @@ class TestReviewCapPerCommit:
                     task_id,
                     "feat: test new commit cumulative cap",
                     json.dumps(initial_meta),
-                    str(tmp_path / "wt2"),
+                    str(workspace),
                 ),
             )
             conn.commit()
-
-        (tmp_path / "wt2").mkdir(parents=True, exist_ok=True)
 
         fake_pr_data = {
             "state": "OPEN",
@@ -561,6 +564,7 @@ class TestReviewCapPerCommit:
         lock_file = tmp_path / "dispatcher.lock"
 
         task_id = "t-builder-note"
+        workspace = _managed_workspace(tmp_path, task_id)
         initial_meta = {
             "processed_review_comment_ids": [],
         }
@@ -575,12 +579,10 @@ class TestReviewCapPerCommit:
                     task_id,
                     "feat: test builder note",
                     json.dumps(initial_meta),
-                    str(tmp_path / "wt3"),
+                    str(workspace),
                 ),
             )
             conn.commit()
-
-        (tmp_path / "wt3").mkdir(parents=True, exist_ok=True)
 
         fake_pr_data = {
             "state": "OPEN",
