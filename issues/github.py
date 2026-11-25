@@ -7,7 +7,6 @@ import logging
 import re
 import shutil
 import subprocess
-from collections.abc import Sequence
 from typing import Any
 
 from .base import AI_REQUEST_LABELS, ExternalIssue
@@ -174,7 +173,7 @@ class GitHubIssueClient:
     def fetch_investigation_issues(
         self,
         repo: str | None = None,
-        label: str | Sequence[str] | None = None,
+        label: str | None = None,
         state: str = "open",
         limit: int = 50,
     ) -> list[ExternalIssue]:
@@ -185,13 +184,7 @@ class GitHubIssueClient:
                 "Repository is required to list issues. Specify --repo owner/repo or set up a board."
             )
 
-        labels = (
-            (label,)
-            if isinstance(label, str)
-            else tuple(label)
-            if label is not None
-            else AI_REQUEST_LABELS
-        )
+        labels = (label,) if label is not None else AI_REQUEST_LABELS
         issues: list[ExternalIssue] = []
         seen: set[str] = set()
         for request_label in labels:

@@ -167,6 +167,84 @@ def test_sync_and_import_gh_issues_endpoints(
     assert import_res["duplicate"] is True
 
 
+@pytest.mark.parametrize(
+    ("selected_label", "expected_labels", "expected_imports"),
+    [
+        (None, ["zerofactory", "ai-investigate", "ai-triage"], 3),
+        ("custom-request", ["custom-request"], 1),
+    ],
+)
+def test_sync_gh_issues_http_route_label_selection(
+    api_client,
+    initialized_db: Path,
+    monkeypatch,
+    selected_label,
+    expected_labels,
+    expected_imports,
+):
+    import json
+    import subprocess
+
+    import issues.github
+
+    board_response = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"git_url": "https://github.com/testowner/testrepo.git"},
+    )
+    slug = board_response.json()["slug"]
+
+    def payload(number, *labels):
+        return {
+            "number": number,
+            "title": f"Issue {number}",
+            "body": f"Description for issue {number}",
+            "url": f"https://github.com/testowner/testrepo/issues/{number}",
+            "author": {"login": "tester"},
+            "state": "OPEN",
+            "labels": [{"name": label} for label in labels],
+            "assignees": [],
+        }
+
+    responses = {
+        "zerofactory": [payload(42, "zerofactory", "ai-investigate")],
+        "ai-investigate": [
+            payload(42, "zerofactory", "ai-investigate"),
+            payload(43, "ai-investigate", "ai-triage"),
+        ],
+        "ai-triage": [
+            payload(43, "ai-investigate", "ai-triage"),
+            payload(44, "ai-triage"),
+        ],
+        "custom-request": [payload(45, "custom-request")],
+    }
+    calls = []
+
+    def fake_gh_run(command, **kwargs):
+        label = command[command.index("--label") + 1]
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout=json.dumps(responses[label]), stderr=""
+        )
+
+    monkeypatch.setattr(issues.github.subprocess, "run", fake_gh_run)
+    params = {"label": selected_label} if selected_label is not None else None
+    response = api_client.post(
+        f"/api/plugins/zerofactory/boards/{slug}/sync-gh-issues", params=params
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["imported_count"] == expected_imports
+    assert result["duplicate_count"] == 0
+    assert [
+        command[command.index("--label") + 1] for command in calls
+    ] == expected_labels
+    with sqlite3.connect(initialized_db) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == expected_imports
+        )
+
+
 def test_import_gh_issue_resolves_repo_from_board_repositories(
     initialized_db: Path, monkeypatch
 ):

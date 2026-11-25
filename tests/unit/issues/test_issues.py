@@ -749,63 +749,175 @@ class TestCliImportGhIssue:
         out2 = capsys.readouterr().out
         assert "[Duplicate Skipped]" in out2
 
-    @pytest.mark.parametrize("selected_label", [None, "custom-request"])
-    def test_cli_issue_sync_honors_explicit_label(
-        self, selected_label, tmp_path, monkeypatch, capsys
-    ):
+    @staticmethod
+    def _issue_sync_cli():
         import argparse
         import __init__ as plugin_main
 
-        monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zerofactory.db"))
         fake_ctx = MagicMock()
-        fake_ctx.register_cli_command = MagicMock()
         plugin_main.register(fake_ctx)
-        cmd_runner = fake_ctx.register_cli_command.call_args[1]["handler_fn"]
+        registration = fake_ctx.register_cli_command.call_args.kwargs
+        parser = argparse.ArgumentParser()
+        registration["setup_fn"](parser)
+        return parser, registration["handler_fn"]
 
-        issue = ExternalIssue(
-            source="github",
-            id="12",
-            key="#12",
-            title="Investigation request",
-            labels=[selected_label or "ai-investigate"],
-            repo_or_project="my-org/my-repo",
-        )
-        client = MagicMock()
-        client.fetch_investigation_issues.return_value = [issue]
-        import_result = {
-            "duplicate": False,
-            "issue_key": "#12",
-            "issue_type": "bug",
-            "id": "task-12",
-            "title": issue.title,
+    @staticmethod
+    def _sync_payload(number, *labels):
+        return {
+            "number": number,
+            "title": f"Issue {number}",
+            "body": f"Description for issue {number}",
+            "url": f"https://github.com/my-org/my-repo/issues/{number}",
+            "author": {"login": "tester"},
+            "state": "OPEN",
+            "labels": [{"name": label} for label in labels],
+            "assignees": [],
         }
-        args = argparse.Namespace(
-            action="import-gh-issue",
-            issue=None,
-            repo="my-org/my-repo",
-            board=None,
-            status="triage",
-            priority=None,
-            assignee="human",
-            label=selected_label,
-            force=False,
-            sync=True,
-            type=None,
-            actor="test-user",
+
+    def test_cli_sync_default_labels_import_and_deduplicate(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        db_file = tmp_path / "zerofactory.db"
+        monkeypatch.setenv("ZEROFACTORY_DB", str(db_file))
+        create_board(BoardCreate(git_url="https://github.com/my-org/my-repo.git"))
+        parser, cmd_runner = self._issue_sync_cli()
+        args = parser.parse_args(
+            [
+                "import-gh-issue",
+                "--sync",
+                "--repo",
+                "my-org/my-repo",
+                "--actor",
+                "test-user",
+            ]
+        )
+        responses = {
+            "zerofactory": [
+                self._sync_payload(10, "zerofactory", "ai-investigate"),
+                self._sync_payload(11, "zerofactory"),
+            ],
+            "ai-investigate": [
+                self._sync_payload(10, "zerofactory", "ai-investigate"),
+                self._sync_payload(12, "ai-investigate", "ai-triage"),
+            ],
+            "ai-triage": [
+                self._sync_payload(12, "ai-investigate", "ai-triage"),
+                self._sync_payload(13, "ai-triage"),
+            ],
+        }
+        calls = []
+
+        def fake_gh_run(command, **kwargs):
+            label = command[command.index("--label") + 1]
+            calls.append(command)
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=json.dumps(responses[label]),
+                stderr="",
+            )
+
+        monkeypatch.setattr("issues.github.subprocess.run", fake_gh_run)
+        cmd_runner(args)
+
+        assert [command[command.index("--label") + 1] for command in calls] == [
+            "zerofactory",
+            "ai-investigate",
+            "ai-triage",
+        ]
+        with sqlite3.connect(db_file) as conn:
+            metadata_rows = conn.execute("SELECT metadata FROM tasks").fetchall()
+        dedup_keys = [json.loads(row[0])["dedup_key"] for row in metadata_rows]
+        assert sorted(dedup_keys) == [
+            f"issue:github:my-org/my-repo:{number}" for number in (10, 11, 12, 13)
+        ]
+        assert len(dedup_keys) == len(set(dedup_keys)) == 4
+        assert (
+            "Sync complete: 4 imported, 0 skipped duplicates."
+            in capsys.readouterr().out
         )
 
-        with (
-            patch.object(plugin_main, "GitHubIssueClient", return_value=client),
-            patch.object(
-                plugin_main, "import_external_issue", return_value=import_result
-            ),
-        ):
+    @pytest.mark.parametrize("selected_label", ["zerofactory", "custom-request"])
+    def test_cli_sync_explicit_label_runs_one_real_query(
+        self, selected_label, tmp_path, monkeypatch
+    ):
+        db_file = tmp_path / "zerofactory.db"
+        monkeypatch.setenv("ZEROFACTORY_DB", str(db_file))
+        create_board(BoardCreate(git_url="https://github.com/my-org/my-repo.git"))
+        parser, cmd_runner = self._issue_sync_cli()
+        args = parser.parse_args(
+            [
+                "import-gh-issue",
+                "--sync",
+                "--repo",
+                "my-org/my-repo",
+                "--label",
+                selected_label,
+                "--actor",
+                "test-user",
+            ]
+        )
+        calls = []
+
+        def fake_gh_run(command, **kwargs):
+            calls.append(command)
+            payload = self._sync_payload(20, selected_label)
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout=json.dumps([payload]), stderr=""
+            )
+
+        monkeypatch.setattr("issues.github.subprocess.run", fake_gh_run)
+        cmd_runner(args)
+
+        assert len(calls) == 1
+        assert calls[0][calls[0].index("--label") + 1] == selected_label
+        with sqlite3.connect(db_file) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+
+    def test_cli_sync_later_label_failure_does_not_partially_import(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        db_file = tmp_path / "zerofactory.db"
+        monkeypatch.setenv("ZEROFACTORY_DB", str(db_file))
+        create_board(BoardCreate(git_url="https://github.com/my-org/my-repo.git"))
+        parser, cmd_runner = self._issue_sync_cli()
+        args = parser.parse_args(
+            [
+                "import-gh-issue",
+                "--sync",
+                "--repo",
+                "my-org/my-repo",
+                "--actor",
+                "test-user",
+            ]
+        )
+        calls = []
+
+        def fake_gh_run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps([self._sync_payload(30, "zerofactory")]),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                args=command, returncode=1, stdout="", stderr="permission denied"
+            )
+
+        monkeypatch.setattr("issues.github.subprocess.run", fake_gh_run)
+        with pytest.raises(SystemExit) as exc:
             cmd_runner(args)
 
-        client.fetch_investigation_issues.assert_called_once_with(
-            repo="my-org/my-repo", label=selected_label, state="open"
-        )
-        assert "Sync complete: 1 imported" in capsys.readouterr().out
+        assert exc.value.code == 1
+        assert [command[command.index("--label") + 1] for command in calls] == [
+            "zerofactory",
+            "ai-investigate",
+        ]
+        assert "permission denied" in capsys.readouterr().err
+        with sqlite3.connect(db_file) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
 class TestSetupGhIssuesScript:
