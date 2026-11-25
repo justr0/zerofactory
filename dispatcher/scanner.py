@@ -388,17 +388,16 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         )
 
     try:
-        log_f = open(log_file_path, "ab")
-        proc = subprocess.Popen(
-            wrapped_cmd,
-            cwd=workdir,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            **detached_popen_kwargs(),
-        )
-        log_f.close()
+        with open(log_file_path, "ab") as log_f:
+            proc = subprocess.Popen(
+                wrapped_cmd,
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                **detached_popen_kwargs(),
+            )
         pid_file = log_dir / f"scanner_{board_slug}.pid"
         try:
             _write_scanner_pid_file(pid_file, proc.pid)
