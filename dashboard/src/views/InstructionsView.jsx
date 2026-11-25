@@ -303,7 +303,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                   title: "Thematic Review",
                   badge: "Running: review",
                   bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); unresolved Round 2 escalates to Human (blocked); approval moves to Human (awaiting_merge)."
+                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). Only a PR conversation comment whose FIRST line is the ready-to-paste '[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | MERGE | ESCALATE | REQUEST: <key> | HEAD: <sha>' from an authorized GitHub account counts: FIX opens one fix round scoped to the verdict, MERGE / ESCALATE / timeout stay on Human; approval moves to Human (awaiting_merge)."
                 },
                 {
                   num: "7",
