@@ -192,9 +192,14 @@ except ImportError:
     )
 
 try:
-    from .dispatcher import run_dispatch_cycle, start_background_dispatcher
+    from .dispatcher import (
+        dispatcher_owned_elsewhere,
+        run_dispatch_cycle,
+        start_background_dispatcher,
+    )
 except ImportError:
     from dispatcher import (  # type: ignore
+        dispatcher_owned_elsewhere,
         run_dispatch_cycle,
         start_background_dispatcher,
     )
@@ -302,6 +307,15 @@ def register(ctx: Any):
                         "ok": True,
                         "skipped": True,
                         "reason": "dispatcher_disabled",
+                    }
+                if dispatcher_owned_elsewhere():
+                    # The background loop - here or in another process such as the
+                    # gateway - already cycles. A second scheduler would dispatch
+                    # duplicate workers for the same tasks.
+                    return {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "dispatcher_owned_elsewhere",
                     }
                 return run_dispatch_cycle()
 
