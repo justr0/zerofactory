@@ -144,7 +144,7 @@
     },
     {
       "id": "claim_f12dbdbe23344518b15eaa7f7535a24a",
-      "statement": "The dispatcher enforces a per-PR review cap: review_round in task metadata (written alongside legacy commit_review_count for compatibility) is incremented by 1 for each batch of actionable PR feedback routed back to the builder; it is NOT reset when the PR head commit changes, so the budget is per-PR rather than per-commit. Once review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS (default 4), the dispatcher sets review_cap_reached and blocked_reason_type='human-gate', assigns the task to 'human', and moves it to blocked; subsequent polls of that blocked/human task early-return when no new PR comments arrived. The recover endpoint clears review_cap_reached, review_round, and commit_review_count to restart the budget.",
+      "statement": "The dispatcher enforces a per-PR review cap: review_round in task metadata (written alongside legacy commit_review_count for compatibility) is incremented by 1 for each batch of actionable PR feedback routed back to the builder; it is NOT reset when the PR head commit changes, so the budget is per-PR rather than per-commit. Once review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS (default 2), the dispatcher sets review_cap_reached and blocked_reason_type='human-gate', assigns the task to 'human', and moves it to blocked; subsequent polls of that blocked/human task early-return when no new PR comments arrived. The recover endpoint clears review_cap_reached, review_round, and commit_review_count to restart the budget.",
       "evidence": [
         {
           "resource": "repo://dashboard/routes/tasks.py#L1724-L1726",

@@ -295,7 +295,7 @@ def spawn_agent_worker(
             int(task_meta.get("review_round", task_meta.get("commit_review_count", 0)))
             + 1
         )
-        max_review_rounds = int(os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "4"))
+        max_review_rounds = int(os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "2"))
         spec_text = str(task_meta.get("specification") or description or "")
         skip_untested = bool(task_meta.get("skip_untested_check"))
         pre_digested_git = _d().digest_reviewer_git_context(
@@ -351,9 +351,11 @@ def spawn_agent_worker(
             f"   - If you catch a recurring mistake, testing gotcha, or project convention that future tasks should follow, record it!\n"
             f"   - In your review comment or summary, include a line: `GOTCHA: <rule>` or `CONVENTION: <rule>` (the system will auto-record it).\n"
             f'   - Or run: `hermes zerofactory memory add --board {board_slug or "default"} "<rule>" --category <gotcha|convention>`.\n'
-            f"6. When finished:\n"
-            f"   - If approved: {reviewer_approved_action}\n"
-            f"   - If changes are requested (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` when defects remain; the dispatcher routes Round 1 back to the builder and escalates Round {max_review_rounds} to Human blocked).\n"
+            f"6. When finished, record ONE verdict with `hermes zerofactory block {task_id} --reason ...`:\n"
+            f"   - Defects remain (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` while defects remain). The dispatcher owns the round budget: it routes Round 1 back to the builder and escalates Round {max_review_rounds} to Human blocked. Never hand a defect to a human yourself.\n"
+            f"   - Code passes: {reviewer_approved_action}\n"
+            f"   - Code passes, but the repository requires a human's explicit merge authorization (check its AGENTS.md): do not record 'approved'. Post your comment with the sentence `No code changes requested.` and run `hermes zerofactory block {task_id} --reason 'human-gate'`. The task then waits for the human merge decision instead of going back to the builder.\n"
+            f"   - The `Review Round` header above is the only round count that applies. Earlier comments on this PR may say 'Round 2 of 2' or 'cap reached'; they were written under an older budget and are superseded.\n"
             f"7. Provide a clear review summary.\n"
         )
     elif assignee == "zf-orchestrator":

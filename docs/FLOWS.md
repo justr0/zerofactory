@@ -561,7 +561,7 @@ runtime → installed deps → simple functions → minimum viable diff) via bun
 | `ZEROFACTORY_SKIP_PRECOMMIT` | unset | gate returns pass without running |
 | `ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS` | `300` | gate hard timeout |
 | `ZEROFACTORY_MAX_PRECOMMIT_RETRIES` | `3` | self-heal retries before blocking |
-| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `4` | cumulative per-PR review rounds before human escalation |
+| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before human escalation |
 | `ZEROFACTORY_MAX_CONFLICT_RETRIES` | `3` | merge-conflict resolution attempts |
 | `ZEROFACTORY_TASK_TIMEOUT_SECONDS` | `3600` | max worker runtime |
 | (inactivity) | `900` | max silence before stuck |

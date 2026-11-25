@@ -314,7 +314,7 @@ ops).
   metadata (written alongside the legacy `commit_review_count` for
   compatibility). The counter is a **per-PR** round count and is *not* reset
   when the PR head commit changes, so each new commit does not restart the
-  budget. The cap is `ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **4**): once
+  budget. The cap is `ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**): once
   `review_round >= max` the dispatcher sets `review_cap_reached` and
   `blocked_reason_type = "human-gate"`, assigns the task to `human`, and moves
   it to `blocked` instead of looping builder ↔ reviewer forever. Once

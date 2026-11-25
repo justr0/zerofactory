@@ -867,7 +867,7 @@ def register(ctx: Any):
         )
         p_bupdate = board_subs.add_parser(
             "update",
-            help="Update board configuration (description, target-branch, architecture)",
+            help="Update board configuration (description, target-branch, architecture, automerge)",
         )
         p_bupdate.add_argument("slug", help="Board slug to update")
         p_bupdate.add_argument(
@@ -880,6 +880,19 @@ def register(ctx: Any):
             "--architecture",
             default=None,
             help="Inter-service architecture and contracts",
+        )
+        p_bupdate.add_argument(
+            "--automerge",
+            dest="automerge",
+            action="store_true",
+            default=None,
+            help="Merge each PR automatically once its reviewer approves it",
+        )
+        p_bupdate.add_argument(
+            "--no-automerge",
+            dest="automerge",
+            action="store_false",
+            help="Keep approved PRs parked for a human merge decision",
         )
 
         p_bdelete = board_subs.add_parser(
@@ -1624,8 +1637,19 @@ def register(ctx: Any):
                     up_kwargs["target_branch"] = args.target_branch
                 if getattr(args, "architecture", None) is not None:
                     up_kwargs["architecture"] = args.architecture
+                if getattr(args, "automerge", None) is not None:
+                    up_kwargs["automerge"] = args.automerge
                 res = _update_board(args.slug, _BoardUpdate(**up_kwargs))
                 print(f"✓ Updated board '{args.slug}'.")
+                if "automerge" in up_kwargs:
+                    print(
+                        "  Auto-merge: "
+                        + (
+                            "ON (a reviewer's approval merges the PR)"
+                            if args.automerge
+                            else "OFF (approved PRs wait for a human merge decision)"
+                        )
+                    )
             elif b_act == "delete":
                 res = _delete_board(args.slug)
                 print(
