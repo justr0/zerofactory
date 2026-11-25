@@ -164,6 +164,9 @@ from .scanner import (
 )
 from .scheduler import (
     _dispatcher_loop,
+    dispatcher_owned_elsewhere,
+    get_dispatcher_owner_lock_path,
+    live_dispatcher_threads,
     run_dispatch_cycle,
     start_background_dispatcher,
     stop_background_dispatcher,
@@ -304,6 +307,9 @@ __all__ = [
     # Scheduler
     "run_dispatch_cycle",
     "_dispatcher_loop",
+    "dispatcher_owned_elsewhere",
+    "get_dispatcher_owner_lock_path",
+    "live_dispatcher_threads",
     "start_background_dispatcher",
     "stop_background_dispatcher",
 ]
