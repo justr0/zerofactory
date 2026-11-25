@@ -325,20 +325,6 @@ ops).
   `review_cap_reached`, `review_round`, and `commit_review_count`, giving a
   human-recovered task a fresh round budget
   (`repo://dashboard/routes/tasks.py#L1724-L1726`).
-- **Review-cap arbitration** — with arbitration enabled
-  (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default on) the cap additionally
-  posts one `ARBITRATION REQUEST` comment on the PR for the arbiter profile
-  (`zf-gatekeeper` by default) and keeps the task parked until that profile
-  answers with a line starting `[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX`,
-  `... MERGE` or `... ESCALATE` (`dispatcher/review_cap_arbitration.py`).
-  FIX re-opens the task for one bounded fix round with a fresh review budget
-  and the verdict as the builder's brief; MERGE leaves it parked until the
-  arbiter merges it; ESCALATE — or an unanswered request after
-  `ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` — leaves it parked for
-  the human. A task is arbitrated at most
-  `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` times, and tasks flagged for
-  human review (`permanently_blocked`, `hitl` / `manual-review` tags,
-  HITL-labelled external issues) skip arbitration entirely.
 - **External-issue PR linkage** — when a task carries `external_issue` metadata
   (see [External Issue Import](/openwiki/components/issues-importer.md)), the
   PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
