@@ -272,7 +272,7 @@ def test_cleanup_process_artifacts(tmp_path):
         assert not (logs_dir / f"worker_{task_id}.exit.tmp").exists()
 
 
-def test_terminate_task_worker_with_matching_identity(tmp_path):
+def test_terminate_task_worker_with_matching_identity(tmp_path, monkeypatch):
     """Matching live task workers are terminated and their artifacts cleaned."""
     task_id = "task-xyz"
     logs_dir = tmp_path / "logs"
@@ -281,6 +281,7 @@ def test_terminate_task_worker_with_matching_identity(tmp_path):
     tmp_file = logs_dir / f"worker_{task_id}.exit.tmp"
     exit_file.write_text("0")
     tmp_file.write_text("0")
+    monkeypatch.setenv("ZEROFACTORY_LOCK_PATH", str(tmp_path / "dispatcher.lock"))
     with (
         patch("dispatcher.process_manager.IS_WINDOWS", False),
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
@@ -293,6 +294,7 @@ def test_terminate_task_worker_with_matching_identity(tmp_path):
             return_value=b"sh -c worker_task-xyz.exit",
         ),
         patch("dispatcher.process_manager.get_hermes_home", return_value=tmp_path),
+        patch("dispatcher.process_manager._sweep_stale_stop_markers"),
         patch("dispatcher.process_manager.terminate_process_group") as mock_term,
     ):
         terminate_task_worker("task-xyz", 9876)

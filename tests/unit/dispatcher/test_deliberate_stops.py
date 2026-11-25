@@ -171,7 +171,7 @@ def test_forget_deliberate_stop_removes_only_the_matching_marker():
 def test_terminate_task_worker_marks_the_stop_when_it_signals():
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", mock_open(read_data=f"hermes -q {TASK_ID}".encode())),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch(
             "dispatcher.process_manager.terminate_process_group", return_value=True
         ) as term,
