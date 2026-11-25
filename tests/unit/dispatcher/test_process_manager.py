@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -35,6 +36,19 @@ def _spawn_test_process(command, *, isolated_session):
         stderr=subprocess.DEVNULL,
         start_new_session=isolated_session and os.name != "nt",
     )
+
+
+def _require_live_identity_inspection():
+    """Skip live identity tests when the platform inspection backend is unavailable."""
+    if os.name == "nt":
+        if shutil.which("powershell") is None:
+            pytest.skip("PowerShell process identity inspection is unavailable")
+        return
+    try:
+        if not Path("/proc").is_dir() or not Path("/proc/self/cmdline").read_bytes():
+            pytest.skip("live process identity inspection is unavailable")
+    except OSError:
+        pytest.skip("live process identity inspection is unavailable")
 
 
 def test_is_pid_alive():
@@ -302,14 +316,11 @@ def test_cleanup_process_artifacts(tmp_path):
         assert not (logs_dir / f"worker_{task_id}.exit.tmp").exists()
 
 
-@pytest.mark.skipif(
-    os.name != "nt" and not Path("/proc").is_dir(),
-    reason="live process identity inspection is unavailable",
-)
 def test_terminate_task_worker_stops_real_wrapped_worker_and_cleans_artifacts(
     tmp_path, monkeypatch
 ):
     """The production wrapper prefix validates, signals, and cleans its worker."""
+    _require_live_identity_inspection()
     task_id = "task-xyz"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -347,12 +358,9 @@ def test_terminate_task_worker_stops_real_wrapped_worker_and_cleans_artifacts(
             process.wait(timeout=5)
 
 
-@pytest.mark.skipif(
-    os.name != "nt" and not Path("/proc").is_dir(),
-    reason="live process identity inspection is unavailable",
-)
 def test_terminate_task_worker_rejects_unwrapped_live_process(tmp_path, monkeypatch):
     """Task-id argv text alone never authorizes either group or child signaling."""
+    _require_live_identity_inspection()
     task_id = "task-xyz"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
