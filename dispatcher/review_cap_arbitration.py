@@ -16,7 +16,7 @@ Protocol - every message is a PR conversation comment, so the decision trail
 stays on the PR. The dispatcher's request:
 
     [AI:zf-dispatcher] ARBITRATION REQUEST
-    REQUEST: arbitration:<task_id>:<full_head_sha>
+    REQUEST: arbitration:<task_id>:<full_head_sha>:<attempt>
     HEAD: <full_head_sha>
 
 and the arbiter's answer, of which only the FIRST line is read:
@@ -374,7 +374,9 @@ def build_arbitration_request(
     prev = state_of(task_meta)
     if prev.get("status") == STATUS_REQUESTED:
         return None
-    attempts = _coerce_int(prev.get("attempts"))
+    # Floor at 0: a negative or corrupt counter must not mint a request
+    # keyed on a nonsense attempt.
+    attempts = max(0, _coerce_int(prev.get("attempts")))
     if attempts >= max_arbitrations:
         return None
     head = str(head_sha or "").strip().lower()
@@ -635,8 +637,8 @@ def attempt_counts(state: dict[str, Any] | None) -> tuple[int, int]:
     """
     current = state or {}
     return (
-        _coerce_int(current.get("attempts")),
-        _coerce_int(current.get("max_arbitrations")),
+        max(0, _coerce_int(current.get("attempts"))),
+        max(0, _coerce_int(current.get("max_arbitrations"))),
     )
 
 

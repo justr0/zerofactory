@@ -403,6 +403,22 @@ class TestWireFormat:
         assert second["request_key"] != first["request_key"]
         assert build({arb.STATE_KEY: second}, 300, HEAD_3) is None
 
+    @pytest.mark.parametrize("attempts", [-3, "abc", None])
+    def test_a_nonsense_counter_builds_the_first_attempt(self, attempts):
+        """A negative or corrupt counter cannot mint a request keyed on a
+        nonsense attempt: it reads as no attempt yet."""
+        request = arb.build_arbitration_request(
+            {arb.STATE_KEY: {"status": arb.STATUS_VOID, "attempts": attempts}},
+            task_id="t1",
+            arbiter=ARBITER,
+            now=100,
+            head_sha=HEAD,
+            rounds=2,
+            max_arbitrations=2,
+        )
+        assert request["attempts"] == 1
+        assert request["request_key"] == _key("t1")
+
     def test_each_attempt_is_its_own_request_even_on_the_same_head(self):
         """A FIX verdict settles attempt 1; a later cap on the SAME head must
         not let that verdict - or that request comment - stand for attempt 2."""
@@ -1464,6 +1480,37 @@ class TestArbitrationCycle:
         assert "escalating to human review" in meta["blocked_reason"]
         result.post.assert_not_called()
 
+    def test_the_deadline_is_anchored_to_the_posted_comment(self, tmp_path: Path):
+        """A first post is no adoption, and the request window starts when the
+        comment was created (GitHub's clock), not when the dispatcher got
+        around to persisting it; a comment without a timestamp falls back to
+        the dispatcher's clock."""
+        before = int(time.time())
+        for label, created_at in (("dated", before - 900), ("undated", None)):
+            db_path = tmp_path / f"{label}.db"
+            _init_db(db_path)
+            task_id = f"t-arb-anchor-{label}"
+            self._seed_reviewer_at_round_1(db_path, task_id)
+
+            self._run(
+                db_path,
+                [_ROUND_2],
+                conversation=[],
+                post={
+                    "comment_id": "issue_1",
+                    "author": ALLOWED,
+                    "created_at": created_at,
+                    "adopted": False,
+                },
+            )
+
+            state = _meta(db_path, task_id)[arb.STATE_KEY]
+            assert "adopted" not in state
+            if created_at is None:
+                assert state["requested_at"] >= before
+            else:
+                assert state["requested_at"] == created_at
+
     def test_failed_post_leaves_no_live_request_and_a_later_cycle_retries(
         self, tmp_path: Path, caplog
     ):
@@ -2271,34 +2318,54 @@ class TestArbitrationCycle:
             )
             assert not _activities(db_path, task_id, "review_cap_arbitration_void")
 
-    def test_reviewer_approval_closes_the_fix_round(self, tmp_path: Path):
+    @pytest.mark.parametrize("arrival", ["cli", "cli+comment", "pr-state"])
+    def test_reviewer_approval_closes_the_fix_round(self, tmp_path: Path, arrival: str):
         """The reviewer approving the fix commit ends the round exactly like a
         recorded round does, so a later recovery cannot resurrect the verdict
-        as the builder's brief."""
+        as the builder's brief. "cli" is how the reviewer worker signals it
+        (`hermes zerofactory block <id> --reason 'approved'`): the task is
+        already parked when the dispatcher first looks, so the closure must be
+        persisted even when nothing else changed in that poll."""
         db_path = tmp_path / "test.db"
         _init_db(db_path)
         task_id = "t-arb-approved"
+        meta = {
+            "last_reviewed_commit": HEAD,
+            "processed_review_comment_ids": [],
+            "packaged_by": "zf-builder",
+            arb.STATE_KEY: _parked_state(
+                task_id,
+                status=arb.STATUS_FIX_REQUESTED,
+                decision=arb.VERDICT_FIX,
+                decision_body="1. race in refresh()",
+                decision_comment_id="issue_501",
+            ),
+        }
+        comments: list[dict] = []
+        if arrival == "pr-state":
+            assignee, decision = "zf-reviewer", "APPROVED"
+        else:
+            # What `block --reason 'approved'` leaves behind.
+            assignee, decision = "human", ""
+            meta["blocked_reason_type"] = "approved"
+            if arrival == "cli+comment":
+                comments.append(
+                    _std(
+                        777,
+                        "[AI:zf-reviewer] ✅ Approved: LGTM, no blocking findings.",
+                        author="zf-reviewer",
+                    )
+                )
         _seed(
             db_path,
             task_id,
-            {
-                "last_reviewed_commit": HEAD,
-                "processed_review_comment_ids": [],
-                "packaged_by": "zf-builder",
-                arb.STATE_KEY: _parked_state(
-                    task_id,
-                    status=arb.STATUS_FIX_REQUESTED,
-                    decision=arb.VERDICT_FIX,
-                    decision_body="1. race in refresh()",
-                    decision_comment_id="issue_501",
-                ),
-            },
-            assignee="zf-reviewer",
+            meta,
+            assignee=assignee,
             workspace=str(_managed_workspace(db_path.parent, task_id)),
         )
         assert arb.fix_round_brief(_meta(db_path, task_id))  # open until answered
 
-        self._run(db_path, [], review_decision="APPROVED")
+        self._run(db_path, comments, review_decision=decision, cycles=2)
 
         row = _row(db_path, task_id)
         assert (row["status"], row["assignee"]) == ("blocked", "human")
@@ -2315,6 +2382,11 @@ class TestArbitrationCycle:
             if k not in ("review_round", "commit_review_count")
         }
         assert arb.fix_round_brief(recovered) is None
+        # The idempotent park gate still holds: an approval that arrives on an
+        # already-parked task is persisted without re-running the park.
+        assert len(_activities(db_path, task_id, "approved")) == (
+            1 if arrival == "pr-state" else 0
+        )
 
     def test_an_unreadable_thread_neither_consumes_nor_expires(self, tmp_path: Path):
         """Past the deadline with a verdict posted inside the window: a poll
@@ -2348,11 +2420,40 @@ class TestArbitrationCycle:
         _init_db(db_path)
         task_id = "t-arb-echo"
         self._seed_parked_with_request(db_path, task_id)
-        request = _std(1, _request_body(_key(task_id)))
+        state = _meta(db_path, task_id)[arb.STATE_KEY]
+        # The real request body: it carries the paste-ready verdict lines, so
+        # the verdict scan's own pre-filter lets it through and only the
+        # request-prefix rule can skip it.
+        body = arb.format_arbitration_request(
+            task_id=task_id,
+            title="feat: x",
+            head_sha=HEAD,
+            rounds=2,
+            arbiter=ARBITER,
+            attempt=1,
+            max_arbitrations=2,
+        )
+        assert f"REQUEST: {state['request_key']}" in body
+        assert arb.VERDICT_PREFIX in body
+        request = _std(1, body)
+        # The same comment as the conversation fetch returns it: inside the
+        # request window.
+        in_thread = _convo(1, body, created_at=_iso(state["requested_at"]))
         # An earlier attempt's request: another comment id, same shape.
-        earlier = _std(7, _request_body(_key(task_id, HEAD_3, attempt=1)))
+        earlier = _std(
+            7,
+            arb.format_arbitration_request(
+                task_id=task_id,
+                title="feat: x",
+                head_sha=HEAD_3,
+                rounds=2,
+                arbiter=ARBITER,
+                attempt=1,
+                max_arbitrations=2,
+            ),
+        )
 
-        self._run(db_path, [request, earlier])
+        self._run(db_path, [request, earlier], conversation=[in_thread])
 
         self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
         assert not _activities(db_path, task_id, "review_cap_arbitration_ignored")

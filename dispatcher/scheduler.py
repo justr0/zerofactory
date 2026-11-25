@@ -2126,9 +2126,9 @@ def _poll_pr_and_route_review(
             )
         ):
             if (
-                bool(task_meta.get("review_cap_reached"))
-                and row["status"] == "blocked"
-                and (row["assignee"] or "") == "human"
+                _cap_arb.is_review_cap_park(
+                    task_meta, status=row["status"], assignee=row["assignee"]
+                )
                 and not new_pr_comments
             ):
                 return False
@@ -2402,7 +2402,7 @@ def _poll_pr_and_route_review(
             task_meta.pop("reviewer_orphan_recovered", None)
             # The reviewer answered the fix commit - approved or not, the
             # arbitration verdict is no longer an open builder brief.
-            _cap_arb.close_fix_round(task_meta, now)
+            fix_round_closed = _cap_arb.close_fix_round(task_meta, now)
 
             # Check if Auto-Merge is enabled for this task
             board_dict = {}
@@ -2511,8 +2511,11 @@ def _poll_pr_and_route_review(
                 # approved-for-human-merge gate. Re-running the park side effects
                 # every cycle stamped one `approved` activity row per pass (450x
                 # on zf-hdz-4dc03cee) and re-ran worker/worktree teardown every
-                # 30s. Only newly-arrived comments are worth persisting here.
-                if new_pr_comments:
+                # 30s. Only newly-arrived comments - or a fix round the
+                # reviewer's approval has just closed - are worth persisting
+                # here: dropping that closure would keep a consumed FIX verdict
+                # live as the builder's brief.
+                if new_pr_comments or fix_round_closed:
                     cursor.execute(
                         "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
                         (json.dumps(task_meta), now, task_id),

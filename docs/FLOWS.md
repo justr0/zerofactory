@@ -209,8 +209,8 @@ flowchart TD
 ### Step 1 — Dependency unblock
 `task_links` DAG: any `blocked` task whose parents are **all** `done` becomes `todo`
 (activity `unblock`). A review-cap park (`review_cap_reached`, arbitrated or plain) is the
-exception: it waits on an arbitration verdict, the request timeout or an operator, never on its
-parents, so the sweep leaves it `blocked`.
+exception: it waits on an arbitration verdict, the request timeout, a merged or closed PR or an
+operator, never on its parents, so the sweep leaves it `blocked`.
 
 ### Step 2 — Reap, then claim
 - **Reap** first (see §4). Then select claim candidates:
