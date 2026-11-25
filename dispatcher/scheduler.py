@@ -2116,7 +2116,7 @@ def _package_and_open_pr(
             capture_output=True,
             text=True,
             timeout=180,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=_disp.git_subprocess_env(),
         )
         if push_res.returncode != 0:
             push_err = (push_res.stderr or "").strip()
@@ -2132,6 +2132,7 @@ def _package_and_open_pr(
                         cwd=workspace_path,
                         capture_output=True,
                         text=True,
+                        timeout=15,
                     )
                     origin_url = (rem_proc.stdout or "").strip()
                     if origin_url.startswith("https://github.com/"):
@@ -2144,19 +2145,27 @@ def _package_and_open_pr(
                             task_id,
                             ssh_url,
                         )
-                        push_ssh = subprocess.run(
-                            ["git", "push", "-u", ssh_url, f"task/{task_id}"],
-                            cwd=workspace_path,
-                            capture_output=True,
-                            text=True,
-                            timeout=180,
-                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                        ssh_push_cmd = ["git", "push", "-u", ssh_url, f"task/{task_id}"]
+                        ssh_push_env = _disp.git_subprocess_env()
+                        _run_git = getattr(fcntl, "run_git", None)  # Windows port: tree-kill timeout
+                        push_ssh = (
+                            _run_git(ssh_push_cmd, cwd=workspace_path, timeout=180, env=ssh_push_env)
+                            if _run_git is not None
+                            else subprocess.run(
+                                ssh_push_cmd,
+                                cwd=workspace_path,
+                                capture_output=True,
+                                text=True,
+                                timeout=180,
+                                env=ssh_push_env,
+                            )
                         )
                         if push_ssh.returncode == 0:
                             subprocess.run(
                                 ["git", "remote", "set-url", "origin", ssh_url],
                                 cwd=workspace_path,
                                 capture_output=True,
+                                timeout=15,
                             )
                             try:
                                 r_alias = (
@@ -2181,6 +2190,7 @@ def _package_and_open_pr(
                                         ["git", "remote", "set-url", "origin", ssh_url],
                                         cwd=str(repo_path),
                                         capture_output=True,
+                                        timeout=15,
                                     )
                             except Exception as _sync_e:
                                 _log.debug(

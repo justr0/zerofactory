@@ -14,6 +14,12 @@ POSIX hosts never take the Windows branches: every call site gates on
   of ``start_new_session=True``.
 - ``resolve_hermes_bin``: HERMES_BIN env, PATH, then the active venv's
   ``hermes.exe`` (the POSIX ``~/.local/bin/hermes`` default never exists).
+- ``git_env``: unattended git environment. Git for Windows' system config
+  defaults ``credential.helper`` to ``helper-selector`` (an interactive
+  "choose a helper" prompt); inside the daemon it never returns and keeps the
+  captured pipes open, so ``subprocess.run(timeout=)`` blocks forever.
+- ``run_git``: git with a *hard* timeout — tree-kills the whole process tree
+  at the deadline so ``communicate()`` cannot wedge on orphaned grandchildren.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -140,3 +147,79 @@ def resolve_hermes_bin() -> str:
     if local.exists():
         return str(local)
     return "hermes"
+
+
+def git_env(base: dict | None = None) -> dict:
+    """Return an environment that makes git safe to run unattended on Windows.
+
+    - ``GIT_TERMINAL_PROMPT=0`` / ``GCM_INTERACTIVE=never``: no terminal or
+      credential-manager UI prompts.
+    - ``GIT_CONFIG_*`` entries behave like ``-c`` on the command line, so they
+      win over every config file. An empty ``credential.helper`` resets the
+      helper list (dropping the bundled Git's ``helper-selector``), and GitHub
+      auth is routed through the already-authenticated ``gh`` CLI, which Zero
+      Factory requires anyway.
+    - ``GIT_SSH_COMMAND`` with ``BatchMode=yes``: the HTTPS->SSH push fallback
+      fails instead of asking for a key passphrase (agent-provided keys still
+      work).
+    """
+    env = dict(os.environ if base is None else base)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "never"
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    extra = (
+        ("credential.helper", ""),  # empty value resets the helper list
+        ("credential.interactive", "never"),
+        ("credential.https://github.com.helper", "!gh auth git-credential"),
+    )
+    index = int(env.get("GIT_CONFIG_COUNT", "0") or 0)
+    for key, value in extra:
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+        index += 1
+    env["GIT_CONFIG_COUNT"] = str(index)
+    return env
+
+
+def run_git(
+    args: list[str],
+    cwd: str | None = None,
+    timeout: float = 60,
+    env: dict | None = None,
+    text: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run git with a timeout that is actually bounded on Windows.
+
+    ``subprocess.run(timeout=)`` kills only its direct child and then drains
+    the captured pipes; a grandchild that inherited those handles (for example
+    a credential prompt waiting for a human) keeps them open, so the drain
+    never returns and the caller's "timeout" hangs forever. A watchdog
+    tree-kills the whole process tree at the deadline instead: every handle
+    closes, ``communicate()`` returns, and ``TimeoutExpired`` is raised.
+    """
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=text,
+        creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
+    )
+    fired = threading.Event()
+
+    def _watchdog() -> None:
+        fired.set()
+        kill_tree(proc.pid)
+
+    timer = threading.Timer(timeout, _watchdog)
+    timer.daemon = True
+    timer.start()
+    try:
+        out, err = proc.communicate()
+    finally:
+        timer.cancel()
+    if fired.is_set():
+        raise subprocess.TimeoutExpired(args, timeout, output=out, stderr=err)
+    return subprocess.CompletedProcess(args, proc.returncode, out, err)

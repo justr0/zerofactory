@@ -22,6 +22,7 @@ from .config import (
     _log,
     normalize_assignee,
 )
+from .git_ops import git_subprocess_env
 from .state_machine import transition_task
 from paths import resolve_local_git_checkout
 
@@ -754,7 +755,7 @@ def _delete_remote_branch(task_id: str, repo_path: Path) -> None:
             cwd=str(repo_path),
             capture_output=True,
             timeout=_REMOTE_BRANCH_DELETE_TIMEOUT,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=git_subprocess_env(),
         )
     except subprocess.TimeoutExpired:
         _log.warning(

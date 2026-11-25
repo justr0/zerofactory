@@ -10,6 +10,27 @@ from pathlib import Path
 
 from .config import _d, _log
 
+try:  # Windows port ships zf_wincompat at the package root; POSIX has no such module
+    from .. import zf_wincompat as _wincompat  # type: ignore
+except ImportError:
+    try:
+        import zf_wincompat as _wincompat  # type: ignore
+    except ImportError:
+        _wincompat = None  # type: ignore[assignment]
+
+
+def git_subprocess_env() -> dict:
+    """Environment for unattended git calls: never prompt for credentials.
+
+    On Windows the bundled Git for Windows defaults ``credential.helper`` to
+    the interactive ``helper-selector``; a daemon-side prompt never returns and
+    wedges the dispatch cycle (see ``zf_wincompat.git_env``). POSIX keeps the
+    plain no-terminal-prompt behaviour.
+    """
+    if _wincompat is not None and hasattr(_wincompat, "git_env"):
+        return _wincompat.git_env()
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
 
 def get_default_branch(repo_path: Path) -> str:
     """Determine default branch (e.g. main or master) for a git repository."""
@@ -54,7 +75,7 @@ def sync_repo_main(repo_path: Path, default_branch: str | None = None) -> str:
             capture_output=True,
             text=True,
             timeout=10,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=git_subprocess_env(),
         )
     except Exception as e:
         _log.warning(

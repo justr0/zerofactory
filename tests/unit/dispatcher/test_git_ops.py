@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -521,3 +522,37 @@ def test_pull_and_merge_main_non_ff(tmp_path: Path):
     assert "Successfully merged" in msg
     assert (worktree_dir / "main.txt").exists()
     assert (worktree_dir / "task.txt").exists()
+
+
+def test_sync_repo_main_fetch_uses_non_prompting_credential_env(tmp_path: Path):
+    """The daemon-side fetch must never be able to block on a credential prompt.
+
+    Windows' bundled Git defaults credential.helper to the interactive
+    helper-selector; GIT_TERMINAL_PROMPT=0 alone does not stop it. The env must
+    reset the helper list (Windows port) and disable credential-manager UI.
+    """
+    from dispatcher import git_ops as go
+
+    (tmp_path / ".git").mkdir()
+    calls: list[tuple[list[str], dict]] = []
+
+    def rec(cmd, *args, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="", stderr=""
+        )
+
+    with patch("dispatcher.git_ops.subprocess.run", new=rec):
+        go.sync_repo_main(tmp_path, default_branch="main")
+
+    fetch_calls = [kw for cmd, kw in calls if cmd[:2] == ["git", "fetch"]]
+    assert fetch_calls, "no fetch recorded"
+    env = fetch_calls[0]["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    if sys.platform == "win32" and getattr(go._wincompat, "git_env", None):
+        pairs = [
+            (env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"])
+            for i in range(int(env["GIT_CONFIG_COUNT"]))
+        ]
+        assert ("credential.helper", "") in pairs
+        assert env["GCM_INTERACTIVE"] == "never"
