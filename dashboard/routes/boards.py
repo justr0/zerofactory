@@ -123,6 +123,18 @@ def _get_cron_helpers():
     )
 
 
+def _sync_board_openwiki_workspace(slug: str) -> None:
+    """Reconcile the board-managed OpenWiki workspace after board changes."""
+    try:
+        try:
+            from ..openwiki_service import sync_board_openwiki_workspace
+        except (ImportError, ValueError):
+            from openwiki_service import sync_board_openwiki_workspace  # type: ignore
+        sync_board_openwiki_workspace(slug)
+    except Exception as e:
+        _log.debug("Failed to sync OpenWiki workspace for board %s: %s", slug, e)
+
+
 @router.get("/boards")
 def list_boards():
     """List all Kanban boards with their linked repositories."""
@@ -291,14 +303,7 @@ def create_board(req: BoardCreate):
                     e,
                 )
 
-    try:
-        try:
-            from ..openwiki_service import sync_board_openwiki_workspace
-        except (ImportError, ValueError):
-            from openwiki_service import sync_board_openwiki_workspace  # type: ignore
-        sync_board_openwiki_workspace(slug)
-    except Exception as e:
-        _log.debug("Failed to sync OpenWiki workspace for board %s: %s", slug, e)
+    _sync_board_openwiki_workspace(slug)
 
     if not os.environ.get("ZEROFACTORY_SKIP_CRON_SYNC"):
         ensure_cron, *_ = _get_cron_helpers()
@@ -611,14 +616,7 @@ def update_board(slug: str, req: BoardUpdate):
             board_data["target_branch"] = "main"
             board_data["additional_reviewer_usernames"] = []
 
-    try:
-        try:
-            from ..openwiki_service import sync_board_openwiki_workspace
-        except (ImportError, ValueError):
-            from openwiki_service import sync_board_openwiki_workspace  # type: ignore
-        sync_board_openwiki_workspace(slug)
-    except Exception as e:
-        _log.debug("Failed to sync OpenWiki workspace for board %s: %s", slug, e)
+    _sync_board_openwiki_workspace(slug)
 
     if not os.environ.get("ZEROFACTORY_SKIP_CRON_SYNC"):
         ensure_cron, *_ = _get_cron_helpers()
@@ -771,6 +769,7 @@ def delete_board_repository(slug: str, repo_alias: str):
                 detail=f"Repository '{repo_alias}' not found on board '{slug}'",
             )
         conn.commit()
+        _sync_board_openwiki_workspace(slug)
         return {"ok": True, "repo_alias": repo_alias}
 
 
@@ -816,6 +815,8 @@ def delete_board(slug: str):
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Board '{slug}' not found")
         conn.commit()
+
+    _sync_board_openwiki_workspace(slug)
 
     if not os.environ.get("ZEROFACTORY_SKIP_CRON_SYNC"):
         ensure_cron, prune_cron, *_ = _get_cron_helpers()

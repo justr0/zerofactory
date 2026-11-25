@@ -278,12 +278,11 @@ def sync_board_openwiki_workspace(
     import tempfile
 
     linked_repos = get_board_linked_repos(board_slug, db_path=db_path)
-    if not linked_repos:
-        return {"status": "skipped", "reason": "No local repositories resolved"}
-
     openwiki_dir = get_openwiki_home_dir()
-    openwiki_dir.mkdir(parents=True, exist_ok=True)
     registry_file = openwiki_dir / WIKI_WORKSPACES_FILE
+
+    if not linked_repos and not registry_file.exists():
+        return {"status": "removed", "board_slug": board_slug, "member_wikis": []}
 
     registry: dict[str, Any] = {
         "version": 1,
@@ -337,13 +336,15 @@ def sync_board_openwiki_workspace(
         )
         root_to_wiki_id[r_str] = wiki_id
 
-    member_wiki_ids = [
-        root_to_wiki_id[str(lr["path"])]
-        for lr in linked_repos
-        if str(lr["path"]) in root_to_wiki_id
-    ]
+    member_wiki_ids = list(
+        dict.fromkeys(
+            root_to_wiki_id[str(lr["path"])]
+            for lr in linked_repos
+            if str(lr["path"]) in root_to_wiki_id
+        )
+    )
 
-    # 2. Update or create workspace for board_slug
+    # 2. Reconcile the board workspace membership
     ws_id = f"{_slugify(board_slug, 'workspace')[:63]}-{hashlib.sha256(board_slug.encode()).hexdigest()}"
     target_ws = None
     for ws in existing_workspaces:
@@ -351,10 +352,16 @@ def sync_board_openwiki_workspace(
             target_ws = ws
             break
 
-    if target_ws:
-        merged_ids = list(dict.fromkeys(target_ws.get("wikis", []) + member_wiki_ids))
+    target_workspace_ids = {ws_id}
+    if target_ws and target_ws.get("id"):
+        target_workspace_ids.add(target_ws["id"])
+
+    if not linked_repos:
+        if target_ws:
+            existing_workspaces.remove(target_ws)
+    elif target_ws:
         target_ws["id"] = ws_id
-        target_ws["wikis"] = merged_ids
+        target_ws["wikis"] = member_wiki_ids
         target_ws["name"] = board_slug
     else:
         existing_workspaces.append(
@@ -365,7 +372,30 @@ def sync_board_openwiki_workspace(
             }
         )
 
-    # 3. Update active selections
+    # Remove or re-home active selections that pointed at removed board members.
+    active_after_reconcile = []
+    for act in existing_active:
+        if (
+            act.get("workspace") in target_workspace_ids
+            and act.get("wiki") not in member_wiki_ids
+        ):
+            replacement = next(
+                (
+                    ws
+                    for ws in existing_workspaces
+                    if ws.get("id") not in target_workspace_ids
+                    and act.get("wiki") in ws.get("wikis", [])
+                ),
+                None,
+            )
+            if replacement:
+                act["workspace"] = replacement["id"]
+            else:
+                continue
+        active_after_reconcile.append(act)
+    existing_active[:] = active_after_reconcile
+
+    # 3. Update active selections for the board's current members.
     for wid in member_wiki_ids:
         found = False
         for act in existing_active:
@@ -378,6 +408,7 @@ def sync_board_openwiki_workspace(
 
     # 4. Atomic write
     try:
+        openwiki_dir.mkdir(parents=True, exist_ok=True)
         temp_fd, temp_path = tempfile.mkstemp(
             dir=str(openwiki_dir), prefix="workspaces_", suffix=".tmp"
         )
@@ -387,7 +418,7 @@ def sync_board_openwiki_workspace(
             os.fsync(f.fileno())
         os.replace(temp_path, str(registry_file))
         return {
-            "status": "synced",
+            "status": "synced" if linked_repos else "removed",
             "workspace_id": ws_id,
             "board_slug": board_slug,
             "member_wikis": member_wiki_ids,
