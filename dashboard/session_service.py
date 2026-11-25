@@ -604,20 +604,10 @@ def _load_task_board_map() -> tuple[
                 task_map[tid.lower()] = task_info
                 if bslug:
                     board_slugs.add(bslug)
-                meta_raw = row[4]
-                if meta_raw:
-                    try:
-                        mdict = (
-                            json.loads(meta_raw)
-                            if isinstance(meta_raw, str)
-                            else meta_raw
-                        )
-                        if isinstance(mdict, dict):
-                            msid = mdict.get("session_id")
-                            if msid:
-                                session_to_task[str(msid)] = task_info
-                    except Exception:
-                        pass
+                mdict = _coerce_task_metadata(row[4])
+                msid = mdict.get("session_id")
+                if msid:
+                    session_to_task[str(msid)] = task_info
     except Exception as e:
         _log.debug("Error querying tasks for session-board mapping: %s", e)
     return task_map, session_to_task, board_slugs

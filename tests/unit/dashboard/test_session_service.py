@@ -109,9 +109,59 @@ def test_log_tail_missing_file(hermes_home: Path, no_sessions):
     assert _call_progress("t-missing")["log_tail"] == ""
 
 
-def test_session_telemetry_coerces_task_metadata(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("metadata", "expected_session_id"),
+    [
+        ({"session_id": "dict-session"}, "dict-session"),
+        ('{"session_id":"json-session"}', "json-session"),
+        ("{", None),
+        ("[]", None),
+        ("null", None),
+        ('"scalar"', None),
+        ("42", None),
+        ("true", None),
+    ],
+)
+def test_session_telemetry_coerces_task_metadata(
+    hermes_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata,
+    expected_session_id: str | None,
+):
     monkeypatch.setattr(session_service, "AGENT_ROLES", [])
-    for metadata in ({"session_id": "active"}, '{"session_id":"active"}', "{", "[]"):
-        task = {"id": "metadata-coercion", "status": "done", "metadata": metadata}
-        progress = session_service.resolve_task_session_progress(task, backfill=False)
-        assert bool(progress["session_id"]) == ("session_id" in str(metadata))
+    task = {"id": "metadata-coercion", "status": "done", "metadata": metadata}
+
+    progress = session_service.resolve_task_session_progress(task, backfill=False)
+
+    assert progress["session_id"] == expected_session_id
+
+
+def test_running_telemetry_uses_metadata_start_or_task_timestamp(
+    hermes_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(session_service, "AGENT_ROLES", [])
+    monkeypatch.setattr(session_service.time, "time", lambda: 1000)
+    metadata_task = {
+        "id": "metadata-start-time",
+        "status": "running",
+        "metadata": {"started_at": 975},
+        "updated_at": 700,
+        "created_at": 600,
+    }
+    empty_metadata_task = {
+        "id": "task-start-time",
+        "status": "running",
+        "metadata": {},
+        "updated_at": 900,
+        "created_at": 800,
+    }
+
+    metadata_progress = session_service.resolve_task_session_progress(
+        metadata_task, backfill=False
+    )
+    fallback_progress = session_service.resolve_task_session_progress(
+        empty_metadata_task, backfill=False
+    )
+
+    assert metadata_progress["running_seconds"] == 25
+    assert fallback_progress["running_seconds"] == 100
