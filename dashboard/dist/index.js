@@ -2471,7 +2471,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory import-gh-issue --sync",
-							desc: "Batch import open issues requested for AI investigation"
+							desc: "Batch import open issues labeled zerofactory, ai-investigate, or ai-triage; --label narrows the sync"
 						}
 					]
 				},
@@ -4321,7 +4321,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			const form = cronEditForms[job.id] || {};
 			const isScanner = job.id.startsWith("zero-factory-improvement-scanner-") || job.category === "scanner";
 			const isOpenWiki = job.id.startsWith("zero-factory-openwiki-update-") || job.category === "openwiki";
-			const boardSlug = isScanner ? job.id.slice("zero-factory-improvement-scanner-".length) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
+			const boardSlug = isScanner ? job.id.slice(33) : isOpenWiki ? job.id.replace("zero-factory-openwiki-update-", "") : null;
 			const isRunning = runningCronId === job.id;
 			return React.createElement("div", {
 				key: job.id,

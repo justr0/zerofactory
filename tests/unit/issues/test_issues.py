@@ -263,6 +263,51 @@ class TestGitHubParserAndClient:
         assert issues[0].repo_or_project == "my-org/my-repo"
 
     @patch("subprocess.run")
+    def test_fetch_investigation_issues_default_labels_deduplicates(self, mock_run):
+        def payload(number, *labels):
+            return {
+                "number": number,
+                "title": f"Issue {number}",
+                "labels": [{"name": label} for label in labels],
+            }
+
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps([payload(10, "zerofactory", "ai-investigate")]),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        payload(10, "zerofactory", "ai-investigate"),
+                        payload(11, "ai-investigate"),
+                    ]
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps([payload(12, "ai-triage")]),
+                stderr="",
+            ),
+        ]
+
+        issues = GitHubIssueClient(
+            default_repo="my-org/my-repo"
+        ).fetch_investigation_issues()
+
+        assert [issue.id for issue in issues] == ["10", "11", "12"]
+        assert [
+            call.args[0][call.args[0].index("--label") + 1]
+            for call in mock_run.call_args_list
+        ] == ["zerofactory", "ai-investigate", "ai-triage"]
+
+    @patch("subprocess.run")
     def test_fetch_issue_fallback_number_and_url(self, mock_run):
         payload = {"title": "  [BUG] Missing response fields  "}
         mock_run.return_value = subprocess.CompletedProcess(
@@ -703,6 +748,64 @@ class TestCliImportGhIssue:
         cmd_runner(args)
         out2 = capsys.readouterr().out
         assert "[Duplicate Skipped]" in out2
+
+    @pytest.mark.parametrize("selected_label", [None, "custom-request"])
+    def test_cli_issue_sync_honors_explicit_label(
+        self, selected_label, tmp_path, monkeypatch, capsys
+    ):
+        import argparse
+        import __init__ as plugin_main
+
+        monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zerofactory.db"))
+        fake_ctx = MagicMock()
+        fake_ctx.register_cli_command = MagicMock()
+        plugin_main.register(fake_ctx)
+        cmd_runner = fake_ctx.register_cli_command.call_args[1]["handler_fn"]
+
+        issue = ExternalIssue(
+            source="github",
+            id="12",
+            key="#12",
+            title="Investigation request",
+            labels=[selected_label or "ai-investigate"],
+            repo_or_project="my-org/my-repo",
+        )
+        client = MagicMock()
+        client.fetch_investigation_issues.return_value = [issue]
+        import_result = {
+            "duplicate": False,
+            "issue_key": "#12",
+            "issue_type": "bug",
+            "id": "task-12",
+            "title": issue.title,
+        }
+        args = argparse.Namespace(
+            action="import-gh-issue",
+            issue=None,
+            repo="my-org/my-repo",
+            board=None,
+            status="triage",
+            priority=None,
+            assignee="human",
+            label=selected_label,
+            force=False,
+            sync=True,
+            type=None,
+            actor="test-user",
+        )
+
+        with (
+            patch.object(plugin_main, "GitHubIssueClient", return_value=client),
+            patch.object(
+                plugin_main, "import_external_issue", return_value=import_result
+            ),
+        ):
+            cmd_runner(args)
+
+        client.fetch_investigation_issues.assert_called_once_with(
+            repo="my-org/my-repo", label=selected_label, state="open"
+        )
+        assert "Sync complete: 1 imported" in capsys.readouterr().out
 
 
 class TestSetupGhIssuesScript:

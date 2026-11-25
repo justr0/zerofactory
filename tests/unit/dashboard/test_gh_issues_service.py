@@ -126,15 +126,18 @@ def test_sync_and_import_gh_issues_endpoints(
         url="https://github.com/testowner/testrepo/issues/42",
         author="alice",
         state="open",
-        labels=["bug", "zerofactory"],
+        labels=["bug", "ai-investigate"],
         repo_or_project="testowner/testrepo",
     )
 
     class MockClient:
+        fetch_calls = []
+
         def __init__(self, default_repo=None):
             self.default_repo = default_repo
 
         def fetch_investigation_issues(self, repo, label, state="open"):
+            self.fetch_calls.append((repo, label, state))
             return [mock_issue]
 
         def fetch_issue(self, issue_ref, repo=None):
@@ -145,14 +148,15 @@ def test_sync_and_import_gh_issues_endpoints(
     monkeypatch.setattr(issues.github, "GitHubIssueClient", MockClient)
 
     # 1. Sync endpoint
-    sync_res = sync_board_gh_issues_endpoint(slug, label="zerofactory")
+    sync_res = sync_board_gh_issues_endpoint(slug)
+    assert MockClient.fetch_calls[-1][1] is None
     assert sync_res["ok"] is True
     assert sync_res["imported_count"] == 1
     assert sync_res["duplicate_count"] == 0
     assert len(sync_res["imported"]) == 1
 
     # Syncing again should detect duplicate
-    sync_res2 = sync_board_gh_issues_endpoint(slug, label="zerofactory")
+    sync_res2 = sync_board_gh_issues_endpoint(slug)
     assert sync_res2["ok"] is True
     assert sync_res2["imported_count"] == 0
     assert sync_res2["duplicate_count"] == 1
