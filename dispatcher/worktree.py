@@ -1097,6 +1097,7 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
             # Bare "bash" on PATH is often the WSL launcher (System32\bash.exe),
             # which cannot see /c/... paths; prefer Git for Windows' bash.
             import shutil as _shutil
+
             _git = _shutil.which("git")
             if _git:
                 _cand = Path(_git).parent.parent / "bin" / "bash.exe"
