@@ -254,8 +254,22 @@ except ImportError:
         ZEROFACTORY_ISSUES_URL = f"https://github.com/{ZEROFACTORY_REPO}/issues"
 
 
+def _is_one_off_cli_invocation() -> bool:
+    """True when this process is a one-shot ``hermes zerofactory <command>`` run.
+
+    Every plugin CLI command returns and exits (``dispatch`` runs a single
+    cycle itself). A background dispatcher started in such a process dies with
+    it, taking a private worker registry and leaving any worker it spawned
+    without a dispatcher that holds a handle for it.
+    """
+    return any(arg == "zerofactory" for arg in sys.argv[1:5])
+
+
 def _should_auto_start_dispatcher() -> bool:
-    """Return True only when zerofactory.db exists and auto_start_dispatcher is enabled."""
+    """Return True only in a long-lived process when zerofactory.db exists and
+    auto_start_dispatcher is enabled."""
+    if _is_one_off_cli_invocation():
+        return False
     if os.environ.get("ZEROFACTORY_SKIP_DISPATCHER") or os.environ.get(
         "ZEROFACTORY_DISABLE_DISPATCHER"
     ):

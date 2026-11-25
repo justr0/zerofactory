@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import re
 import signal
 import sqlite3
 import stat
@@ -99,10 +100,19 @@ def is_pid_alive(pid: int | None) -> bool:
     return True
 
 
-def process_matches_identity(pid: int, task_id: str) -> bool:
-    """Check whether a live process still belongs to the given worker task."""
-    if not isinstance(pid, int) or pid <= 0 or not task_id:
-        return False
+_PROCFS_ABSENT = object()
+# Optional ".exit" suffix: POSIX wrappers carry the exit file, the Windows
+# wrapper the bare prefix. The boundary rejects neighbouring IDs (…01 vs …012)
+# and sibling artifacts such as "worker_<id>.log".
+_WORKER_ID_BOUNDARY = r"(?:\.exit)?(?![A-Za-z0-9_-]|\.[A-Za-z])"
+
+
+def _read_worker_cmdline(pid: int):
+    """Best-effort command line of ``pid``.
+
+    Returns the decoded command line, ``None`` when it cannot be read, or
+    ``_PROCFS_ABSENT`` on POSIX hosts that have no procfs at all.
+    """
     try:
         if IS_WINDOWS:
             result = subprocess.run(
@@ -119,29 +129,63 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
                 check=False,
             )
             if result.returncode != 0:
-                return False
-            cmd_data = result.stdout
-        else:
-            procfs_path = Path("/proc")
-            try:
-                procfs_mode = procfs_path.stat().st_mode
-            except FileNotFoundError:
-                # Keep best-effort behavior only when procfs is confirmed absent.
-                return True
-            except OSError:
-                # An inaccessible procfs does not establish that it is absent.
-                return False
-            if not stat.S_ISDIR(procfs_mode):
-                return False
-            cmdline_path = Path(f"/proc/{pid}/cmdline")
-            cmd_data = cmdline_path.read_bytes()
-            if not cmd_data:
-                return False
-            return f"worker_{task_id}.exit".encode() in cmd_data
-        return f"worker_{task_id}.exit" in cmd_data
+                return None
+            return result.stdout
+        procfs_path = Path("/proc")
+        try:
+            procfs_mode = procfs_path.stat().st_mode
+        except FileNotFoundError:
+            # Keep best-effort behavior only when procfs is confirmed absent.
+            return _PROCFS_ABSENT
+        except OSError:
+            # An inaccessible procfs does not establish that it is absent.
+            return None
+        if not stat.S_ISDIR(procfs_mode):
+            return None
+        cmd_data = Path(f"/proc/{pid}/cmdline").read_bytes()
+        if not cmd_data:
+            return None
+        return cmd_data.replace(b"\x00", b" ").decode("utf-8", errors="replace")
     except Exception:
         # Fail closed if procfs exists but this PID's command line is unavailable.
+        return None
+
+
+def _process_identity(pid: int, task_id: str, *, strict: bool = True) -> bool | None:
+    """Whether a live PID is this task's worker.
+
+    ``strict`` requires the launch marker (``worker_<id>``); the terminate
+    paths pass ``strict=False`` to keep their historical, looser check that
+    the command line mentions the task id at all.
+
+    ``True`` / ``False`` are definite; ``None`` means the command line could
+    not be read, which is missing evidence about a *live* PID rather than
+    evidence of a mismatch. The Windows wrapper is launched with the exit-file
+    prefix ``worker_<id>`` (no ``.exit``), so matching only ``worker_<id>.exit``
+    never identified a Windows worker: terminate always skipped the signal and
+    every registry-miss reap read the live worker as crashed.
+    """
+    if not isinstance(pid, int) or pid <= 0 or not task_id:
         return False
+    cmdline = _read_worker_cmdline(pid)
+    if cmdline is _PROCFS_ABSENT:
+        return True
+    if cmdline is None:
+        return None if IS_WINDOWS else False
+    if IS_WINDOWS and not cmdline.strip():
+        return None
+    if not strict:
+        return task_id in cmdline
+    if IS_WINDOWS:
+        return bool(
+            re.search("worker_" + re.escape(task_id) + _WORKER_ID_BOUNDARY, cmdline)
+        )
+    return f"worker_{task_id}.exit" in cmdline
+
+
+def process_matches_identity(pid: int, task_id: str) -> bool:
+    """Check whether a live process still belongs to the given worker task."""
+    return _process_identity(pid, task_id) is not False
 
 
 def get_process_exit_code(
@@ -304,14 +348,8 @@ def terminate_worker_process(
     the worker-loss churn. Mismatched PIDs are skipped and logged instead.
     """
     if pid and is_pid_alive(pid):
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = (
-                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
-                )
-        except (OSError, ValueError):
-            cmdline = ""
-        if task_id and task_id not in cmdline:
+        if task_id and _process_identity(pid, task_id, strict=False) is False:
+            cmdline = _read_worker_cmdline(pid) or ""
             _log.warning(
                 "terminate_worker_process: PID %s no longer matches task %s "
                 "(cmdline: %.120s); skipping signal to avoid killing an "
@@ -331,14 +369,7 @@ def terminate_task_worker(task_id: str, pid: int | None) -> None:
     """Safely terminate any active worker process group for a task and clean up artifacts."""
     _active_workers.pop(task_id, None)
     if pid and is_pid_alive(pid):
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = (
-                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
-                )
-        except (OSError, ValueError):
-            cmdline = ""
-        if task_id not in cmdline:
+        if _process_identity(pid, task_id, strict=False) is False:
             _log.warning(
                 "terminate_task_worker: PID %s no longer matches task %s; skipping signal (stale/recycled PID)",
                 pid,

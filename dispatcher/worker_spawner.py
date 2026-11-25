@@ -295,7 +295,7 @@ def spawn_agent_worker(
             int(task_meta.get("review_round", task_meta.get("commit_review_count", 0)))
             + 1
         )
-        max_review_rounds = int(os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "2"))
+        max_review_rounds = int(os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "4"))
         spec_text = str(task_meta.get("specification") or description or "")
         skip_untested = bool(task_meta.get("skip_untested_check"))
         pre_digested_git = _d().digest_reviewer_git_context(

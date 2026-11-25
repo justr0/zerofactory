@@ -960,6 +960,50 @@ def move_task(task_id: str, req: TaskMove):
         # close tasks terminally; any open PR/remote branch is archived via
         # 'close_pr' so GitHub matches the board.
         wants_packaging = is_agent_actor and not is_orchestrator_actor
+        # A worker from an earlier stage of this task (never terminated, or still
+        # finishing after a re-route) must not pull the task back: a builder's
+        # late "done" report or a reviewer's late "block" call is stale once the
+        # task has been handed to the other profile.
+        stale_stage = None
+        is_stage_report = (req.status == "done" and wants_packaging) or (
+            req.status == "blocked" and req.actor == "zf-reviewer"
+        )
+        if is_stage_report and req.actor in ("zf-builder", "zf-reviewer"):
+            assignee_row = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            curr_assignee = (
+                assignee_row["assignee"]
+                if assignee_row and "assignee" in assignee_row.keys()
+                else None
+            )
+            if (
+                curr_assignee in ("zf-builder", "zf-reviewer")
+                and curr_assignee != req.actor
+                and prev_status in ("todo", "running")
+            ):
+                stale_stage = curr_assignee
+        if stale_stage:
+            stale_reason = (
+                f"task now belongs to {stale_stage}; a late {req.status} report from "
+                f"{req.actor} belongs to an earlier stage"
+            )
+            log_step_state(
+                "move", task_id, "stale_stage_report_ignored", stale_reason, logger=_log
+            )
+            log_step_end("move", move_t0, task_id, "skipped", stale_reason, logger=_log)
+            log_activity(
+                conn, task_id, req.actor or "user", "move_rejected", stale_reason
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "id": task_id,
+                "status": prev_status,
+                "prev_status": prev_status,
+                "ignored": True,
+                "reason": f"Report ignored: {stale_reason}",
+            }
 
         # A completion report from a stale/zombie worker must never clobber a
         # parked state: 'done' is strictly terminal and 'blocked' is a

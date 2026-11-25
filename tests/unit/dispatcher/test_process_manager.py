@@ -5,7 +5,7 @@ import os
 import signal
 import sqlite3
 import subprocess
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 from dispatcher.config import _active_workers
 from dispatcher.process_manager import (
@@ -13,12 +13,14 @@ from dispatcher.process_manager import (
     build_shell_wrapper,
     cleanup_process_artifacts,
     get_exit_file_path,
+    _process_identity,
     get_process_exit_code,
     is_pid_alive,
     process_matches_identity,
     stop_task_worker,
     terminate_process_group,
     terminate_task_worker,
+    terminate_worker_process,
 )
 
 
@@ -37,11 +39,33 @@ def test_is_pid_alive():
     assert is_pid_alive(9999999) is False
 
 
+def _procfs_host():
+    """Pin a POSIX host with procfs so procfs-mocking tests are host-independent."""
+    return (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
+        patch(
+            "dispatcher.process_manager.Path.stat",
+            return_value=MagicMock(st_mode=0o040755),
+        ),
+    )
+
+
+def _windows_cmdline(stdout, returncode=0):
+    return (
+        patch("dispatcher.process_manager.IS_WINDOWS", True),
+        patch(
+            "dispatcher.process_manager.subprocess.run",
+            return_value=MagicMock(returncode=returncode, stdout=stdout),
+        ),
+    )
+
+
 def test_process_matches_identity_requires_task_specific_marker():
     """A generic Hermes command is not enough to validate a persisted PID."""
+    posix, procfs = _procfs_host()
     with (
-        patch("dispatcher.process_manager.IS_WINDOWS", False),
-        patch("pathlib.Path.exists", return_value=True),
+        posix,
+        procfs,
         patch(
             "pathlib.Path.read_bytes",
             return_value=b"hermes -p zf-builder chat unrelated worker",
@@ -53,9 +77,10 @@ def test_process_matches_identity_requires_task_specific_marker():
 def test_process_matches_identity_accepts_matching_worker_or_scanner():
     """The wrapper's task-specific exit-file argument identifies its worker."""
     for task_id in ("task-123", "scanner_board-a"):
+        posix, procfs = _procfs_host()
         with (
-            patch("dispatcher.process_manager.IS_WINDOWS", False),
-            patch("pathlib.Path.exists", return_value=True),
+            posix,
+            procfs,
             patch(
                 "pathlib.Path.read_bytes",
                 return_value=f"hermes -q prompt worker_{task_id}.exit".encode(),
@@ -66,12 +91,77 @@ def test_process_matches_identity_accepts_matching_worker_or_scanner():
 
 def test_process_matches_identity_reads_windows_command_line():
     """Use the Windows process command line query and require the same marker."""
-    result = MagicMock(returncode=0, stdout="python worker_scanner_board-a.exit")
-    with (
-        patch("dispatcher.process_manager.IS_WINDOWS", True),
-        patch("dispatcher.process_manager.subprocess.run", return_value=result),
-    ):
+    win, run = _windows_cmdline("python worker_scanner_board-a.exit")
+    with win, run:
         assert process_matches_identity(1234, "scanner_board-a") is True
+
+
+def test_process_matches_identity_accepts_windows_wrapper_prefix():
+    """The Windows wrapper is launched with the bare exit-file prefix, not the file."""
+    win, run = _windows_cmdline(
+        '"C:\\py\\python.exe" C:\\zf\\_worker_wrapper.py '
+        '"C:\\hermes\\logs\\worker_zf-jae-035201b6" C:\\bin\\hermes.exe -p zf-reviewer'
+    )
+    with win, run:
+        assert process_matches_identity(42152, "zf-jae-035201b6") is True
+
+
+def test_process_matches_identity_rejects_windows_neighbors():
+    """A neighbouring task ID, a sibling artifact and an unrelated command are not the worker."""
+    for cmdline in (
+        "python C:\\hermes\\logs\\worker_zf-jae-035201b60 C:\\bin\\hermes.exe",
+        "python tail -f C:\\hermes\\logs\\worker_zf-jae-035201b6.log",
+        "C:\\bin\\hermes.exe -p zf-reviewer --cli chat -q Task",
+    ):
+        win, run = _windows_cmdline(cmdline)
+        with win, run:
+            assert process_matches_identity(42152, "zf-jae-035201b6") is False
+
+
+def test_windows_unreadable_cmdline_is_unknown_not_mismatch():
+    """On Windows an unreadable command line is missing evidence, not a mismatch.
+
+    Treating it as a mismatch let a reap run by a dispatcher without a registry
+    handle read a live worker as crashed and respawn/queue it as lost.
+    """
+    for result in (MagicMock(returncode=1, stdout=""), MagicMock(returncode=0, stdout="  \n")):
+        with (
+            patch("dispatcher.process_manager.IS_WINDOWS", True),
+            patch("dispatcher.process_manager.subprocess.run", return_value=result),
+        ):
+            assert _process_identity(42152, "zf-jae-035201b6") is None
+            assert process_matches_identity(42152, "zf-jae-035201b6") is True
+
+
+def test_terminate_worker_process_signals_identified_windows_worker():
+    """A Windows worker whose command line names the task is signalled (was always skipped)."""
+    win, run = _windows_cmdline(
+        "python C:\\zf\\_worker_wrapper.py C:\\logs\\worker_task-1 C:\\bin\\hermes.exe"
+    )
+    with (
+        win,
+        run,
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+    ):
+        terminate_worker_process(None, 42152, task_id="task-1")
+    mock_term.assert_called_once_with(None, 42152)
+
+
+def test_terminate_skips_recycled_windows_pid():
+    """A live PID whose command line belongs to something else is never signalled."""
+    win, run = _windows_cmdline("C:\\Windows\\System32\\notepad.exe")
+    with (
+        win,
+        run,
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+        patch("dispatcher.process_manager.cleanup_process_artifacts") as mock_cleanup,
+    ):
+        terminate_worker_process(None, 42152, task_id="task-1")
+        terminate_task_worker("task-1", 42152)
+    mock_term.assert_not_called()
+    mock_cleanup.assert_called_once_with("task-1")
 
 
 def test_terminate_process_group_with_dead_group():
@@ -151,10 +241,12 @@ def test_build_shell_wrapper():
 
 def test_process_matches_identity_rejects_generic_hermes_process():
     """A generic Hermes command is not evidence that a persisted PID is ours."""
+    posix, procfs = _procfs_host()
     with (
-        patch("dispatcher.process_manager.Path.exists", return_value=True),
+        posix,
+        procfs,
         patch(
-            "dispatcher.process_manager.Path.read_bytes",
+            "pathlib.Path.read_bytes",
             return_value=b"/usr/bin/hermes\0-p\0zf-orchestrator\0",
         ),
     ):
@@ -167,34 +259,37 @@ def test_process_matches_identity_accepts_wrapped_scanner():
         b"sh\0-c\0trap ...\0zf-runner\0/home/test/.hermes/logs/"
         b"worker_scanner_board-a.exit\0/usr/bin/hermes\0"
     )
-    with (
-        patch("dispatcher.process_manager.Path.exists", return_value=True),
-        patch("dispatcher.process_manager.Path.read_bytes", return_value=cmdline),
-    ):
+    posix, procfs = _procfs_host()
+    with posix, procfs, patch("pathlib.Path.read_bytes", return_value=cmdline):
         assert process_matches_identity(1234, "scanner_board-a") is True
 
 
 def test_process_matches_identity_preserves_non_proc_fallback():
     """Platforms with confirmed-absent procfs retain best-effort acceptance."""
-    with patch("dispatcher.process_manager.Path.stat", side_effect=FileNotFoundError):
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
+        patch("dispatcher.process_manager.Path.stat", side_effect=FileNotFoundError),
+    ):
         assert process_matches_identity(1234, "scanner_board-a") is True
 
 
 def test_process_matches_identity_rejects_inaccessible_procfs():
     """An error checking procfs must not be mistaken for an absent procfs."""
-    with patch("dispatcher.process_manager.Path.stat", side_effect=PermissionError):
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", False),
+        patch("dispatcher.process_manager.Path.stat", side_effect=PermissionError),
+    ):
         assert process_matches_identity(1234, "scanner_board-a") is False
 
 
 def test_process_matches_identity_rejects_unavailable_proc_command_line():
     """Missing, empty, or unreadable per-PID cmdline data fails closed."""
+    posix, procfs = _procfs_host()
     with (
+        posix,
+        procfs,
         patch(
-            "dispatcher.process_manager.Path.stat",
-            return_value=MagicMock(st_mode=0o040755),
-        ),
-        patch(
-            "dispatcher.process_manager.Path.read_bytes",
+            "pathlib.Path.read_bytes",
             side_effect=[FileNotFoundError, b"", PermissionError],
         ),
     ):
@@ -274,14 +369,33 @@ def test_cleanup_process_artifacts(tmp_path):
 
 def test_terminate_task_worker():
     """Verify terminate_task_worker calls process group termination and artifact cleanup."""
+    posix, procfs = _procfs_host()
     with (
+        posix,
+        procfs,
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", mock_open(read_data=b"hermes -q task-xyz")),
+        patch("dispatcher.process_manager.Path.read_bytes", return_value=b"hermes -q task-xyz"),
         patch("dispatcher.process_manager.terminate_process_group") as mock_term,
         patch("dispatcher.process_manager.cleanup_process_artifacts") as mock_cleanup,
     ):
         terminate_task_worker("task-xyz", 9876)
         mock_term.assert_called_once_with(None, 9876)
+        mock_cleanup.assert_called_once_with("task-xyz")
+
+
+def test_terminate_task_worker_skips_pid_for_another_task():
+    """A live PID whose command line names another task is left alone."""
+    posix, procfs = _procfs_host()
+    with (
+        posix,
+        procfs,
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch("dispatcher.process_manager.Path.read_bytes", return_value=b"hermes -q task-abc"),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+        patch("dispatcher.process_manager.cleanup_process_artifacts") as mock_cleanup,
+    ):
+        terminate_task_worker("task-xyz", 9876)
+        mock_term.assert_not_called()
         mock_cleanup.assert_called_once_with("task-xyz")
 
 

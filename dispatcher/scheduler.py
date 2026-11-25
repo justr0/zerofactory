@@ -1456,7 +1456,7 @@ def _poll_pr_and_route_review(
             task_meta["commit_review_count"] = review_round
 
             max_review_rounds = int(
-                os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "2")
+                os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "4")
             )
 
             _disp.stop_task_worker(task_id, cursor)
