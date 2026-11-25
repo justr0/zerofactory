@@ -4,13 +4,28 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from contextlib import contextmanager
+
+import pytest
 
 from dashboard.routes import agents as agents_routes
 
 
+@pytest.mark.parametrize(
+    ("session_count", "null_tool_calls", "active_index", "expected_calls"),
+    [
+        (0, False, None, 0),
+        (3, True, None, 0),
+        (105, False, 104, 600),
+    ],
+)
 def test_agent_telemetry_counts_full_session_history_and_keeps_active_session(
-    tmp_path, monkeypatch
+    api_client,
+    tmp_path,
+    monkeypatch,
+    session_count,
+    null_tool_calls,
+    active_index,
+    expected_calls,
 ):
     profile = "zf-builder"
     state_db = tmp_path / "builder.db"
@@ -23,9 +38,9 @@ def test_agent_telemetry_counts_full_session_history_and_keeps_active_session(
                 message_count INTEGER, tool_call_count INTEGER, cwd TEXT, title TEXT
             )"""
         )
-        for index in range(105):
-            started_at = now - (105 - index) * 10
-            is_active = index == 104
+        for index in range(session_count):
+            started_at = now - (session_count - index) * 10
+            is_active = index == active_index
             conn.execute(
                 "INSERT INTO sessions VALUES (?, 'test-model', ?, ?, ?, NULL, 1, ?, '/ws', ?)",
                 (
@@ -33,35 +48,26 @@ def test_agent_telemetry_counts_full_session_history_and_keeps_active_session(
                     started_at,
                     None if is_active else started_at + 1,
                     now if is_active else started_at,
-                    100 if index < 5 else 1,
+                    None if null_tool_calls else (100 if index < 5 else 1),
                     f"Session {index}",
                 ),
             )
 
     monkeypatch.setattr(agents_routes, "AGENT_ROLES", (profile,))
-    monkeypatch.setattr(agents_routes, "init_db", lambda: None)
     monkeypatch.setattr(
         agents_routes,
         "_resolve_profile_state_db_dyn",
         lambda role: state_db if role == profile else None,
     )
 
-    @contextmanager
-    def empty_kanban_db():
-        conn = sqlite3.connect(":memory:")
-        conn.execute(
-            "CREATE TABLE tasks (id, title, board_slug, assignee, workspace_path, updated_at, status)"
-        )
-        try:
-            yield conn
-        finally:
-            conn.close()
+    response = api_client.get("/api/plugins/zerofactory/agents")
+    assert response.status_code == 200
+    agent = response.json()["agents"][0]
 
-    monkeypatch.setattr(agents_routes, "get_db_conn", empty_kanban_db)
-
-    agent = agents_routes.get_agents_status()["agents"][0]
-
-    assert agent["stats"]["total_sessions"] == 105
-    assert agent["stats"]["total_tool_calls"] == 600
-    assert agent["is_active"] is True
-    assert agent["active_session"]["session_id"] == "session-104"
+    assert agent["stats"]["total_sessions"] == session_count
+    assert agent["stats"]["total_tool_calls"] == expected_calls
+    assert agent["is_active"] is (active_index is not None)
+    if active_index is not None:
+        assert agent["active_session"]["session_id"] == f"session-{active_index}"
+    else:
+        assert agent["active_session"] is None
