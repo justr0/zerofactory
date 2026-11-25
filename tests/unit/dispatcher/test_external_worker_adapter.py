@@ -88,7 +88,7 @@ def test_external_worker_argv_survives_shell_wrapper(tmp_path, monkeypatch):
         "literal-{",
         "--prompt=do work {task_id} now",
     ]
-    assert (tmp_path / "worker.exit").read_text() == "0\n"
+    assert int((tmp_path / "worker.exit").read_text()) == 0
 
 
 def test_external_worker_command_rejects_invalid_args(monkeypatch):
