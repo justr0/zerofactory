@@ -575,6 +575,28 @@ class TestVerdictParser:
             "wrong-author"
         )
 
+    def test_one_wrapping_code_span_on_the_first_line_is_tolerated(self):
+        # The request shows each verdict line as an inline code span and asks
+        # for a verbatim copy, so a literal copy arrives wrapped in backticks.
+        line = arb.verdict_line(ARBITER, "MERGE", _key("t1"), HEAD)
+        for body in (
+            f"`{line}`\n\n1. minor only",
+            f"  `{line}`  \nMerging under my sweep rules.",
+        ):
+            poll = _find([_convo(1, body)])
+            assert poll["rejected"] == [], poll
+            assert poll["decision"]["verdict"] == "MERGE", poll
+            assert poll["decision"]["first_line"] == line, poll
+        # Only the wrapping span is unwrapped; anything else still fails.
+        for body in (
+            f"copy: `{line}`",
+            f"`{line}` ok",
+            f"``{line}``",
+            f"`{line}",
+            f"{line}`",
+        ):
+            assert self._reason(_convo(2, body)) == "not-a-first-line-verdict", body
+
     def test_verdict_for_another_request_or_head_is_rejected(self):
         earlier = _verdict_body("FIX", "t1", key=_key("t1", HEAD_2))
         assert self._reason(_convo(1, earlier)) == "request-mismatch"

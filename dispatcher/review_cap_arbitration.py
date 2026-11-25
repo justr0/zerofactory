@@ -507,6 +507,16 @@ def find_arbitration_verdict(
         if VERDICT_PREFIX not in body.upper():
             continue
         first_line = body.strip().splitlines()[0].strip() if body.strip() else ""
+        # The request comment shows each verdict line as an inline code span and
+        # asks for a verbatim copy, so a literal copy arrives wrapped in
+        # backticks. Unwrap exactly one span around the whole line; anything
+        # else before or after it still fails the first-line match below.
+        if (
+            len(first_line) > 2
+            and first_line.startswith("`")
+            and first_line.endswith("`")
+        ):
+            first_line = first_line[1:-1].strip()
         entry = {"comment_id": comment["comment_id"], "author": comment["author"]}
         match = _VERDICT_LINE_RE.match(first_line)
         if not match:
