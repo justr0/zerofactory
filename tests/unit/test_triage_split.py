@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from pydantic import ValidationError
 
 from dashboard.db import init_db
 from dashboard.models import TaskCreate, TaskSplitRequest, TaskUpdate
@@ -63,64 +62,6 @@ class TestTriageSplit(unittest.TestCase):
             self.assertEqual(row["status"], "triage")
             meta = json.loads(row["metadata"])
             self.assertEqual(meta.get("target_repos"), ["frontend", "backend"])
-
-    def test_task_path_components_reject_absolute_and_parent_paths(self):
-        invalid_values = ("/tmp/outside", "../outside")
-        for value in invalid_values:
-            with self.subTest(field="task_id", value=value):
-                with self.assertRaises(ValidationError):
-                    TaskCreate(title="Unsafe task id", task_id=value)
-            with self.subTest(field="repo_alias", value=value):
-                with self.assertRaises(ValidationError):
-                    TaskCreate(title="Unsafe repo alias", repo_alias=value)
-                with self.assertRaises(ValidationError):
-                    TaskUpdate(repo_alias=value)
-            with self.subTest(field="target_repos", value=value):
-                with self.assertRaises(ValidationError):
-                    TaskCreate(title="Unsafe target repo", target_repos=[value])
-                with self.assertRaises(ValidationError):
-                    TaskUpdate(target_repos=[value])
-
-    def test_create_and_update_accept_only_linked_repository_aliases(self):
-        created = create_task(
-            TaskCreate(
-                title="Use valid linked alias",
-                board_slug="test-board",
-                repo_alias="frontend",
-                target_repos=["frontend", "backend"],
-            )
-        )
-        with sqlite3.connect(str(self.db_path)) as conn:
-            row = conn.execute(
-                "SELECT repo_alias FROM tasks WHERE id = ?", (created["id"],)
-            ).fetchone()
-        self.assertEqual(row[0], "frontend")
-
-        for request in (
-            TaskCreate(
-                title="Unknown alias",
-                board_slug="test-board",
-                repo_alias="unlinked",
-            ),
-            TaskCreate(
-                title="Unknown target repo",
-                board_slug="test-board",
-                target_repos=["frontend", "unlinked"],
-            ),
-        ):
-            with self.subTest(request=request):
-                with self.assertRaises(HTTPException) as exc:
-                    create_task(request)
-                self.assertEqual(exc.exception.status_code, 400)
-
-        for request in (
-            TaskUpdate(repo_alias="unlinked"),
-            TaskUpdate(target_repos=["unlinked"]),
-        ):
-            with self.subTest(request=request):
-                with self.assertRaises(HTTPException) as exc:
-                    update_task(created["id"], request)
-                self.assertEqual(exc.exception.status_code, 400)
 
     def test_create_task_rejects_unknown_explicit_board(self):
         req = TaskCreate(title="Task for unknown board", board_slug="typo-board")

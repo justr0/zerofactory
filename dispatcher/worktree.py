@@ -79,11 +79,11 @@ def _validate_worktree_destination(
 ) -> Path:
     """Resolve a worktree path and require it to remain in its task root."""
     resolved_base = worktree_base.resolve()
-    resolved_task_root = task_root.resolve()
+    expected_task_root = resolved_base / task_root.name
     resolved_path = path.resolve()
-    if not resolved_task_root.is_relative_to(resolved_base) or not (
-        resolved_path.is_relative_to(resolved_task_root)
-    ):
+    if not expected_task_root.is_relative_to(
+        resolved_base
+    ) or not resolved_path.is_relative_to(expected_task_root):
         raise ValueError(
             "resolved worktree destination must remain beneath its task root"
         )
@@ -225,6 +225,11 @@ def resolve_task_repo_path(
                     w_repo = _get_board_repos_dir(board_slug) / alias
                     if w_repo.exists() and (w_repo / ".git").exists():
                         return w_repo
+                if repo_alias:
+                    raise ValueError(
+                        f"repository alias '{repo_alias}' is linked to board "
+                        f"'{board_slug}' but has no usable checkout"
+                    )
         except ValueError:
             raise
         except Exception:

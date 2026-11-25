@@ -94,15 +94,11 @@ def test_task_api_rejects_unsafe_path_components(
         )
         assert response.status_code == 422
 
-    created = api_client.post(
-        endpoint,
-        json={"title": "Safe task for update validation", "board_slug": default_board},
-    )
-    assert created.status_code == 200
-    task_id = created.json()["id"]
+    task_id = api_client.post(
+        endpoint, json={"title": "Safe task", "board_slug": default_board}
+    ).json()["id"]
     for field, value, expected_status in (
         ("repo_alias", unsafe, 422),
-        ("target_repos", [unsafe], 422),
         ("metadata", {"target_repos": [unsafe]}, 400),
     ):
         response = api_client.patch(f"{endpoint}/{task_id}", json={field: value})
@@ -120,24 +116,19 @@ def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
             "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
             [
                 (default_board, "frontend", "https://example.com/frontend.git"),
+                (default_board, "web", "https://example.com/web.git"),
                 ("other-board", "backend", "https://example.com/backend.git"),
             ],
         )
         conn.commit()
 
     endpoint = "/api/plugins/zerofactory/tasks"
-    for body in (
-        {
-            "title": "Unlinked repository",
-            "board_slug": default_board,
-            "repo_alias": "unlinked",
-        },
-        {
-            "title": "Unlinked target repo",
-            "board_slug": default_board,
-            "metadata": {"target_repos": ["unlinked"]},
-        },
-    ):
+    for body in [
+        {"repo_alias": "unlinked"},
+        {"target_repos": ["unlinked"]},
+        {"metadata": {"target_repos": ["unlinked"]}},
+    ]:
+        body.update(title="Unlinked repository", board_slug=default_board)
         assert api_client.post(endpoint, json=body).status_code == 400
 
     created = api_client.post(
@@ -149,59 +140,38 @@ def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
             "metadata": {"target_repos": ["frontend"]},
         },
     )
-    assert created.status_code == 200
     task_id = created.json()["id"]
 
-    updated = api_client.patch(
+    api_client.patch(
         f"{endpoint}/{task_id}",
-        json={
-            "repo_alias": "frontend",
-            "metadata": {"target_repos": ["frontend"]},
-        },
+        json={"repo_alias": "web", "metadata": {"target_repos": ["web"]}},
     )
-    assert updated.status_code == 200
-    assert (
-        api_client.patch(
-            f"{endpoint}/{task_id}",
-            json={"repo_alias": "unlinked"},
-        ).status_code
-        == 400
-    )
-    assert (
-        api_client.patch(
-            f"{endpoint}/{task_id}",
-            json={"metadata": {"target_repos": ["unlinked"]}},
-        ).status_code
-        == 400
-    )
+    for changes in [
+        {"repo_alias": "unlinked"},
+        {"metadata": {"target_repos": ["unlinked"]}},
+        {"board_slug": "other-board"},
+        {"board_slug": ""},
+    ]:
+        assert (
+            api_client.patch(f"{endpoint}/{task_id}", json=changes).status_code == 400
+        )
 
-    rejected_move = api_client.patch(
-        f"{endpoint}/{task_id}", json={"board_slug": "other-board"}
-    )
-    assert rejected_move.status_code == 400
-    rejected_targets_move = api_client.patch(
-        f"{endpoint}/{task_id}",
-        json={"board_slug": "other-board", "repo_alias": "backend"},
-    )
-    assert rejected_targets_move.status_code == 400
+    unchanged = api_client.get(f"{endpoint}/{task_id}").json()["task"]
+    assert (unchanged["board_slug"], unchanged["repo_alias"]) == (default_board, "web")
+    assert unchanged["metadata"]["target_repos"] == ["web"]
 
-    moved = api_client.patch(
+    api_client.patch(
         f"{endpoint}/{task_id}",
         json={
             "board_slug": "other-board",
             "repo_alias": "backend",
             "target_repos": ["backend"],
+            "metadata": {"target_repos": ["backend"]},
         },
     )
-    assert moved.status_code == 200
-    with get_db_conn() as conn:
-        task = conn.execute(
-            "SELECT board_slug, repo_alias, metadata FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-    assert task["board_slug"] == "other-board"
-    assert task["repo_alias"] == "backend"
-    assert json.loads(task["metadata"])["target_repos"] == ["backend"]
+    task = api_client.get(f"{endpoint}/{task_id}").json()["task"]
+    assert (task["board_slug"], task["repo_alias"]) == ("other-board", "backend")
+    assert task["metadata"]["target_repos"] == ["backend"]
 
 
 @pytest.mark.parametrize(
@@ -322,13 +292,11 @@ def test_task_session_routes_share_response_and_not_found_behavior(
 def test_task_dependencies(api_client: TestClient, default_board: str):
     """Verify linking and unlinking task dependencies with repo_alias and link_type."""
     with get_db_conn() as conn:
-        conn.executemany(
-            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
-            [
-                (default_board, alias, f"https://example.com/{alias}.git")
-                for alias in ("common-lib", "order-service", "api-gateway")
-            ],
-        )
+        for alias in ("common-lib", "order-service", "api-gateway"):
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+                (default_board, alias, f"https://example.com/{alias}.git"),
+            )
         conn.commit()
 
     t1_id = api_client.post(

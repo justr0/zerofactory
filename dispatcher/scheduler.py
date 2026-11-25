@@ -48,6 +48,46 @@ from .process_manager import is_pid_alive
 from .state_machine import transition_task
 
 
+def _task_worktree_boundary(
+    board_slug: str | None, task_id: str, repo_path: Path
+) -> tuple[Path, Path]:
+    """Return the canonical worktree base and validated expected task root."""
+    from .worktree import _validate_worktree_component, _validate_worktree_destination
+
+    safe_task_id = _validate_worktree_component(task_id, "task_id")
+    if board_slug:
+        from paths import get_board_worktrees_dir
+
+        worktree_base = get_board_worktrees_dir(board_slug)
+    else:
+        worktree_base = repo_path.parent / f"{repo_path.name}-worktrees"
+    worktree_base = worktree_base.resolve()
+    task_root = worktree_base / safe_task_id
+    task_root = _validate_worktree_destination(task_root, task_root, worktree_base)
+    return worktree_base, task_root
+
+
+def _resolve_task_repo(
+    dispatcher: Any,
+    cursor: sqlite3.Cursor,
+    row: sqlite3.Row,
+    repo_alias: str | None,
+    phase: str,
+) -> tuple[Path | None, bool]:
+    task_id = str(row["id"])
+    tenant = row["tenant"] if "tenant" in row.keys() else None
+    try:
+        return (
+            dispatcher.resolve_task_repo_path(
+                cursor, row["board_slug"], tenant, repo_alias=repo_alias
+            ),
+            False,
+        )
+    except (TypeError, ValueError) as exc:
+        log_step_state(phase, task_id, "failed", f"repository resolution failed: {exc}")
+        return None, True
+
+
 def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
     """Execute one full dispatch cycle."""
     import dispatcher as _disp
@@ -332,12 +372,11 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                         _pre_verify_err,
                                     )
                                 else:
-                                    repo_for_task = _disp.resolve_task_repo_path(
-                                        cursor,
-                                        board_slug,
-                                        tenant,
-                                        repo_alias=repo_alias,
+                                    repo_for_task, failed = _resolve_task_repo(
+                                        _disp, cursor, row, repo_alias, "dispatch"
                                     )
+                                    if failed:
+                                        continue
                                     if repo_for_task and repo_for_task.exists():
                                         merged_ok, conflict_files, merge_err = (
                                             _disp.pull_and_merge_main(
@@ -551,40 +590,51 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                             pass
 
                         if not workspace_path or not Path(workspace_path).exists():
-                            repo_for_task = _disp.resolve_task_repo_path(
-                                cursor, board_slug, tenant, repo_alias=repo_alias
+                            repo_for_task, failed = _resolve_task_repo(
+                                _disp, cursor, row, repo_alias, "package"
                             )
+                            if failed:
+                                continue
                             if repo_for_task:
                                 target_name = repo_alias or repo_for_task.name
-                                if board_slug:
-                                    try:
-                                        from paths import get_board_worktrees_dir  # type: ignore
-                                    except Exception:
-                                        try:
-                                            from ..paths import get_board_worktrees_dir  # type: ignore
-                                        except Exception:
-                                            get_board_worktrees_dir = lambda b: (
-                                                Path.home()
-                                                / ".zerofactory"
-                                                / "workspaces"
-                                                / b
-                                                / "worktrees"
-                                            )  # type: ignore
-                                    task_root = (
-                                        get_board_worktrees_dir(board_slug) / task_id
+                                try:
+                                    from .worktree import (
+                                        _validate_worktree_component,
+                                        _validate_worktree_destination,
                                     )
-                                else:
-                                    task_root = (
-                                        repo_for_task.parent
-                                        / f"{repo_for_task.name}-worktrees"
-                                        / task_id
+
+                                    target_name = _validate_worktree_component(
+                                        target_name, "repo_alias"
                                     )
+                                    worktree_base, task_root = _task_worktree_boundary(
+                                        board_slug, task_id, repo_for_task
+                                    )
+                                except (OSError, TypeError, ValueError) as exc:
+                                    log_step_state(
+                                        "package",
+                                        task_id,
+                                        "failed",
+                                        f"invalid worktree boundary: {exc}",
+                                    )
+                                    continue
 
                                 cand_wt = getattr(
                                     _disp,
                                     "_find_checked_out_worktree",
                                     lambda r, b: None,
                                 )(repo_for_task, f"task/{task_id}")
+                                if cand_wt:
+                                    try:
+                                        cand_wt = _validate_worktree_destination(
+                                            Path(cand_wt), task_root, worktree_base
+                                        )
+                                    except (OSError, ValueError) as exc:
+                                        _log.warning(
+                                            "Ignoring unsafe recovered checkout for task %s: %s",
+                                            task_id,
+                                            exc,
+                                        )
+                                        cand_wt = None
                                 if not cand_wt or not cand_wt.exists():
                                     cand_dirs = [
                                         task_root / target_name,
@@ -602,6 +652,17 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                         except Exception:
                                             pass
                                     for cand in cand_dirs:
+                                        try:
+                                            cand = _validate_worktree_destination(
+                                                cand, task_root, worktree_base
+                                            )
+                                        except (OSError, ValueError) as exc:
+                                            _log.debug(
+                                                "Ignoring unsafe recovered checkout candidate for task %s: %s",
+                                                task_id,
+                                                exc,
+                                            )
+                                            continue
                                         if cand.exists() and (
                                             (cand / ".git").is_file()
                                             or (cand / ".git").is_dir()
@@ -610,6 +671,18 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                             break
 
                                 if cand_wt and cand_wt.exists():
+                                    try:
+                                        cand_wt = _validate_worktree_destination(
+                                            cand_wt, task_root, worktree_base
+                                        )
+                                    except (OSError, ValueError) as exc:
+                                        log_step_state(
+                                            "package",
+                                            task_id,
+                                            "failed",
+                                            f"unsafe recovered worktree: {exc}",
+                                        )
+                                        continue
                                     workspace_path = str(cand_wt)
                                     cursor.execute(
                                         "UPDATE tasks SET workspace_path = ? WHERE id = ?",
@@ -642,9 +715,11 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 pass
 
                         if not repo_path or not repo_path.exists():
-                            repo_path = _disp.resolve_task_repo_path(
-                                cursor, board_slug, tenant, repo_alias=repo_alias
+                            repo_path, failed = _resolve_task_repo(
+                                _disp, cursor, row, repo_alias, "package"
                             )
+                            if failed:
+                                continue
 
                         if not repo_path or not repo_path.exists():
                             log_step_state(

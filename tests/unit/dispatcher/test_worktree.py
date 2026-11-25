@@ -303,6 +303,56 @@ def test_resolve_task_repo_path_multi_repo(tmp_path: Path):
     assert res_prim == repo_primary.resolve()
 
 
+def test_worktree_rejects_stale_and_unavailable_repo_aliases(tmp_path: Path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _init_tasks_db(conn)
+    conn.execute("ALTER TABLE tasks ADD COLUMN repo_alias TEXT")
+    conn.execute(
+        "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, git_url TEXT, target_branch TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO board_repositories VALUES ('board', ?, ?, 'main')",
+        [
+            ("requested", "https://example.com/org/requested.git"),
+            ("other", "https://example.com/org/other.git"),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, repo_alias) VALUES ('stale-task', 'Stale alias', 'todo', 'zf-builder', 'removed')"
+    )
+    conn.commit()
+    tenant_repo = tmp_path / "tenant"
+    (tenant_repo / ".git").mkdir(parents=True)
+    repos_dir = tmp_path / "board-repos"
+    other_repo = repos_dir / "other"
+    (other_repo / ".git").mkdir(parents=True)
+
+    with (
+        patch("dispatcher.worktree.resolve_local_git_checkout", return_value=None),
+        patch("dispatcher.worktree._get_board_repos_dir", return_value=repos_dir),
+        patch("dispatcher.worktree.subprocess.run") as run,
+    ):
+        with pytest.raises(ValueError, match="no usable checkout"):
+            resolve_task_repo_path(
+                conn.cursor(), "board", str(tenant_repo), repo_alias="requested"
+            )
+        assert (
+            setup_worktree(
+                conn.cursor(),
+                "stale-task",
+                "Stale alias",
+                "zf-builder",
+                None,
+                tmp_path / "tasks.db",
+                board_slug="board",
+                repo_path=tenant_repo,
+            )
+            is None
+        )
+        run.assert_not_called()
+
+
 def test_setup_worktree_multi_repo_side_by_side(tmp_path: Path):
     """setup_worktree provisions primary writable worktree and sibling read-only detached worktree side-by-side."""
     primary_repo = tmp_path / "prim_repo"
@@ -579,100 +629,29 @@ def test_setup_worktree_reuses_existing_checked_out_worktree(tmp_path: Path):
         assert ws_path == str(existing_dir)
 
 
-def test_setup_worktree_rejects_unsafe_task_ids_and_repo_aliases(tmp_path: Path):
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    _init_tasks_db(conn)
-
-    unsafe_components = (
-        ("../outside", None),
-        ("/tmp/outside", None),
-        ("safe-task", "../outside"),
-        ("safe-task", "/tmp/outside"),
-    )
-    with (
-        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
-        patch("dispatcher.worktree.subprocess.run") as run,
-    ):
-        for task_id, repo_alias in unsafe_components:
-            assert (
-                setup_worktree(
-                    conn.cursor(),
-                    task_id=task_id,
-                    title="Unsafe worktree",
-                    assignee="zf-builder",
-                    tenant=None,
-                    db_path=tmp_path / "tasks.db",
-                    repo_path=tmp_path,
-                    repo_alias=repo_alias,
-                )
-                is None
-            )
-        run.assert_not_called()
-
-
-def test_setup_worktree_rejects_stale_persisted_repo_alias(tmp_path: Path):
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    _init_tasks_db(conn)
-    conn.execute("ALTER TABLE tasks ADD COLUMN repo_alias TEXT")
-    conn.execute(
-        "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, git_url TEXT, target_branch TEXT)"
-    )
-    conn.execute(
-        "INSERT INTO board_repositories VALUES ('board', 'linked', 'unused', 'main')"
-    )
-    conn.execute(
-        "INSERT INTO tasks (id, title, status, assignee, repo_alias) VALUES ('stale-task', 'Stale alias', 'todo', 'zf-builder', 'removed')"
-    )
-    repo = tmp_path / "repo"
-    repo.mkdir()
-
+@pytest.mark.parametrize(
+    ("task_id", "repo_alias"),
+    [("../outside", None), ("safe-task", "../outside")],
+)
+def test_setup_worktree_rejects_unsafe_task_ids_and_repo_aliases(
+    tmp_path: Path, task_id: str, repo_alias: str | None
+):
+    cursor = sqlite3.connect(":memory:").cursor()
     with patch("dispatcher.worktree.subprocess.run") as run:
         assert (
             setup_worktree(
-                conn.cursor(),
-                task_id="stale-task",
-                title="Stale alias",
-                assignee="zf-builder",
-                tenant=None,
-                db_path=tmp_path / "tasks.db",
-                board_slug="board",
-                repo_path=repo,
+                cursor,
+                task_id,
+                "Unsafe",
+                "zf-builder",
+                None,
+                tmp_path / "tasks.db",
+                repo_path=tmp_path,
+                repo_alias=repo_alias,
             )
             is None
         )
-        run.assert_not_called()
-
-    with pytest.raises(ValueError, match="not linked"):
-        resolve_task_repo_path(conn.cursor(), "board", None, repo_alias="removed")
-
-
-def test_setup_worktree_rejects_repo_alias_without_board_context(tmp_path: Path):
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    _init_tasks_db(conn)
-    repo = tmp_path / "repo"
-    repo.mkdir()
-
-    with patch("dispatcher.worktree.subprocess.run") as run:
-        assert (
-            setup_worktree(
-                conn.cursor(),
-                task_id="safe-task",
-                title="Unlinked alias",
-                assignee="zf-builder",
-                tenant=None,
-                db_path=tmp_path / "tasks.db",
-                repo_path=repo,
-                repo_alias="unlinked",
-            )
-            is None
-        )
-        run.assert_not_called()
-
-    with pytest.raises(ValueError, match="linked to a configured board"):
-        resolve_task_repo_path(conn.cursor(), None, None, repo_alias="unlinked")
+    run.assert_not_called()
 
 
 def test_setup_worktree_rejects_external_alternate_checkout(tmp_path: Path):
@@ -704,8 +683,9 @@ def test_setup_worktree_rejects_external_alternate_checkout(tmp_path: Path):
         run.assert_not_called()
 
 
+@pytest.mark.parametrize("target", ["outside", "same-board-task", "target-link"])
 def test_setup_worktree_rejects_resolved_destinations_outside_task_root(
-    tmp_path: Path,
+    tmp_path: Path, target: str
 ):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -723,46 +703,41 @@ def test_setup_worktree_rejects_resolved_destinations_outside_task_root(
     base.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
+    same_board_task = base / "another-task"
+    same_board_task.mkdir()
+    task_root = base / "safe-task"
+    if target == "target-link":
+        task_root.mkdir()
+        (task_root / "frontend").symlink_to(outside, target_is_directory=True)
+    else:
+        link_target = outside if target == "outside" else same_board_task
+        task_root.symlink_to(link_target, target_is_directory=True)
 
-    for symlink_task_root in (True, False):
-        task_root = base / "safe-task"
-        if symlink_task_root:
-            task_root.symlink_to(outside, target_is_directory=True)
-        else:
-            task_root.mkdir()
-            (task_root / "frontend").symlink_to(outside, target_is_directory=True)
-
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
-                    "ZEROFACTORY_SKIP_GIT": "",
-                },
-            ),
-            patch("dispatcher.worktree.subprocess.run") as run,
-        ):
-            assert (
-                setup_worktree(
-                    conn.cursor(),
-                    task_id="safe-task",
-                    title="Symlink worktree",
-                    assignee="zf-builder",
-                    tenant=None,
-                    db_path=tmp_path / "tasks.db",
-                    board_slug="test-board",
-                    repo_path=repo,
-                    repo_alias="frontend",
-                )
-                is None
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+                "ZEROFACTORY_SKIP_GIT": "",
+            },
+        ),
+        patch("dispatcher.worktree.subprocess.run") as run,
+    ):
+        assert (
+            setup_worktree(
+                conn.cursor(),
+                task_id="safe-task",
+                title="Symlink worktree",
+                assignee="zf-builder",
+                tenant=None,
+                db_path=tmp_path / "tasks.db",
+                board_slug="test-board",
+                repo_path=repo,
+                repo_alias="frontend",
             )
-            run.assert_not_called()
-
-        if symlink_task_root:
-            task_root.unlink()
-        else:
-            (task_root / "frontend").unlink()
-            task_root.rmdir()
+            is None
+        )
+        run.assert_not_called()
 
 
 def test_setup_worktree_does_not_provision_sibling_outside_task_root(

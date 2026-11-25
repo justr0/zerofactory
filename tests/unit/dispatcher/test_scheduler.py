@@ -221,6 +221,88 @@ def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
         assert row["status"] == "running"
 
 
+def test_invalid_repository_task_does_not_prevent_later_dispatch(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        for task_id, alias in (("a-invalid", "removed"), ("b-valid", "linked")):
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, title, description, status, assignee, priority, metadata, skills, "
+                "workspace_kind, workspace_path, branch_name, board_slug, tenant, pr_url, "
+                "updated_at, created_at, repo_alias) "
+                "VALUES (?, 'Work Item', '', 'todo', 'zf-builder', 'P1', '{}', '[]', "
+                "'', ?, '', 'b1', '', '', ?, ?, ?)",
+                (task_id, str(tmp_path), now, now, alias),
+            )
+        conn.commit()
+
+    import dispatcher
+
+    def resolve_repo(_cursor, _board, _tenant, repo_alias=None):
+        if repo_alias == "removed":
+            raise ValueError("repository alias is not linked")
+        return tmp_path
+
+    with (
+        patch.object(
+            dispatcher, "get_dispatcher_lock_path", return_value=tmp_path / "lock"
+        ),
+        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
+        patch.object(
+            dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
+        ),
+        patch.object(dispatcher, "resolve_task_repo_path", side_effect=resolve_repo),
+        patch.object(dispatcher, "pull_and_merge_main", return_value=(True, [], "")),
+        patch.object(dispatcher, "spawn_agent_worker", return_value=(1234, "session")),
+    ):
+        run_dispatch_cycle(db_path)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        states = dict(conn.execute("SELECT id, status FROM tasks"))
+    assert states == {"a-invalid": "todo", "b-valid": "running"}
+
+
+def test_packaging_recovery_rejects_same_board_cross_task_symlink(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    workspace_root = tmp_path / "workspaces"
+    task_root = workspace_root / "b1" / "worktrees" / "recover-task"
+    other_task = workspace_root / "b1" / "worktrees" / "other-task"
+    (other_task / "repo" / ".git").mkdir(parents=True)
+    task_root.symlink_to(other_task, target_is_directory=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('recover-task', 'Recover checkout', '', 'blocked', 'zf-builder', 'P1', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+            (now, now),
+        )
+        conn.commit()
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    import dispatcher
+
+    with (
+        patch.object(
+            dispatcher, "get_dispatcher_lock_path", return_value=tmp_path / "lock"
+        ),
+        patch.dict(os.environ, {"ZEROFACTORY_WORKSPACES_DIR": str(workspace_root)}),
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=repo),
+        patch.object(dispatcher, "_find_checked_out_worktree", return_value=None),
+    ):
+        assert run_dispatch_cycle(db_path)["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        assert conn.execute(
+            "SELECT workspace_path FROM tasks WHERE id = 'recover-task'"
+        ).fetchone()[0] in (None, "")
+
+
 def test_run_dispatch_cycle_reverts_task_when_worker_spawn_fails(tmp_path: Path):
     """A Popen failure must not leave a running task with a pid-less session."""
     db_path = tmp_path / "test.db"
