@@ -555,7 +555,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
           React.createElement(
             "p",
             { className: "text-xs text-slate-100 leading-relaxed m-0 font-normal" },
-            "Tasks that fail build or test gates, hit worker crashes, or hang never get silently stranded. Zero Factory employs a three-tier recovery model combining deterministic zero-token process reaping, autonomous agent diagnosis, and human override gates:"
+            "Tasks that fail build or test gates, have workers interrupted by signals, crash, or hang never get silently stranded. Signal-interrupted workers are logged and retried as worker failures rather than being mistaken for successful packaging. Zero Factory employs a three-tier recovery model combining deterministic zero-token process reaping, autonomous agent diagnosis, and human override gates:"
           ),
           React.createElement(
             "div",
@@ -565,7 +565,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                 title: "1. Deterministic Reaper (0 Tokens)",
                 badge: "Dispatcher Reaper",
                 badgeColor: "bg-emerald-950 border-emerald-500/70 text-emerald-200",
-                desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions are reaped and restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
+                desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. It records caught signal number, task ID, elapsed time, and interrupted turn state; signal exits (even exit 0) use the worker-failure retry budget, not packaging. Dead or orphaned sessions are restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
               },
               {
                 title: "2. Autonomous Recovery Stage (Max 1)",

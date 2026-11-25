@@ -378,7 +378,8 @@ Zero Factory minimizes LLM token consumption across periodic automation with dis
 
 - **Dispatcher Loop & Reaper** (every 30s in background thread, **0 Tokens when Idle**):
   - Runs purely in Python (consuming 0 LLM tokens). Audits running workers, reaps stuck subprocesses, recovers orphaned tasks back to `Todo`, repairs any invalid `(status, assignee)` pairs, and claims queued `Todo` tasks.
-  - Routes 3× failure-exhausted tasks (worker crashes/timeouts, precommit failures, or merge conflicts) into the `recovery` stage (`status="todo"`, `assignee="zf-orchestrator"`, `triage_phase="recovery"`) for one autonomous diagnostic recovery attempt before escalating to `Human` (`blocked`).
+  - Caught worker signals are written to the worker log and activity trail with signal number, task ID, elapsed time, and interrupted turn state. Signal-interrupted workers (including signal handlers that exit 0) retry as worker failures and never enter packaging.
+  - Routes 3× failure-exhausted tasks (worker crashes/timeouts/signals, precommit failures, or merge conflicts) into the `recovery` stage (`status="todo"`, `assignee="zf-orchestrator"`, `triage_phase="recovery"`) for one autonomous diagnostic recovery attempt before escalating to `Human` (`blocked`).
 - **`zero-factory-improvement-scanner-{board_slug}`** (on idle when configured board and global capacity gates permit, **0 Tokens when Busy / Cooldown**):
   - The dispatcher checks scanner settings, global LLM capacity, per-board running/todo limits, active scanner processes, and cooldown before spawning `zf-orchestrator` in the selected repository (`dispatcher/scheduler.py` and `dispatcher/scanner.py`).
   - The scanner is an agent process, not a cron wake-gate script; it audits the repository when spawned and may file an actionable `Todo` task for `zf-builder`.

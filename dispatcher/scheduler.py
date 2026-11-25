@@ -2147,9 +2147,16 @@ def _package_and_open_pr(
                         )
                         ssh_push_cmd = ["git", "push", "-u", ssh_url, f"task/{task_id}"]
                         ssh_push_env = _disp.git_subprocess_env()
-                        _run_git = getattr(fcntl, "run_git", None)  # Windows port: tree-kill timeout
+                        _run_git = getattr(
+                            fcntl, "run_git", None
+                        )  # Windows port: tree-kill timeout
                         push_ssh = (
-                            _run_git(ssh_push_cmd, cwd=workspace_path, timeout=180, env=ssh_push_env)
+                            _run_git(
+                                ssh_push_cmd,
+                                cwd=workspace_path,
+                                timeout=180,
+                                env=ssh_push_env,
+                            )
                             if _run_git is not None
                             else subprocess.run(
                                 ssh_push_cmd,

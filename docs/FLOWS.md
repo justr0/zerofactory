@@ -252,12 +252,12 @@ does not spawn an agent, so the gate costs 0 tokens. The spawned scanner runs as
 flowchart TD
     SP["spawn_agent_worker<br/>hermes -p PROFILE --yolo --cli --accept-hooks chat -q PROMPT"] --> META["write metadata:<br/>worker_pid / session_id / sessions[] ongoing"]
     META --> RUN["agentic session runs<br/>in worktree; logs to worker log"]
-    RUN --> POLL{"reaper: proc.poll()"}
-    POLL -->|"exit 0"| OK{"target status?"}
+    RUN --> POLL{"reaper: proc.poll() + signal marker"}
+    POLL -->|"exit 0, no signal"| OK{"target status?"}
     OK -->|"triage + interview"| TRI["triage + human<br/>awaiting_interview"]
     OK -->|"already blocked/todo/triage"| KEEP["keep status"]
     OK -->|"builder/reviewer finished"| AUTO["running + awaiting_pr = true<br/>-> step 3 packages PR"]
-    POLL -->|"exit != 0"| FAIL["worker_failure_retries++"]
+    POLL -->|"signal marker or exit != 0"| FAIL["record signal/task/elapsed; worker_failure_retries++"]
     FAIL --> FB{"budget left?"}
     FB -->|no| PERM["blocked + permanently_blocked<br/>human gate"]
     FB -->|yes| RETRY["todo — auto-retry on claim"]
@@ -266,7 +266,8 @@ flowchart TD
 ```
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
-  with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`.
+  with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`.
+- The process-group wrapper atomically records caught `SIGHUP`, `SIGINT`, or `SIGTERM` in the worker log and a signal marker. The reaper records `worker_signal_interrupted` with signal number, task ID, elapsed seconds, and turn state; even Hermes' signal-handler exit code 0 is retried as a worker failure, never routed to packaging.
 - Stuck detection: `running > 3600s` (`ZEROFACTORY_TASK_TIMEOUT_SECONDS`) **or**
   `running > 900s && no log activity > 900s` (`DEFAULT_INACTIVITY_TIMEOUT_SECONDS`).
 - Retry budget: `DEFAULT_MAX_WORKER_RETRIES = 3` per task, then `permanently_blocked` (human only).

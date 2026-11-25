@@ -50,6 +50,8 @@ export function ActivitiesView(props) {
             return { label: "Completed", icon: "✅", bg: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" };
           case "worker_failed":
             return { label: "Worker Failed", icon: "❌", bg: "bg-rose-500/15 text-rose-300 border-rose-500/30" };
+          case "worker_signal_interrupted":
+            return { label: "Signal Interrupted", icon: "📡", bg: "bg-orange-500/15 text-orange-300 border-orange-500/30" };
           case "worker_timeout":
             return { label: "Timeout", icon: "⏱️", bg: "bg-red-500/15 text-red-300 border-red-500/30" };
           case "worker_lost":

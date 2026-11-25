@@ -33,15 +33,32 @@ class ProcessState(str, enum.Enum):
 
 
 def build_shell_wrapper(cmd: list[str], exit_prefix: Path | str) -> list[str]:
-    """Wrap command in a POSIX shell invocation that atomically writes integer exit code on exit/signal."""
+    """Wrap command to persist its exit code and any caught termination signal."""
     if IS_WINDOWS:
         wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
         return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
     script = (
-        'prefix="$1"; shift; '
-        'trap "rc=\\$?; printf \\"%d\\n\\" \\"\\$rc\\" > \\"${prefix}.exit.tmp\\" && '
-        'mv \\"${prefix}.exit.tmp\\" \\"${prefix}.exit\\"; exit \\$rc" EXIT INT TERM; '
-        '"$@"'
+        'prefix="$1"; shift; started_at=$(date +%s); '
+        "write_exit() { rc=$?; trap - EXIT; "
+        'printf "%s\\n" "$rc" > "${prefix}.exit.tmp" && '
+        'mv "${prefix}.exit.tmp" "${prefix}.exit"; }; '
+        'write_signal() { signal_number="$1"; signal_name="$2"; kill_name="$3"; '
+        "ended_at=$(date +%s); elapsed_seconds=$((ended_at - started_at)); "
+        "task_id=${prefix##*/}; task_id=${task_id#worker_}; "
+        '[ -z "$child" ] || kill -"$kill_name" "$child" 2>/dev/null || true; '
+        'printf \'{"signal_number":%s,"signal_name":"%s","task_id":"%s",'
+        '"elapsed_seconds":%s,"turn_state":"interrupted"}\\n\' '
+        '"$signal_number" "$signal_name" "$task_id" "$elapsed_seconds" '
+        '> "${prefix}.signal.tmp" && mv "${prefix}.signal.tmp" "${prefix}.signal"; '
+        'printf "ZeroFactory worker interrupted: signal_number=%s signal_name=%s '
+        'task_id=%s elapsed_seconds=%s turn_state=interrupted\\n" '
+        '"$signal_number" "$signal_name" "$task_id" "$elapsed_seconds"; '
+        "trap - HUP INT TERM; exit $((128 + signal_number)); }; "
+        "trap write_exit EXIT; "
+        'trap "write_signal 1 SIGHUP HUP" HUP; '
+        'trap "write_signal 2 SIGINT INT" INT; '
+        'trap "write_signal 15 SIGTERM TERM" TERM; '
+        '"$@" & child=$!; wait "$child"; exit $?'
     )
     return ["sh", "-c", script, "zf-runner", str(exit_prefix)] + cmd
 
@@ -53,10 +70,38 @@ def get_exit_file_path(task_id: str) -> Path:
     return logs_dir / f"worker_{task_id}.exit"
 
 
+def get_signal_file_path(task_id: str) -> Path:
+    """Return the durable signal-interruption marker path for a task worker."""
+    return get_exit_file_path(task_id).with_suffix(".signal")
+
+
+def read_worker_signal(task_id: str) -> dict | None:
+    """Read a validated signal marker written by the process-group wrapper."""
+    try:
+        payload = json.loads(get_signal_file_path(task_id).read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("task_id") != task_id
+            or type(payload.get("signal_number")) is not int
+            or payload["signal_number"] <= 0
+            or type(payload.get("elapsed_seconds")) is not int
+            or payload["elapsed_seconds"] < 0
+        ):
+            return None
+        return payload
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def cleanup_process_artifacts(task_id: str) -> None:
-    """Unlink lingering .exit and .exit.tmp files for task_id."""
+    """Unlink lingering worker exit and signal marker files for task_id."""
     logs_dir = get_hermes_home() / "logs"
-    for name in (f"worker_{task_id}.exit", f"worker_{task_id}.exit.tmp"):
+    for name in (
+        f"worker_{task_id}.exit",
+        f"worker_{task_id}.exit.tmp",
+        f"worker_{task_id}.signal",
+        f"worker_{task_id}.signal.tmp",
+    ):
         p = logs_dir / name
         try:
             if p.exists():
@@ -303,22 +348,21 @@ def terminate_worker_process(
     signaling that PID kills an innocent process — a suspected contributor to
     the worker-loss churn. Mismatched PIDs are skipped and logged instead.
     """
-    if pid and is_pid_alive(pid):
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = (
-                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
-                )
-        except (OSError, ValueError):
-            cmdline = ""
-        if task_id and task_id not in cmdline:
+    if pid is None and proc is not None:
+        pid = proc.pid
+    if pid:
+        if not is_pid_alive(pid):
+            _log.debug(
+                "terminate_worker_process: PID %s is no longer alive; skipping signal",
+                pid,
+            )
+            return
+        if task_id and not process_matches_identity(pid, task_id):
             _log.warning(
-                "terminate_worker_process: PID %s no longer matches task %s "
-                "(cmdline: %.120s); skipping signal to avoid killing an "
-                "unrelated recycled process",
+                "terminate_worker_process: PID %s no longer matches task %s; "
+                "skipping signal to avoid killing an unrelated recycled process",
                 pid,
                 task_id,
-                cmdline,
             )
             return
     try:
@@ -331,14 +375,7 @@ def terminate_task_worker(task_id: str, pid: int | None) -> None:
     """Safely terminate any active worker process group for a task and clean up artifacts."""
     _active_workers.pop(task_id, None)
     if pid and is_pid_alive(pid):
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = (
-                    fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
-                )
-        except (OSError, ValueError):
-            cmdline = ""
-        if task_id not in cmdline:
+        if not process_matches_identity(pid, task_id):
             _log.warning(
                 "terminate_task_worker: PID %s no longer matches task %s; skipping signal (stale/recycled PID)",
                 pid,

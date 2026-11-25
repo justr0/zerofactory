@@ -118,6 +118,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
             assert "zf-runner" in cmd
             assert kwargs.get("start_new_session") is True
             assert env.get("HERMES_PROFILE") == "zf-reviewer"
+            assert env.get("HERMES_KANBAN_TASK") == "zf-mine"
 
 
 def test_spawn_agent_worker_cleans_artifacts():
