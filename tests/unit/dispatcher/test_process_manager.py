@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dispatcher.config import _active_workers
 from dispatcher.process_manager import (
     ProcessState,
@@ -300,6 +302,10 @@ def test_cleanup_process_artifacts(tmp_path):
         assert not (logs_dir / f"worker_{task_id}.exit.tmp").exists()
 
 
+@pytest.mark.skipif(
+    os.name != "nt" and not Path("/proc").is_dir(),
+    reason="live process identity inspection is unavailable",
+)
 def test_terminate_task_worker_stops_real_wrapped_worker_and_cleans_artifacts(
     tmp_path, monkeypatch
 ):
@@ -341,6 +347,10 @@ def test_terminate_task_worker_stops_real_wrapped_worker_and_cleans_artifacts(
             process.wait(timeout=5)
 
 
+@pytest.mark.skipif(
+    os.name != "nt" and not Path("/proc").is_dir(),
+    reason="live process identity inspection is unavailable",
+)
 def test_terminate_task_worker_rejects_unwrapped_live_process(tmp_path, monkeypatch):
     """Task-id argv text alone never authorizes either group or child signaling."""
     task_id = "task-xyz"
