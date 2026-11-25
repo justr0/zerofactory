@@ -69,13 +69,15 @@ async def guard_cross_origin_mutations(request: Request, call_next):
         origin = request.headers.get("origin")
         fetch_site = request.headers.get("sec-fetch-site", "").lower()
         browser_request = origin is not None or "sec-fetch-site" in request.headers
-        request_origin = _origin_parts(f"{request.url.scheme}://{request.url.netloc}")
+        request_host = request.headers.get("host", "")
+        request_origin = _origin_parts(f"{request.url.scheme}://{request_host}")
+        supplied_origin = _origin_parts(origin) if origin is not None else None
         if fetch_site in {"cross-site", "same-site"} or (
             browser_request
             and (
                 request_origin is None
                 or not _is_loopback_hostname(request_origin[1])
-                or (origin is not None and _origin_parts(origin) != request_origin)
+                or (origin is not None and supplied_origin != request_origin)
             )
         ):
             return JSONResponse(

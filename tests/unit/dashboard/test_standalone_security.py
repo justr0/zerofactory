@@ -142,7 +142,7 @@ def test_standalone_blocks_cross_origin_mutation_methods(initialized_db, method,
 
     from dashboard.standalone import app
 
-    response = TestClient(app).request(
+    response = TestClient(app, base_url="http://127.0.0.1:9119").request(
         method,
         f"/api/plugins/zerofactory{path}",
         headers={"Origin": "https://attacker.example"},
@@ -152,7 +152,8 @@ def test_standalone_blocks_cross_origin_mutation_methods(initialized_db, method,
 
 
 @pytest.mark.parametrize(
-    "base_url", ["http://127.0.0.1", "http://[::1]", "http://localhost"]
+    "base_url",
+    ["http://127.0.0.1:9119", "http://[::1]:9119", "http://localhost:9119"],
 )
 def test_standalone_allows_same_origin_dashboard_mutations(
     initialized_db, default_board, base_url
@@ -164,7 +165,7 @@ def test_standalone_allows_same_origin_dashboard_mutations(
     client = TestClient(app, base_url=base_url)
     response = client.post(
         "/api/plugins/zerofactory/tasks",
-        headers={"Origin": base_url},
+        headers={"Origin": base_url, "Sec-Fetch-Site": "same-origin"},
         json={
             "title": "Same-origin dashboard action",
             "description": "Origin validation preserves dashboard actions",
@@ -179,6 +180,30 @@ def test_standalone_allows_same_origin_dashboard_mutations(
     task_id = response.json()["id"]
     task = client.get(f"/api/plugins/zerofactory/tasks/{task_id}")
     assert task.json()["task"]["title"] == "Same-origin dashboard action"
+
+
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:9120", "https://127.0.0.1:9119"])
+def test_standalone_rejects_wrong_port_or_scheme_origin(
+    initialized_db, monkeypatch, origin
+):
+    from fastapi.testclient import TestClient
+
+    import dispatcher
+    from dashboard.standalone import app
+
+    reaped = []
+    monkeypatch.setattr(
+        dispatcher, "reap_stuck_tasks", lambda **kwargs: reaped.append(kwargs)
+    )
+    client = TestClient(app, base_url="http://127.0.0.1:9119")
+
+    response = client.post(
+        "/api/plugins/zerofactory/health/reap-stuck",
+        headers={"Origin": origin},
+    )
+
+    assert response.status_code == 403
+    assert reaped == []
 
 
 def test_standalone_allows_headerless_api_mutations(initialized_db, default_board):

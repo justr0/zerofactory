@@ -64,9 +64,9 @@ flowchart TD
 
 The optional `dashboard.standalone` server binds only to a loopback IP. For
 state-changing browser requests, it rejects cross-site/same-site Fetch Metadata,
-requires any supplied `Origin` to exactly match the request origin, and only trusts
-that comparison when the HTTP Host is `localhost` or a loopback IP (including
-`::1`). Headerless non-browser API clients remain supported; this is a CSRF check,
+validates the HTTP Host as `localhost` or a loopback IP (including `::1`), and
+requires any supplied `Origin` to be valid and match the request scheme, host, and
+port. Headerless non-browser API clients remain supported; this is a CSRF check,
 not authentication, so do not expose the standalone API through a non-loopback
 proxy. GitHub issue synchronization is POST-only so its importer cannot be invoked
 by a cross-origin GET.

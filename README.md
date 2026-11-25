@@ -122,9 +122,10 @@ FastAPI and Uvicorn runtime dependencies). The standalone page is available at `
 and the REST API at `/api/plugins/zerofactory`. Standalone mode only binds to a
 loopback IP address; non-loopback `--host` values are rejected because the API
 does not provide authentication. For state-changing browser requests, standalone
-mode rejects cross-site/same-site Fetch Metadata and rejects any supplied `Origin`
-unless it matches a `localhost` or loopback request origin. Headerless non-browser
-API clients remain supported, so this is a browser CSRF boundary, not authentication.
+mode rejects cross-site/same-site Fetch Metadata, validates the HTTP Host as
+`localhost` or a loopback IP, and requires any supplied `Origin` to be a valid
+origin matching the request scheme, host, and port. Headerless non-browser API
+clients remain supported, so this is a browser CSRF boundary, not authentication.
 GitHub issue sync is POST-only (`/boards/{slug}/sync-gh-issues`); the legacy GET
 form is no longer available.
 
