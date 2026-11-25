@@ -229,6 +229,27 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      remove worktree, clear `blocked_reason` / `blocked_reason_type`, route back to builder on Round 1: `todo` + `assignee=<PR author>` + review-comment
      prompt block. Actionable review feedback from reviewers/humans overrides any prior `approved` status and unparks tasks back to `todo`. When `review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**)
      → escalate: `blocked` + `assignee=human` + `review_cap_reached` (short-circuiting idempotently on subsequent poll cycles until recovered).
+     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **1**; `0` restores the plain human park)
+     the cap also posts exactly one `[AI:zf-dispatcher] ARBITRATION REQUEST` conversation comment on the PR —
+     carrying the request key `arbitration:<task_id>:<full_head_sha>` and the full head SHA — and parks the task
+     (`blocked` + `assignee=human`) for the arbiter profile (`ZEROFACTORY_REVIEW_CAP_ARBITER`, default
+     `zf-gatekeeper`) instead of the human. While parked (request open or settled) the task is excluded from
+     conflict handling, ordinary review-comment routing and auto-merge; only a bound verdict, the request
+     timeout, a merged/closed PR or an operator recovery moves it. A verdict counts only when the **first line**
+     of a PR conversation comment (never an inline review body or review summary) is exactly
+     `[AI:<arbiter>] ARBITRATION VERDICT: <FIX|MERGE|ESCALATE> | REQUEST: <key> | HEAD: <full sha>`, posted by an
+     authorized GitHub account (`ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS`, default the account `gh` is
+     authenticated as plus the repository owner), with `REQUEST` equal to the task's open request key and `HEAD`
+     equal to both the request head and the live PR head; anything else is logged and ignored. **FIX** re-opens
+     one bounded fix round (fresh review budget; the verdict body is the builder's entire brief, earlier findings
+     are deferred), **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
+     leaves it parked for the human. Before a verdict is consumed the dispatcher re-checks the flag and the
+     human-review opt-outs (voiding the request into a plain park), and a reply is applied only inside
+     `requested_at + ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` (default **24**), after which the request
+     expires into the human park. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
+     (default **2**); beyond that the cap parks for a human as before. Tasks already flagged for human review
+     (`permanently_blocked`, `hitl` / `manual-review` tags, HITL-labelled external issues) are never arbitrated,
+     and without the arbiter profile on the host the request is not posted.
    - **`approved` verdict or `reviewDecision == APPROVED` (with no actionable comments)** → `blocked` +
      `assignee=human` ("Reviewer approved; awaiting human merge"). If late non-actionable comments arrive while already parked, they are forwarded to task comments idempotently without re-parking side effects.
 3. **Packaging fallback** (no PR yet, or `done`/`blocked` handoff): deterministic
@@ -561,7 +582,12 @@ runtime → installed deps → simple functions → minimum viable diff) via bun
 | `ZEROFACTORY_SKIP_PRECOMMIT` | unset | gate returns pass without running |
 | `ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS` | `300` | gate hard timeout |
 | `ZEROFACTORY_MAX_PRECOMMIT_RETRIES` | `3` | self-heal retries before blocking |
-| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before human escalation |
+| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before escalation |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `1` | at the review cap, ask an arbiter profile instead of parking for a human (`0`: plain human park) |
+| `ZEROFACTORY_REVIEW_CAP_ARBITER` | `zf-gatekeeper` | arbiter profile (role tag on the verdict comment) |
+| `ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS` | `gh` login + repo owner | comma-separated GitHub accounts whose verdict comment counts |
+| `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` | `2` | arbitrations per task before falling back to the human |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` | `24` | unanswered request expires into the human park |
 | `ZEROFACTORY_MAX_CONFLICT_RETRIES` | `3` | merge-conflict resolution attempts |
 | `ZEROFACTORY_TASK_TIMEOUT_SECONDS` | `3600` | max worker runtime |
 | (inactivity) | `900` | max silence before stuck |

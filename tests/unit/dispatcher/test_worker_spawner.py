@@ -1,5 +1,6 @@
 """Unit tests for dispatcher/worker_spawner.py: agent worker spawning, session isolation, and environment injection."""
 
+import json
 import os
 import sqlite3
 import sys
@@ -298,6 +299,153 @@ def test_spawn_builder_review_comments_goal():
     )
     assert "Your goal as Builder (Fix Review Comments)" in prompt
     assert "Your goal as Builder (Fix Precommit Failures)" not in prompt
+
+
+def _spawn_builder_with_comments(
+    comments: list[tuple[str, str]], task_id: str, metadata: dict | None = None
+) -> str:
+    """Spawn zf-builder against a temp DB holding ``comments`` rows; return the prompt."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "kanban.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE task_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT,
+                author TEXT,
+                body TEXT,
+                created_at INTEGER
+            )
+            """
+        )
+        for n, (author, body) in enumerate(comments, 1):
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, author, body, n),
+            )
+        conn.commit()
+        conn.close()
+
+        import dispatcher
+
+        with (
+            patch.object(
+                dispatcher,
+                "check_unresolved_conflicts_safe",
+                return_value=(True, [], ""),
+            ),
+            patch("subprocess.Popen") as mock_popen,
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}),
+        ):
+            os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+            mock_proc = MagicMock()
+            mock_proc.pid = 42424
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            spawn_agent_worker(
+                task_id=task_id,
+                title="Fix Task",
+                description="desc",
+                priority="P1",
+                assignee="zf-builder",
+                workspace_path=os.getcwd(),
+                branch_name=f"task/{task_id}",
+                metadata=json.dumps(metadata or {}),
+            )
+
+        return mock_popen.call_args[0][0][-1]
+
+
+PRIOR_FINDINGS = [
+    (
+        "zf-reviewer",
+        "[github review] Round 1: rename `refresh()` to `reload()` and split the "
+        "helper module; DEFERRED-FINDING-ONE.",
+    ),
+    (
+        "zf-reviewer",
+        "[github review] Round 2: add a retry wrapper around the network call; "
+        "DEFERRED-FINDING-TWO.",
+    ),
+]
+
+
+def _fix_round_metadata(verdict_body: str) -> dict:
+    from dispatcher import review_cap_arbitration as arb
+
+    return {
+        arb.STATE_KEY: {
+            "status": arb.STATUS_FIX_REQUESTED,
+            "decision": "FIX",
+            "attempts": 1,
+            "decision_body": verdict_body,
+        }
+    }
+
+
+def test_spawn_builder_arbitration_fix_round_prompt_is_the_verdict_only():
+    """A FIX verdict is the builder's whole brief: prior findings it did not
+    repeat are deferred and must not be presented as work to do."""
+    from dispatcher import review_cap_arbitration as arb
+
+    verdict = (
+        "[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: arbitration|HEAD: x\n"
+        "1. Race in `refresh()` when two cycles overlap - repro: run two dispatch "
+    )
+    prompt = _spawn_builder_with_comments(
+        PRIOR_FINDINGS, "zf-arb-fix", _fix_round_metadata(verdict.rstrip() + " cycles.")
+    )
+
+    assert "Your goal as Builder (Arbitration Fix Round)" in prompt
+    assert "ARBITRATION FIX ROUND - THE VERDICT BELOW IS YOUR ENTIRE SCOPE" in prompt
+    # The verdict's own instructions are the brief, verbatim.
+    assert "Race in `refresh()` when two cycles overlap" in prompt
+    # Not the "address EVERY review comment" instruction, and none of the
+    # findings the arbiter left out.
+    assert "PULL REQUEST REVIEW COMMENTS TO ADDRESS" not in prompt
+    assert "address every review comment" not in prompt
+    assert "DEFERRED-FINDING-ONE" not in prompt
+    assert "DEFERRED-FINDING-TWO" not in prompt
+    assert "were DEFERRED by the arbiter" in prompt
+    assert "Your goal as Builder (Fix Review Comments)" not in prompt
+    assert "Your goal as Builder (Fix Precommit Failures)" not in prompt
+
+    # Outside a live fix round (reviewer already answered the fix commit, or
+    # a MERGE/ESCALATE outcome) the ordinary review-comment prompt is untouched.
+    settled = _fix_round_metadata(verdict)
+    settled[arb.STATE_KEY]["status"] = arb.STATUS_MERGE_APPROVED
+    plain = _spawn_builder_with_comments(PRIOR_FINDINGS, "zf-arb-settled", settled)
+    assert "Your goal as Builder (Fix Review Comments)" in plain
+    assert "DEFERRED-FINDING-ONE" in plain
+    assert "Arbitration Fix Round" not in plain
+
+    answered = _fix_round_metadata(verdict)
+    answered["review_round"] = 1
+    re_reviewed = _spawn_builder_with_comments(
+        PRIOR_FINDINGS, "zf-arb-answered", answered
+    )
+    assert "Your goal as Builder (Fix Review Comments)" in re_reviewed
+    assert "Arbitration Fix Round" not in re_reviewed
+
+
+def test_spawn_builder_arbitration_fix_round_keeps_deterministic_gate_failures():
+    """A failing deterministic gate is not a deferred opinion: it stays in the prompt."""
+    verdict = "[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: k | HEAD: x\nFix the lock leak."
+    gate = (
+        "zf-dispatcher",
+        "[github pr] Deterministic precommit failed: ruff E501 in dispatcher/x.py",
+    )
+    prompt = _spawn_builder_with_comments(
+        PRIOR_FINDINGS + [gate], "zf-arb-gate", _fix_round_metadata(verdict)
+    )
+
+    assert "Your goal as Builder (Arbitration Fix Round)" in prompt
+    assert "Precommit failure output" in prompt
+    assert "ruff E501 in dispatcher/x.py" in prompt
+    assert "Fix the lock leak." in prompt
+    assert "DEFERRED-FINDING-ONE" not in prompt
 
 
 def test_spawn_agent_worker_orchestrator_grill_with_docs():
