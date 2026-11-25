@@ -276,15 +276,29 @@ _PYTHON_EXE = re.compile(r"pythonw?(\d+(\.\d+)*)?(\.exe)?")
 _OPTIONS_WITH_VALUE = frozenset({"-p", "--profile", "-X", "-W", "-Q"})
 
 
+def _gateway_subcommand(args: list[str]) -> Optional[str]:
+    """The ``hermes gateway`` action named by ``args`` (the tokens after
+    ``hermes``), or None when ``gateway`` is not the first subcommand."""
+    while args and args[0].startswith("-"):
+        args = args[2:] if args[0] in _OPTIONS_WITH_VALUE else args[1:]
+    if not args or args[0].lower() != "gateway" or {"-h", "--help"} & set(args[1:]):
+        return None
+    return next((arg for arg in args[1:] if not arg.startswith("-")), "run")
+
+
 def _gateway_action() -> Optional[str]:
     """The ``hermes gateway`` action this process runs with (``"run"`` for a gateway
     runtime), or None when this process is not a Hermes gateway.
 
     ``gateway`` must be the first subcommand: a token that merely equals
-    ``"gateway"`` (a prompt, an option value) is not a gateway. Dedicated
-    gateway entrypoints and the interpreter spellings Hermes itself accepts
-    (``python -m hermes_cli.main gateway run``, ``python …/hermes_cli/main.py``)
-    are read the same way.
+    ``"gateway"`` (a prompt, an option value) is not a gateway. Dedicated gateway
+    entrypoints and the interpreter spellings Hermes itself accepts are read the
+    same way, in both of their forms:
+
+    * inside the process (``sys.argv``): ``python -m hermes_cli.main gateway run``
+      and ``python …/hermes_cli/main.py gateway run`` both put the module file in
+      ``sys.argv[0]``, never the interpreter;
+    * as a command line seen from another process, where the interpreter is first.
     """
     argv = sys.argv
     args = argv[1:]
@@ -314,13 +328,11 @@ def _gateway_action() -> Optional[str]:
                 skip_value = True
         else:
             return None
-    elif exe not in ("hermes", "hermes.exe"):
+    elif exe not in ("hermes", "hermes.exe") and not (
+        argv and str(argv[0]).replace("\\", "/").lower().endswith("hermes_cli/main.py")
+    ):
         return None
-    while args and args[0].startswith("-"):
-        args = args[2:] if args[0] in _OPTIONS_WITH_VALUE else args[1:]
-    if not args or args[0].lower() != "gateway" or {"-h", "--help"} & set(args[1:]):
-        return None
-    return next((arg for arg in args[1:] if not arg.startswith("-")), "run")
+    return _gateway_subcommand(args)
 
 
 def _should_auto_start_dispatcher() -> bool:

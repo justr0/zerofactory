@@ -2581,6 +2581,20 @@ def _dispatcher_loop():
             break
 
 
+def _dispatcher_thread_alive() -> bool:
+    """True while a dispatcher thread lives in this process.
+
+    The plugin loaded a second time under another module name brings its own
+    ``_dispatcher_thread``, so the thread table is the only record both copies
+    share. Two loops in one host poll the board twice and split the worker
+    registry between them.
+    """
+    return (_dispatcher_thread is not None and _dispatcher_thread.is_alive()) or any(
+        thread.name == "ZeroFactoryKanbanDispatcher" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+
+
 def start_background_dispatcher() -> bool:
     """Start background dispatcher daemon thread if not already running.
 
@@ -2594,7 +2608,7 @@ def start_background_dispatcher() -> bool:
         return False
     global _dispatcher_thread
     with _dispatcher_lock:
-        if _dispatcher_thread is None or not _dispatcher_thread.is_alive():
+        if not _dispatcher_thread_alive():
             _dispatcher_stop_event.clear()
             _dispatcher_thread = threading.Thread(
                 target=_dispatcher_loop, name="ZeroFactoryKanbanDispatcher", daemon=True
