@@ -9,11 +9,11 @@ tests pin the ownership guarantee that closes that hole.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import threading
 
 import pytest
+from dispatcher import fcntl
 
 
 def _hold_lock(path) -> int:

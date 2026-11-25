@@ -336,16 +336,6 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
     def test_03_merge_conflict_detection_and_builder_reroute(self):
         """PR merge conflict routes task back to zf-builder for resolution
         (conflict state tracked in metadata.conflict_retries, not the title)."""
-        # Create a worktree for reviewer task
-        rev_ws = self.fake_home / "git" / "main_repo-worktrees" / "ws_conf"
-        rev_ws.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "worktree", "add", str(rev_ws), "-b", "task/conf"],
-            cwd=str(self.repo_dir),
-            check=True,
-            capture_output=True,
-        )
-
         pr_url = "https://github.com/example/repo/pull/103"
         t_res = create_task(
             TaskCreate(
@@ -356,11 +346,29 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
             )
         )
         task_id = t_res["id"]
+        repo_alias = get_task(task_id)["task"]["repo_alias"]
+        rev_ws = (
+            self.fake_home
+            / ".zerofactory"
+            / "workspaces"
+            / self.board_slug
+            / "worktrees"
+            / task_id
+            / repo_alias
+        )
+        rev_ws.parent.mkdir(parents=True, exist_ok=True)
+        branch_name = f"task/{task_id}"
+        subprocess.run(
+            ["git", "worktree", "add", str(rev_ws), "-b", branch_name],
+            cwd=str(self.repo_dir),
+            check=True,
+            capture_output=True,
+        )
 
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.execute(
-                "UPDATE tasks SET pr_url = ?, branch_name = 'task/conf', workspace_path = ? WHERE id = ?",
-                (pr_url, str(rev_ws), task_id),
+                "UPDATE tasks SET pr_url = ?, branch_name = ?, workspace_path = ? WHERE id = ?",
+                (pr_url, branch_name, str(rev_ws), task_id),
             )
             conn.commit()
 
