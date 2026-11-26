@@ -10,6 +10,7 @@ tests pin the ownership guarantee that closes that hole.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 
 import pytest
@@ -21,6 +22,95 @@ def _hold_lock(path) -> int:
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o666)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     return fd
+
+
+def _enable_dispatcher_autostart(db_path) -> None:
+    """Create the minimal settings table read by plugin registration."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('auto_start_dispatcher', 'true')"
+        )
+
+
+@pytest.mark.parametrize("profile", ["zf-gatekeeper", "zf-auditor"])
+def test_auxiliary_zf_profiles_are_workers_and_do_not_auto_start(
+    tmp_path, monkeypatch, profile
+):
+    import __init__ as plugin_init
+    from dispatcher.config import is_worker_or_child_process
+
+    db_path = tmp_path / "zerofactory.db"
+    _enable_dispatcher_autostart(db_path)
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
+    for name in (
+        "ZEROFACTORY_SKIP_DISPATCHER",
+        "ZEROFACTORY_DISABLE_DISPATCHER",
+        "ZEROFACTORY_IDLE_SCAN",
+        "HERMES_KANBAN_TASK",
+        "_HERMES_CRON_EXTERNAL_WORKER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    assert is_worker_or_child_process() is True
+    assert plugin_init._should_auto_start_dispatcher() is False
+
+
+def test_default_profile_auto_start_behavior_is_unchanged(tmp_path, monkeypatch):
+    import __init__ as plugin_init
+    from dispatcher.config import is_worker_or_child_process
+
+    db_path = tmp_path / "zerofactory.db"
+    _enable_dispatcher_autostart(db_path)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
+    for name in (
+        "ZEROFACTORY_SKIP_DISPATCHER",
+        "ZEROFACTORY_DISABLE_DISPATCHER",
+        "ZEROFACTORY_IDLE_SCAN",
+        "HERMES_KANBAN_TASK",
+        "_HERMES_CRON_EXTERNAL_WORKER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    assert is_worker_or_child_process() is False
+    assert plugin_init._should_auto_start_dispatcher() is True
+
+
+def test_register_under_gatekeeper_does_not_start_dispatcher(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    import __init__ as plugin_init
+
+    db_path = tmp_path / "zerofactory.db"
+    _enable_dispatcher_autostart(db_path)
+    monkeypatch.setenv("HERMES_PROFILE", "zf-gatekeeper")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
+    for name in (
+        "ZEROFACTORY_SKIP_DISPATCHER",
+        "ZEROFACTORY_DISABLE_DISPATCHER",
+        "ZEROFACTORY_IDLE_SCAN",
+        "HERMES_KANBAN_TASK",
+        "_HERMES_CRON_EXTERNAL_WORKER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    start_mock = MagicMock()
+    init_mock = MagicMock()
+    cron_mock = MagicMock()
+    monkeypatch.setattr(plugin_init, "start_background_dispatcher", start_mock)
+    monkeypatch.setattr(plugin_init, "init_db", init_mock)
+    monkeypatch.setattr(plugin_init, "ensure_builtin_cron_jobs", cron_mock)
+
+    plugin_init.register(MagicMock())
+
+    start_mock.assert_not_called()
+    init_mock.assert_not_called()
+    cron_mock.assert_not_called()
 
 
 @pytest.fixture

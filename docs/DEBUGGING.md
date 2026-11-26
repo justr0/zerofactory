@@ -35,6 +35,11 @@ flowchart TD
 Every dispatcher decision is written down. The kanban DB is `~/.hermes/zerofactory.db`
 (`ZEROFACTORY_DB` overrides):
 
+The default-profile Hermes gateway owns the board dispatcher; auxiliary `zf-*`
+profiles must not start their own copy. To verify ownership, check that the live
+gateway holds `~/.hermes/zerofactory_dispatcher.lock.owner` (the lock file may
+remain on disk after the owner exits, so verify the lock is held).
+
 ```bash
 DB="${ZEROFACTORY_DB:-$HOME/.hermes/zerofactory.db}"
 
