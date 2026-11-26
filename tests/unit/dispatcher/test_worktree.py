@@ -216,9 +216,7 @@ def test_handle_local_merge_conflict_increments_retries_and_routes_to_builder():
     conn.commit()
 
     cur = conn.cursor()
-    _handle_local_merge_conflict(
-        cur, "t1", "Feature 1", "/fake/ws", ["file.py"], now=1001
-    )
+    _handle_local_merge_conflict(cur, "t1", ["file.py"], now=1001)
     conn.commit()
 
     row = conn.execute(
@@ -245,9 +243,7 @@ def test_handle_local_merge_conflict_blocks_when_max_retries_exceeded():
 
     cur = conn.cursor()
     with patch.dict(os.environ, {"ZEROFACTORY_MAX_CONFLICT_RETRIES": "3"}):
-        _handle_local_merge_conflict(
-            cur, "t2", "Feature 2", "/fake/ws", ["file.py"], now=1001
-        )
+        _handle_local_merge_conflict(cur, "t2", ["file.py"], now=1001)
         conn.commit()
 
     row = conn.execute(
@@ -269,9 +265,7 @@ def test_handle_local_merge_conflict_blocks_when_max_retries_exceeded():
     )
     conn.commit()
     with patch.dict(os.environ, {"ZEROFACTORY_MAX_CONFLICT_RETRIES": "3"}):
-        _handle_local_merge_conflict(
-            cur, "t2", "Feature 2", "/fake/ws", ["file.py"], now=1002
-        )
+        _handle_local_merge_conflict(cur, "t2", ["file.py"], now=1002)
         conn.commit()
     row2 = conn.execute(
         "SELECT status, assignee, metadata FROM tasks WHERE id = 't2'"
