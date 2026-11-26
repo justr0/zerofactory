@@ -286,6 +286,144 @@ def test_board_creation_git_slug_fallbacks_playwright(tmp_path, monkeypatch):
         thread.join(timeout=5)
 
 
+def test_task_detail_metadata_formats_and_fallbacks_playwright(tmp_path, monkeypatch):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    if not (REACT_UMD.is_file() and REACT_DOM_UMD.is_file()):
+        pytest.skip("React UMD assets not found in node_modules")
+    if not (DIST_DIR / "index.js").is_file():
+        pytest.skip("dashboard/dist/index.js not built")
+
+    chromium_bin = _find_chromium_executable()
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    db_path = tmp_path / "zf_task_metadata_ui.db"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
+    monkeypatch.setenv("ZEROFACTORY_DISABLE_DISPATCHER", "1")
+
+    import profile_manager
+    from dashboard.db import init_db
+
+    monkeypatch.setattr(
+        profile_manager, "check_gh_auth_status", lambda use_cache=True: True
+    )
+    init_db(force=True)
+
+    task_id = "zf-meta-test"
+    issue_metadata = {
+        "external_issue": {"labels": ["automerge"]},
+        "zf_bug_report": {
+            "title": "Tracked metadata defect",
+            "issue_url": "https://github.com/example/zerofactory/issues/1",
+        },
+    }
+    cases = [
+        ("object metadata", "demo-off", issue_metadata, True, True),
+        ("JSON-string metadata", "demo-off", json.dumps(issue_metadata), True, True),
+        (
+            "manual-review opt-out",
+            "demo-on",
+            {
+                "external_issue": {"labels": ["manual-review"]},
+                "zf_bug_report": issue_metadata["zf_bug_report"],
+            },
+            False,
+            True,
+        ),
+        (
+            "HITL opt-out",
+            "demo-on",
+            {
+                "external_issue": {"labels": ["hitl"]},
+                "zf_bug_report": issue_metadata["zf_bug_report"],
+            },
+            False,
+            True,
+        ),
+        ("malformed JSON metadata", "demo-on", "{not valid JSON", True, False),
+    ]
+
+    now = int(time.time())
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executemany(
+            "INSERT INTO boards (slug, automerge, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            [("demo-off", 0, now, now), ("demo-on", 1, now, now)],
+        )
+        conn.executemany(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) "
+            "VALUES (?, 'main', 'https://example.com/demo.git', ?, ?)",
+            [("demo-off", now, now), ("demo-on", now, now)],
+        )
+        conn.executemany(
+            "INSERT INTO tasks (id, board_slug, repo_alias, title, status, assignee, "
+            "priority, tags, metadata, created_at, updated_at) "
+            "VALUES (?, ?, 'main', ?, 'todo', 'zf-builder', 'P3', '[]', '{}', ?, ?)",
+            [
+                (f"{task_id}-{index}", board_slug, case_name, now, now)
+                for index, (case_name, board_slug, *_rest) in enumerate(cases)
+            ],
+        )
+        conn.commit()
+
+    httpd, thread, port = _start_http_bridge(_build_test_app())
+    try:
+        with sync_api.sync_playwright() as p:
+            launch_kwargs: dict[str, object] = {"headless": True}
+            if chromium_bin:
+                launch_kwargs["executable_path"] = chromium_bin
+            browser = p.chromium.launch(**launch_kwargs)
+            page = browser.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda err: page_errors.append(str(err)))
+            metadata_for_detail = issue_metadata
+
+            def mock_task_detail(route):
+                response = route.fetch()
+                body = response.json()
+                body["task"]["metadata"] = metadata_for_detail
+                route.fulfill(response=response, body=json.dumps(body))
+
+            page.route(f"**/tasks/{task_id}-*", mock_task_detail)
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            for (
+                case_name,
+                _board_slug,
+                metadata,
+                has_badge,
+                has_defect_banner,
+            ) in cases:
+                metadata_for_detail = metadata
+                task_card = page.locator(f'[role="button"][aria-label$="{case_name}"]')
+                task_card.wait_for(timeout=10000)
+                task_card.click()
+                dialog = page.get_by_role("dialog")
+                dialog.wait_for(timeout=10000)
+                badge = dialog.get_by_title("Auto-Merge Active")
+                banner = dialog.get_by_text("Zero Factory Defect Tracked on GitHub")
+                assert badge.count() == int(has_badge), case_name
+                assert banner.count() == int(has_defect_banner), (
+                    case_name,
+                    dialog.inner_text(),
+                )
+                if has_defect_banner:
+                    assert (
+                        dialog.get_by_text(
+                            "Tracked metadata defect", exact=True
+                        ).count()
+                        == 1
+                    ), case_name
+                page.keyboard.press("Escape")
+                dialog.wait_for(state="detached")
+
+            assert page_errors == [], f"Uncaught page errors: {page_errors}"
+            browser.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monkeypatch):
     sync_api = pytest.importorskip("playwright.sync_api")
     if not (REACT_UMD.is_file() and REACT_DOM_UMD.is_file()):
