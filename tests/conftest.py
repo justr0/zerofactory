@@ -53,6 +53,7 @@ def _hermetic_dispatcher_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "ZEROFACTORY_LOCK_PATH", str(tmp_path / "zerofactory_dispatcher.lock")
     )
+    monkeypatch.setenv("OPENWIKI_CONFIG_DIR", str(tmp_path / "openwiki-config"))
 
 
 @pytest.fixture(autouse=True)
