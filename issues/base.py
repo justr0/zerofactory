@@ -30,11 +30,12 @@ _CATEGORY_RULES: list[tuple[str, set[str]]] = [
     ),
 ]
 
-# Default labels indicating a human explicitly requested AI investigation
+# Labels indicating that a human explicitly requested AI investigation.
+AI_REQUEST_LABELS = ("zerofactory", "ai-investigate", "ai-triage")
+
+# Broader aliases retained for callers that use the generic model helper.
 _AI_INVESTIGATION_LABELS = {
-    "zerofactory",
-    "ai-investigate",
-    "ai-triage",
+    *AI_REQUEST_LABELS,
     "ai-review",
     "ai",
 }

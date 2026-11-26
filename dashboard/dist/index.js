@@ -2476,7 +2476,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory import-gh-issue --sync",
-							desc: "Batch import open issues requested for AI investigation"
+							desc: "Batch import open issues labeled zerofactory, ai-investigate, or ai-triage; --label narrows the sync"
 						}
 					]
 				},

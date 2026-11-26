@@ -1072,7 +1072,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
             { cmd: "hermes zerofactory block <task_id> --reason \"<reason>\"", desc: "Mark ticket as blocked with explanation" },
             { cmd: "hermes zerofactory comment <task_id> \"<message>\"", desc: "Post a comment to a ticket" },
             { cmd: "hermes zerofactory import-gh-issue <issue> [--force]", desc: "Import GitHub issue into human-gated Triage task" },
-            { cmd: "hermes zerofactory import-gh-issue --sync", desc: "Batch import open issues requested for AI investigation" }
+            { cmd: "hermes zerofactory import-gh-issue --sync", desc: "Batch import open issues labeled zerofactory, ai-investigate, or ai-triage; --label narrows the sync" }
           ]
         },
         {
