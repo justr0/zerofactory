@@ -104,8 +104,7 @@ export function TaskDetailModal(props) {
               "⚡ Auto-merge"
             );
           }
-          const meta = typeof selectedTask.metadata === "string" ? (() => { try { return JSON.parse(selectedTask.metadata); } catch(e) { return {}; } })() : (selectedTask.metadata || {});
-          const issueLabels = (((meta && meta.external_issue && meta.external_issue.labels) || [])).map(x => String(x).trim().toLowerCase());
+          const issueLabels = (((taskMeta && taskMeta.external_issue && taskMeta.external_issue.labels) || [])).map(x => String(x).trim().toLowerCase());
           if (issueLabels.some(x => x === "hitl" || x === "manual-review")) return null;
           if (issueLabels.some(x => x === "automerge" || x === "yolo")) {
             return React.createElement(
@@ -311,7 +310,6 @@ export function TaskDetailModal(props) {
 
                 // Internal Zero Factory Defect Banner (Local vs GitHub Tracked)
                 (() => {
-                  const taskMeta = typeof selectedTask.metadata === "string" ? (() => { try { return JSON.parse(selectedTask.metadata); } catch(e) { return {}; } })() : (selectedTask.metadata || {});
                   const bugReport = taskMeta && taskMeta.zf_bug_report;
                   if (!bugReport) return null;
 

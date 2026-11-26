@@ -15,7 +15,6 @@ from .config import _d, _log, get_db_path
 
 def digest_reviewer_git_context(
     workspace_path: Path,
-    branch_name: str | None = None,
     max_diff_lines: int = 400,
     max_diff_chars: int = 24000,
     target_branch: str | None = None,
