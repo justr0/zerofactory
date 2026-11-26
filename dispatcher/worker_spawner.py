@@ -30,6 +30,31 @@ except ImportError:  # package-mode import without plugin root on sys.path
     from ..zf_wincompat import detached_popen_kwargs, resolve_hermes_bin  # type: ignore
 
 
+def _task_comments_context(task_id: str, role: str, heading: str) -> str:
+    """Format prior task discussion for triage prompt context."""
+    try:
+        db_path = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
+        if not db_path.exists():
+            return ""
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT author, body, created_at FROM task_comments "
+                "WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+        if not rows:
+            return ""
+        comment_blocks = [
+            f"### Comment #{idx} (by @{row['author']}):\n{row['body']}"
+            for idx, row in enumerate(rows, 1)
+        ]
+        return f"{heading}\n" + "\n\n".join(comment_blocks) + "\n\n"
+    except Exception as exc:
+        _log.debug(f"Could not inspect task_comments for {role} prompt: %s", exc)
+        return ""
+
+
 def build_worker_command(
     prompt: str, task_id: str, workspace: str, role: str
 ) -> list[str] | None:
@@ -269,7 +294,6 @@ def spawn_agent_worker(
         skip_untested = bool(task_meta.get("skip_untested_check"))
         pre_digested_git = _d().digest_reviewer_git_context(
             Path(workdir),
-            branch_name,
             target_branch=target_branch or None,
             spec_text=spec_text,
             skip_untested_check=skip_untested,
@@ -326,32 +350,11 @@ def spawn_agent_worker(
             f"7. Provide a clear review summary.\n"
         )
     elif assignee == "zf-orchestrator":
-        # Extract task comments and human replies for orchestrator context
-        task_comments_context = ""
-        try:
-            _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
-            if _db.exists():
-                with sqlite3.connect(str(_db)) as _c:
-                    _c.row_factory = sqlite3.Row
-                    _cur = _c.cursor()
-                    _cur.execute(
-                        "SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
-                        (task_id,),
-                    )
-                    _cmt_rows = _cur.fetchall()
-                    if _cmt_rows:
-                        _cmt_blocks = []
-                        for idx, r in enumerate(_cmt_rows, 1):
-                            _cmt_blocks.append(
-                                f"### Comment #{idx} (by @{r['author']}):\n{r['body']}"
-                            )
-                        task_comments_context = (
-                            "### 💬 Previous Discussion & Human Responses:\n"
-                            + "\n\n".join(_cmt_blocks)
-                            + "\n\n"
-                        )
-        except Exception as e:
-            _log.debug("Could not inspect task_comments for orchestrator prompt: %s", e)
+        task_comments_context = _task_comments_context(
+            task_id,
+            "orchestrator",
+            "### 💬 Previous Discussion & Human Responses:",
+        )
 
         openwiki_info = ""
         wiki_dir = Path(workdir) / "openwiki"
@@ -496,31 +499,11 @@ def spawn_agent_worker(
         )
         revision_count = int(task_meta.get("revision_count", 0))
 
-        task_comments_context = ""
-        try:
-            _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
-            if _db.exists():
-                with sqlite3.connect(str(_db)) as _c:
-                    _c.row_factory = sqlite3.Row
-                    _cur = _c.cursor()
-                    _cur.execute(
-                        "SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
-                        (task_id,),
-                    )
-                    _cmt_rows = _cur.fetchall()
-                    if _cmt_rows:
-                        _cmt_blocks = []
-                        for idx, r in enumerate(_cmt_rows, 1):
-                            _cmt_blocks.append(
-                                f"### Comment #{idx} (by @{r['author']}):\n{r['body']}"
-                            )
-                        task_comments_context = (
-                            "### 💬 Previous Discussion & Revision History:\n"
-                            + "\n\n".join(_cmt_blocks)
-                            + "\n\n"
-                        )
-        except Exception as e:
-            _log.debug("Could not inspect task_comments for goldfish prompt: %s", e)
+        task_comments_context = _task_comments_context(
+            task_id,
+            "goldfish",
+            "### 💬 Previous Discussion & Revision History:",
+        )
 
         goal_instructions = (
             f"Your role as Spec Auditor (zf-goldfish):\n"

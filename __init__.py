@@ -194,12 +194,14 @@ except ImportError:
 try:
     from .dispatcher import (
         dispatcher_owned_elsewhere,
+        is_worker_or_child_process,
         run_dispatch_cycle,
         start_background_dispatcher,
     )
 except ImportError:
     from dispatcher import (  # type: ignore
         dispatcher_owned_elsewhere,
+        is_worker_or_child_process,
         run_dispatch_cycle,
         start_background_dispatcher,
     )
@@ -268,6 +270,8 @@ def _should_auto_start_dispatcher() -> bool:
     if os.environ.get("ZEROFACTORY_SKIP_DISPATCHER") or os.environ.get(
         "ZEROFACTORY_DISABLE_DISPATCHER"
     ):
+        return False
+    if is_worker_or_child_process():
         return False
     try:
         import sqlite3
