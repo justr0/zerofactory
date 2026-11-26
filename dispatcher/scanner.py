@@ -5,8 +5,18 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    try:
+        import zf_wincompat as fcntl
+    except ImportError:
+        from .. import zf_wincompat as fcntl  # type: ignore
+else:
+    import fcntl
 
 from paths import get_hermes_home
 from settings import _clamp_int, _parse_bool
@@ -53,25 +63,95 @@ def get_active_scanner_pids() -> dict[str, int]:
     if logs_dir.exists():
         for pf in logs_dir.glob("scanner_*.pid"):
             slug = pf.stem.removeprefix("scanner_")
-            try:
-                pid = int(pf.read_text().strip())
-                if is_pid_alive(pid) and process_matches_identity(
-                    pid, f"scanner_{slug}"
-                ):
-                    active[slug] = pid
-                else:
-                    pf.unlink(missing_ok=True)
-            except Exception:
-                pf.unlink(missing_ok=True)
+            pid = _get_active_pid_from_file(pf, slug)
+            if pid is not None:
+                active[slug] = pid
     for slug, proc in list(_active_scanners.items()):
-        if proc is not None and proc.poll() is None and is_pid_alive(proc.pid):
+        if proc is not None and proc.poll() is None:
             active[slug] = proc.pid
     return active
 
 
+def _get_active_pid_from_file(pid_file: Path, slug: str) -> int | None:
+    """Resolve a persisted PID, retrying when stale cleanup loses a race."""
+    for _ in range(3):
+        pid = _read_scanner_pid_file(pid_file)
+        if pid is None:
+            if _unlink_scanner_pid_file(pid_file, None):
+                return None
+            continue
+        try:
+            if is_pid_alive(pid) and process_matches_identity(pid, f"scanner_{slug}"):
+                return pid
+        except Exception:
+            # Inspection failure is not evidence that the PID is stale.
+            return pid
+        if _unlink_scanner_pid_file(pid_file, pid):
+            return None
+    raise OSError(f"Scanner PID record for board '{slug}' changed during cleanup")
+
+
+@contextmanager
+def _scanner_pid_file_lock(pid_file: Path) -> Iterator[None]:
+    """Serialize scanner PID publication and cleanup across processes."""
+    lock_path = pid_file.parent / "scanner_pids.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_scanner_pid_file(pid_file: Path) -> int | None:
+    """Read a PID while excluding concurrent publication or removal."""
+    try:
+        with _scanner_pid_file_lock(pid_file):
+            return int(pid_file.read_text().strip())
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return None
+
+
+def _write_scanner_pid_file(pid_file: Path, pid: int) -> None:
+    """Publish a PID under the same lock used by conditional cleanup."""
+    with _scanner_pid_file_lock(pid_file):
+        pid_file.write_text(str(pid))
+
+
+def _unlink_scanner_pid_file(pid_file: Path, expected_pid: int | None) -> bool:
+    """Remove only the checked PID record, or a still-invalid record.
+
+    Return False when another valid PID now owns the file.
+    """
+    try:
+        with _scanner_pid_file_lock(pid_file):
+            try:
+                content = pid_file.read_text().strip()
+            except FileNotFoundError:
+                return True
+            except OSError:
+                return False
+            try:
+                current_pid = int(content)
+            except ValueError:
+                if expected_pid is not None:
+                    return False
+                pid_file.unlink(missing_ok=True)
+                return True
+            if current_pid != expected_pid:
+                return False
+            pid_file.unlink(missing_ok=True)
+            return True
+    except OSError:
+        return False
+
+
 def kill_board_scanner(board_slug: str) -> bool:
-    """Terminate any active scanner process for board_slug."""
-    proc = _active_scanners.pop(board_slug, None)
+    """Stop a board scanner, returning False while its process remains live."""
+    proc = _active_scanners.get(board_slug)
     if proc is not None and proc.poll() is None:
         try:
             terminate_process_group(proc, proc.pid)
@@ -79,12 +159,22 @@ def kill_board_scanner(board_slug: str) -> bool:
             pass
     logs_dir = get_hermes_home() / "logs"
     pid_file = logs_dir / f"scanner_{board_slug}.pid"
-    if pid_file.exists():
+    try:
+        pid = _read_scanner_pid_file(pid_file)
+    except OSError as exc:
+        _log.warning(
+            "Unable to confirm scanner PID record for board '%s'; retaining it: %s",
+            board_slug,
+            exc,
+        )
+        return False
+    pid_matched_identity = False
+    if pid is not None:
         try:
-            pid = int(pid_file.read_text().strip())
             if is_pid_alive(pid) and process_matches_identity(
                 pid, f"scanner_{board_slug}"
             ):
+                pid_matched_identity = True
                 try:
                     if IS_WINDOWS:
                         kill_tree(pid)
@@ -101,8 +191,30 @@ def kill_board_scanner(board_slug: str) -> bool:
                         pass
         except Exception:
             pass
-        pid_file.unlink(missing_ok=True)
-    cleanup_process_artifacts(f"scanner_{board_slug}")
+
+    # Keep both local and persisted liveness records until the scanner is
+    # confirmed dead. A dashboard may be running in another process, so the
+    # PID file is the dispatcher's only duplicate-spawn guard in that case.
+    still_running = False
+    try:
+        if pid_matched_identity and is_pid_alive(pid):
+            still_running = True
+    except Exception:
+        still_running = pid_matched_identity
+    if proc is not None and proc.poll() is None:
+        still_running = True
+    if still_running:
+        _log.warning(
+            "Scanner process for board '%s' is still alive after termination attempt; "
+            "retaining its PID record",
+            board_slug,
+        )
+        return False
+
+    if _active_scanners.get(board_slug) is proc:
+        _active_scanners.pop(board_slug, None)
+    if _unlink_scanner_pid_file(pid_file, pid):
+        cleanup_process_artifacts(f"scanner_{board_slug}")
     return True
 
 
@@ -117,9 +229,9 @@ def reap_active_scanners() -> int:
         proc_done = proc is not None and proc.poll() is not None
         if proc_done or exit_code is not None:
             _active_scanners.pop(slug, None)
-            cleanup_process_artifacts(task_ref)
             pid_file = logs_dir / f"scanner_{slug}.pid"
-            pid_file.unlink(missing_ok=True)
+            if _unlink_scanner_pid_file(pid_file, pid):
+                cleanup_process_artifacts(task_ref)
             reaped += 1
             code = exit_code if exit_code is not None else (proc.poll() if proc else 0)
             _log.debug("Scanner process for board '%s' exited with code %s", slug, code)
@@ -128,17 +240,25 @@ def reap_active_scanners() -> int:
     if logs_dir.exists():
         for pf in logs_dir.glob("scanner_*.pid"):
             slug = pf.stem.removeprefix("scanner_")
-            if slug not in _active_scanners:
-                try:
-                    pid = int(pf.read_text().strip())
-                    if not is_pid_alive(pid) or not process_matches_identity(
-                        pid, f"scanner_{slug}"
-                    ):
-                        pf.unlink(missing_ok=True)
+            if slug in _active_scanners:
+                continue
+            try:
+                pid = _read_scanner_pid_file(pf)
+            except OSError:
+                continue
+            if pid is None:
+                if _unlink_scanner_pid_file(pf, None):
+                    reaped += 1
+                continue
+            try:
+                if not is_pid_alive(pid) or not process_matches_identity(
+                    pid, f"scanner_{slug}"
+                ):
+                    if _unlink_scanner_pid_file(pf, pid):
                         cleanup_process_artifacts(f"scanner_{slug}")
                         reaped += 1
-                except Exception:
-                    pf.unlink(missing_ok=True)
+            except Exception:
+                continue
     return reaped
 
 
@@ -226,7 +346,15 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         return None
 
     # Cross-process duplicate prevention check
-    active_pids = get_active_scanner_pids()
+    try:
+        active_pids = get_active_scanner_pids()
+    except OSError as exc:
+        _log.warning(
+            "Unable to resolve scanner PID records; skipping spawn for '%s': %s",
+            board_slug,
+            exc,
+        )
+        return None
     if board_slug in active_pids:
         _log.debug(
             "Scanner already active for board '%s' (PID: %d); skipping spawn",
@@ -290,20 +418,19 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         )
 
     try:
-        log_f = open(log_file_path, "ab")
-        proc = subprocess.Popen(
-            wrapped_cmd,
-            cwd=workdir,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            **detached_popen_kwargs(),
-        )
-        log_f.close()
+        with open(log_file_path, "ab") as log_f:
+            proc = subprocess.Popen(
+                wrapped_cmd,
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                **detached_popen_kwargs(),
+            )
         pid_file = log_dir / f"scanner_{board_slug}.pid"
         try:
-            pid_file.write_text(str(proc.pid))
+            _write_scanner_pid_file(pid_file, proc.pid)
         except Exception as pe:
             _log.debug("Failed to write scanner pid file for %s: %s", board_slug, pe)
         _active_scanners[board_slug] = proc

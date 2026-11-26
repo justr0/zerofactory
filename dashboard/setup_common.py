@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -168,21 +167,13 @@ def check_board_setup_status(
     resolver = get_repo_resolver()
     if resolver and target_repo:
         try:
-            prev = os.environ.get("ZEROFACTORY_SKIP_CLONE")
-            os.environ["ZEROFACTORY_SKIP_CLONE"] = "1"
-            try:
-                repo_path = resolver(
-                    {
-                        "slug": board_slug,
-                        "repo_alias": effective_alias,
-                        "git_url": target_repo.get("git_url", ""),
-                    }
-                )
-            finally:
-                if prev is None:
-                    os.environ.pop("ZEROFACTORY_SKIP_CLONE", None)
-                else:
-                    os.environ["ZEROFACTORY_SKIP_CLONE"] = prev
+            repo_path = resolver(
+                {
+                    "slug": board_slug,
+                    "repo_alias": effective_alias,
+                    "git_url": target_repo.get("git_url", ""),
+                }
+            )
             if repo_path and repo_path.is_dir():
                 target = repo_path / target_relpath
                 is_target = target.is_dir() if target_is_dir else target.is_file()
