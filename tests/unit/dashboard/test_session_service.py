@@ -44,9 +44,7 @@ def hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def no_sessions(monkeypatch: pytest.MonkeyPatch):
     """Short-circuit session discovery so the test only exercises log tailing."""
-    monkeypatch.setattr(
-        session_service, "resolve_task_all_sessions", lambda task, backfill=True: []
-    )
+    monkeypatch.setattr(session_service, "resolve_task_all_sessions", lambda task: [])
 
 
 def _call_progress(task_id: str) -> dict:
