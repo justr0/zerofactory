@@ -309,28 +309,7 @@ def test_task_detail_metadata_formats_and_fallbacks_playwright(tmp_path, monkeyp
     )
     init_db(force=True)
 
-    now = int(time.time())
     task_id = "zf-meta-test"
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute(
-            "INSERT INTO boards (slug, automerge, created_at, updated_at) "
-            "VALUES ('demo', 1, ?, ?)",
-            (now, now),
-        )
-        conn.execute(
-            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) "
-            "VALUES ('demo', 'main', 'https://example.com/demo.git', ?, ?)",
-            (now, now),
-        )
-        conn.execute(
-            "INSERT INTO tasks (id, board_slug, repo_alias, title, status, assignee, "
-            "priority, tags, metadata, created_at, updated_at) "
-            "VALUES (?, 'demo', 'main', 'Metadata detail test', 'todo', 'zf-builder', "
-            "'P3', '[]', '{}', ?, ?)",
-            (task_id, now, now),
-        )
-        conn.commit()
-
     issue_metadata = {
         "external_issue": {"labels": ["automerge"]},
         "zf_bug_report": {
@@ -339,10 +318,11 @@ def test_task_detail_metadata_formats_and_fallbacks_playwright(tmp_path, monkeyp
         },
     }
     cases = [
-        ("object metadata", issue_metadata, True, True),
-        ("JSON-string metadata", json.dumps(issue_metadata), True, True),
+        ("object metadata", "demo-off", issue_metadata, True, True),
+        ("JSON-string metadata", "demo-off", json.dumps(issue_metadata), True, True),
         (
             "manual-review opt-out",
+            "demo-on",
             {
                 "external_issue": {"labels": ["manual-review"]},
                 "zf_bug_report": issue_metadata["zf_bug_report"],
@@ -352,6 +332,7 @@ def test_task_detail_metadata_formats_and_fallbacks_playwright(tmp_path, monkeyp
         ),
         (
             "HITL opt-out",
+            "demo-on",
             {
                 "external_issue": {"labels": ["hitl"]},
                 "zf_bug_report": issue_metadata["zf_bug_report"],
@@ -359,8 +340,31 @@ def test_task_detail_metadata_formats_and_fallbacks_playwright(tmp_path, monkeyp
             False,
             True,
         ),
-        ("malformed JSON metadata", "{not valid JSON", True, False),
+        ("malformed JSON metadata", "demo-on", "{not valid JSON", True, False),
     ]
+
+    now = int(time.time())
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executemany(
+            "INSERT INTO boards (slug, automerge, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            [("demo-off", 0, now, now), ("demo-on", 1, now, now)],
+        )
+        conn.executemany(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) "
+            "VALUES (?, 'main', 'https://example.com/demo.git', ?, ?)",
+            [("demo-off", now, now), ("demo-on", now, now)],
+        )
+        conn.executemany(
+            "INSERT INTO tasks (id, board_slug, repo_alias, title, status, assignee, "
+            "priority, tags, metadata, created_at, updated_at) "
+            "VALUES (?, ?, 'main', ?, 'todo', 'zf-builder', 'P3', '[]', '{}', ?, ?)",
+            [
+                (f"{task_id}-{index}", board_slug, case_name, now, now)
+                for index, (case_name, board_slug, *_rest) in enumerate(cases)
+            ],
+        )
+        conn.commit()
 
     httpd, thread, port = _start_http_bridge(_build_test_app())
     try:
@@ -380,15 +384,18 @@ def test_task_detail_metadata_formats_and_fallbacks_playwright(tmp_path, monkeyp
                 body["task"]["metadata"] = metadata_for_detail
                 route.fulfill(response=response, body=json.dumps(body))
 
-            page.route(f"**/tasks/{task_id}", mock_task_detail)
+            page.route(f"**/tasks/{task_id}-*", mock_task_detail)
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
-            task_card = page.locator(
-                '[role="button"][aria-label$="Metadata detail test"]'
-            )
-            task_card.wait_for(timeout=10000)
-
-            for case_name, metadata, has_badge, has_defect_banner in cases:
+            for (
+                case_name,
+                _board_slug,
+                metadata,
+                has_badge,
+                has_defect_banner,
+            ) in cases:
                 metadata_for_detail = metadata
+                task_card = page.locator(f'[role="button"][aria-label$="{case_name}"]')
+                task_card.wait_for(timeout=10000)
                 task_card.click()
                 dialog = page.get_by_role("dialog")
                 dialog.wait_for(timeout=10000)
