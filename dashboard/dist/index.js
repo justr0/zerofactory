@@ -1761,6 +1761,11 @@ var ZeroFactoryDashboard = (function(exports) {
 					icon: "🧠",
 					title: "Mem0 Vector Memory",
 					desc: "Hybrid semantic vector memory via Mem0 + Qdrant (FastEmbed ONNX CPU / OpenAI), auto-recorded on task completion."
+				},
+				{
+					icon: "🔒",
+					title: "Standalone Dashboard CSRF Boundary",
+					desc: "Standalone rejects cross-site/same-site browser mutations, validates Host as localhost/loopback, and requires any supplied Origin to match the request scheme, host, and port. Headerless API clients remain supported, so standalone mode is not authentication; GitHub issue sync is POST-only."
 				}
 			].map((card, idx) => React.createElement("div", {
 				key: idx,

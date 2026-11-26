@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import ipaddress
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.plugin_api import router
@@ -23,9 +24,67 @@ def _loopback_host(value: str) -> str:
     raise argparse.ArgumentTypeError("--host must be a loopback IP address")
 
 
+def _origin_parts(value: str) -> tuple[str, str, int | None] | None:
+    """Parse a serialized HTTP origin into comparable scheme/host/port parts."""
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or value != value.strip()
+        ):
+            return None
+        scheme = parsed.scheme.lower()
+        port = parsed.port
+        if port is None:
+            port = {"http": 80, "https": 443}[scheme]
+        return scheme, parsed.hostname.lower(), port
+    except ValueError:
+        return None
+
+
+def _is_loopback_hostname(hostname: str) -> bool:
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 app = FastAPI(title="Zero Factory")
 app.include_router(router, prefix="/api/plugins/zerofactory")
 _ASSET_DIR = Path(__file__).with_name("standalone_assets")
+
+
+@app.middleware("http")
+async def guard_cross_origin_mutations(request: Request, call_next):
+    """Reject cross-origin browser mutations while preserving headerless API clients."""
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("origin")
+        fetch_site = request.headers.get("sec-fetch-site", "").lower()
+        browser_request = origin is not None or "sec-fetch-site" in request.headers
+        request_host = request.headers.get("host", "")
+        request_origin = _origin_parts(f"{request.url.scheme}://{request_host}")
+        supplied_origin = _origin_parts(origin) if origin is not None else None
+        if fetch_site in {"cross-site", "same-site"} or (
+            browser_request
+            and (
+                request_origin is None
+                or not _is_loopback_hostname(request_origin[1])
+                or (origin is not None and supplied_origin != request_origin)
+            )
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Cross-origin mutations are not allowed"},
+            )
+    return await call_next(request)
 
 
 @app.get("/", response_class=HTMLResponse)
