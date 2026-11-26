@@ -243,7 +243,7 @@ def _is_excluded_untracked(rel_path: str) -> bool:
     return False
 
 
-def _resolve_target_ref(workspace_path: Path, target_branch: str | None = None) -> str:
+def _resolve_merge_base(workspace_path: Path, target_branch: str | None = None) -> str:
     default_branch = (target_branch or "").strip() or _d().get_default_branch(
         workspace_path
     )
@@ -269,11 +269,6 @@ def _resolve_target_ref(workspace_path: Path, target_branch: str | None = None) 
             base_ref = default_branch if r2.returncode == 0 else "HEAD~1"
     except Exception:
         base_ref = "HEAD~1"
-    return base_ref
-
-
-def _resolve_merge_base(workspace_path: Path, target_branch: str | None = None) -> str:
-    base_ref = _resolve_target_ref(workspace_path, target_branch)
 
     try:
         mb = subprocess.run(
@@ -501,11 +496,8 @@ def analyze_workspace_diff(
     except Exception:
         return report
 
-    diff_ref = (
-        _resolve_target_ref(workspace_path, target_branch)
-        if include_working_tree
-        else f"{_resolve_merge_base(workspace_path, target_branch=target_branch)}..HEAD"
-    )
+    merge_base = _resolve_merge_base(workspace_path, target_branch=target_branch)
+    diff_ref = merge_base if include_working_tree else f"{merge_base}..HEAD"
     # Do not let diff.mnemonicPrefix rewrite the standard b/<path> header;
     # the parser below relies on that stable format for worktree paths.
     diff_cmd = [

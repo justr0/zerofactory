@@ -71,32 +71,6 @@ def test_slop_gate_passes_clean_diff(tmp_path: Path):
     assert "Slop gate passed" in msg
 
 
-def test_working_tree_diff_uses_target_branch_during_merge(tmp_path: Path):
-    repo = _init_repo(tmp_path)
-    target_only = "\n".join(f"Target line {i}" for i in range(805)) + "\n"
-    subprocess.run(["git", "checkout", "main"], cwd=str(repo), check=True)
-    (repo / "main-only.txt").write_text(target_only)
-    subprocess.run(["git", "add", "main-only.txt"], cwd=str(repo), check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "docs: advance target branch"],
-        cwd=str(repo),
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(["git", "checkout", "task/slop-test"], cwd=str(repo), check=True)
-    (repo / "main-only.txt").write_text(target_only)
-    subprocess.run(["git", "add", "main-only.txt"], cwd=str(repo), check=True)
-    (repo / "task-change.txt").write_text("task change\n")
-
-    passed, message, code = run_deterministic_slop_gate(
-        repo, target_branch="main", skip_untested_check=True
-    )
-
-    assert passed is True, message
-    assert code == 0
-    assert "1 files, +1/-0" in message
-
-
 def test_slop_gate_blocks_debugger_todo_and_skipped_test(tmp_path: Path):
     repo = _init_repo(tmp_path)
     # Untracked new production file with debugger + placeholder comment
