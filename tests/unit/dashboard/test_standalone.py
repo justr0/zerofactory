@@ -49,4 +49,8 @@ def test_standalone_health_controls_use_existing_api_routes():
     assert "dispatch/status" in page
     assert "health/stuck-tasks" in page
     assert "health/reap-stuck" in page
+    assert (
+        "window.__HERMES_PLUGIN_SDK__.fetchJSON('/api/plugins/zerofactory' + path, options)"
+        in page
+    )
     assert client.get("/api/plugins/zerofactory/tasks").status_code == 200
