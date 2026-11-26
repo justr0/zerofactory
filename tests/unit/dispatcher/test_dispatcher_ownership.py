@@ -33,17 +33,21 @@ def _enable_dispatcher_autostart(db_path) -> None:
         )
 
 
-@pytest.mark.parametrize("profile", ["zf-gatekeeper", "zf-auditor"])
-def test_auxiliary_zf_profiles_are_workers_and_do_not_auto_start(
-    tmp_path, monkeypatch, profile
+def _configure_autostart_environment(
+    tmp_path, monkeypatch, profile: str | None = None, *, profile_home: bool = False
 ):
-    import __init__ as plugin_init
-    from dispatcher.config import is_worker_or_child_process
-
     db_path = tmp_path / "zerofactory.db"
     _enable_dispatcher_autostart(db_path)
-    monkeypatch.setenv("HERMES_PROFILE", profile)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    if profile_home:
+        assert profile is not None
+        hermes_home = hermes_home / "profiles" / profile
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    elif profile is not None:
+        monkeypatch.setenv("HERMES_PROFILE", profile)
+    else:
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
     for name in (
         "ZEROFACTORY_SKIP_DISPATCHER",
@@ -53,6 +57,19 @@ def test_auxiliary_zf_profiles_are_workers_and_do_not_auto_start(
         "_HERMES_CRON_EXTERNAL_WORKER",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.parametrize("profile", ["zf-gatekeeper", "zf-auditor"])
+@pytest.mark.parametrize("profile_home", [False, True])
+def test_auxiliary_zf_profiles_are_workers_and_do_not_auto_start(
+    tmp_path, monkeypatch, profile, profile_home
+):
+    import __init__ as plugin_init
+    from dispatcher.config import is_worker_or_child_process
+
+    _configure_autostart_environment(
+        tmp_path, monkeypatch, profile, profile_home=profile_home
+    )
 
     assert is_worker_or_child_process() is True
     assert plugin_init._should_auto_start_dispatcher() is False
@@ -62,55 +79,47 @@ def test_default_profile_auto_start_behavior_is_unchanged(tmp_path, monkeypatch)
     import __init__ as plugin_init
     from dispatcher.config import is_worker_or_child_process
 
-    db_path = tmp_path / "zerofactory.db"
-    _enable_dispatcher_autostart(db_path)
-    monkeypatch.delenv("HERMES_PROFILE", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
-    for name in (
-        "ZEROFACTORY_SKIP_DISPATCHER",
-        "ZEROFACTORY_DISABLE_DISPATCHER",
-        "ZEROFACTORY_IDLE_SCAN",
-        "HERMES_KANBAN_TASK",
-        "_HERMES_CRON_EXTERNAL_WORKER",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _configure_autostart_environment(tmp_path, monkeypatch)
 
     assert is_worker_or_child_process() is False
     assert plugin_init._should_auto_start_dispatcher() is True
 
 
-def test_register_under_gatekeeper_does_not_start_dispatcher(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile_home", [False, True])
+def test_register_under_gatekeeper_does_not_start_or_tick_dispatcher(
+    tmp_path, monkeypatch, profile_home
+):
     from unittest.mock import MagicMock
 
     import __init__ as plugin_init
 
-    db_path = tmp_path / "zerofactory.db"
-    _enable_dispatcher_autostart(db_path)
-    monkeypatch.setenv("HERMES_PROFILE", "zf-gatekeeper")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
-    for name in (
-        "ZEROFACTORY_SKIP_DISPATCHER",
-        "ZEROFACTORY_DISABLE_DISPATCHER",
-        "ZEROFACTORY_IDLE_SCAN",
-        "HERMES_KANBAN_TASK",
-        "_HERMES_CRON_EXTERNAL_WORKER",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _configure_autostart_environment(
+        tmp_path, monkeypatch, "zf-gatekeeper", profile_home=profile_home
+    )
 
     start_mock = MagicMock()
     init_mock = MagicMock()
     cron_mock = MagicMock()
+    dispatch_mock = MagicMock()
+    hooks = {}
     monkeypatch.setattr(plugin_init, "start_background_dispatcher", start_mock)
     monkeypatch.setattr(plugin_init, "init_db", init_mock)
     monkeypatch.setattr(plugin_init, "ensure_builtin_cron_jobs", cron_mock)
+    monkeypatch.setattr(plugin_init, "run_dispatch_cycle", dispatch_mock)
 
-    plugin_init.register(MagicMock())
+    ctx = MagicMock()
+    ctx.register_hook.side_effect = lambda name, fn: hooks.__setitem__(name, fn)
+    plugin_init.register(ctx)
 
     start_mock.assert_not_called()
     init_mock.assert_not_called()
     cron_mock.assert_not_called()
+    assert hooks["on_kanban_dispatch_tick"]() == {
+        "ok": True,
+        "skipped": True,
+        "reason": "dispatcher_disabled",
+    }
+    dispatch_mock.assert_not_called()
 
 
 @pytest.fixture

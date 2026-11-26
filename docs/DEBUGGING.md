@@ -35,10 +35,14 @@ flowchart TD
 Every dispatcher decision is written down. The kanban DB is `~/.hermes/zerofactory.db`
 (`ZEROFACTORY_DB` overrides):
 
-The default-profile Hermes gateway owns the board dispatcher; auxiliary `zf-*`
-profiles must not start their own copy. To verify ownership, check that the live
-gateway holds `~/.hermes/zerofactory_dispatcher.lock.owner` (the lock file may
-remain on disk after the owner exits, so verify the lock is held).
+In this deployment, the default-profile Hermes gateway is the expected board
+dispatcher owner; an explicitly started `hermes zerofactory start` process may
+also own it. Auxiliary `zf-*` profiles must not auto-start their own dispatcher.
+On Linux, run `lslocks --notruncate --output PID,COMMAND,PATH`, match `PATH` to
+the configured `<lock path>.owner` (normally
+`~/.hermes/zerofactory_dispatcher.lock.owner`), then check that PID with
+`ps -fp <PID>` and confirm it is the expected live process. The lock file can
+remain on disk after release, so its existence alone does not prove ownership.
 
 ```bash
 DB="${ZEROFACTORY_DB:-$HOME/.hermes/zerofactory.db}"
