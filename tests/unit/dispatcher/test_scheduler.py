@@ -1239,6 +1239,48 @@ def test_run_dispatch_cycle_skips_idle_scan_when_todo_count_fails(
     assert "injected Todo count failure" in caplog.text
 
 
+def test_run_dispatch_cycle_skips_idle_scan_at_positive_todo_cap(tmp_path: Path):
+    """A successfully counted Todo backlog at a positive cap suppresses scanning."""
+    import dispatcher
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    lock_file = tmp_path / "dispatcher.lock"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name) VALUES ('at-cap-board', 'At cap')"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, board_slug) "
+            "VALUES ('todo-at-cap', 'Todo at cap', 'todo', 'human', 'at-cap-board')"
+        )
+        conn.commit()
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.object(dispatcher, "reap_active_scanners"),
+        patch.object(dispatcher, "spawn_board_scanner") as mock_spawn,
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
+        patch.object(dispatcher, "clean_stale_git_locks"),
+        patch.object(
+            dispatcher,
+            "get_scanner_cron_config",
+            return_value={
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 1,
+                "enabled": True,
+            },
+        ),
+    ):
+        result = run_dispatch_cycle(db_path)
+
+    assert result["ok"] is True
+    assert result["scans_triggered"] == 0
+    mock_spawn.assert_not_called()
+
+
 def test_run_dispatch_cycle_relates_to_does_not_block_task(tmp_path: Path):
     """A soft peer link (relates_to) does not block a task, while 'blocks' link does."""
     db_path = tmp_path / "test.db"
