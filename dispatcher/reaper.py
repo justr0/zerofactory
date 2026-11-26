@@ -1009,9 +1009,14 @@ def reap_stuck_tasks(
                                 _meta, now, "aborted" if task_id else "timed_out"
                             )
                             _meta.pop("worker_pid", None)
-                            cursor.execute(
-                                "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
-                                (json.dumps(_meta), now, t_id),
+                            transition_task(
+                                conn,
+                                t_id,
+                                "blocked",
+                                target_assignee="human",
+                                blocked_reason=reason,
+                                metadata_patch=_meta,
+                                actor="dispatcher",
                             )
                             cursor.execute(
                                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'worker_timeout', ?, ?)",

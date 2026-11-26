@@ -1385,9 +1385,29 @@ def _apply_review_cap_arbitration_decision(
             task_meta.pop(key, None)
         _disp.stop_task_worker(task_id, cursor)
         _disp._remove_worktree(workspace_path, repo_path)
+        transition_task(
+            cursor.connection,
+            task_id,
+            "todo",
+            target_assignee=builder_author,
+            metadata_patch={
+                **task_meta,
+                **{
+                    key: None
+                    for key in (
+                        "review_cap_reached",
+                        "review_round",
+                        "commit_review_count",
+                        "blocked_reason",
+                        "blocked_reason_type",
+                    )
+                },
+            },
+            actor="dispatcher",
+        )
         cursor.execute(
-            "UPDATE tasks SET assignee = ?, status = 'todo', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-            (builder_author, json.dumps(task_meta), now, task_id),
+            "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+            (now, task_id),
         )
         repo_alias = (
             str(row["repo_alias"]).strip()
@@ -1437,9 +1457,14 @@ def _apply_review_cap_arbitration_decision(
             f"Review cap reached; arbiter escalated to human: {short}"
         )
     task_meta["blocked_reason_type"] = "human-gate"
-    cursor.execute(
-        "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
-        (json.dumps(task_meta), now, task_id),
+    transition_task(
+        cursor.connection,
+        task_id,
+        "blocked",
+        target_assignee="human",
+        blocked_reason=task_meta["blocked_reason"],
+        metadata_patch=task_meta,
+        actor="dispatcher",
     )
     cursor.execute(
         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration', ?, ?)",
@@ -1542,11 +1567,31 @@ def _poll_arbitration_park(
     def _hold() -> bool:
         task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
         if dirty:
-            # Parked stays parked: never let a stray status/assignee move it on.
-            cursor.execute(
-                "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(task_meta), now, task_id),
-            )
+            current_reason = task_meta.get("blocked_reason")
+            try:
+                cursor.execute(
+                    "SELECT blocked_reason FROM tasks WHERE id = ?", (task_id,)
+                )
+                current_reason = cursor.fetchone()[0]
+            except sqlite3.OperationalError:
+                pass
+            new_reason = task_meta.get("blocked_reason")
+            if isinstance(new_reason, str) and new_reason != current_reason:
+                transition_task(
+                    cursor.connection,
+                    task_id,
+                    "blocked",
+                    target_assignee="human",
+                    blocked_reason=new_reason,
+                    metadata_patch=task_meta,
+                    actor="dispatcher",
+                )
+            else:
+                # Parked stays parked: never let a stray status/assignee move it on.
+                cursor.execute(
+                    "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(task_meta), now, task_id),
+                )
         return True
 
     # Comments while parked are recorded for visibility only.
@@ -1758,13 +1803,16 @@ def _poll_pr_and_route_review(
                 )
             meta.pop("blocked_reason", None)
             meta.pop("blocked_reason_type", None)
+            transition_task(
+                cursor.connection,
+                task_id,
+                "done",
+                metadata_patch=meta,
+                actor="dispatcher",
+            )
             cursor.execute(
-                "UPDATE tasks SET status = 'done', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-                (
-                    json.dumps(meta),
-                    now,
-                    task_id,
-                ),
+                "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                (now, task_id),
             )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'merged', 'PR merged by human, task completed', ?)",
@@ -1823,13 +1871,16 @@ def _poll_pr_and_route_review(
                 )
             meta.pop("blocked_reason", None)
             meta.pop("blocked_reason_type", None)
+            transition_task(
+                cursor.connection,
+                task_id,
+                "done",
+                metadata_patch=meta,
+                actor="dispatcher",
+            )
             cursor.execute(
-                "UPDATE tasks SET status = 'done', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-                (
-                    json.dumps(meta),
-                    now,
-                    task_id,
-                ),
+                "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                (now, task_id),
             )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'closed', 'PR closed on GitHub, task archived', ?)",
@@ -2181,13 +2232,18 @@ def _poll_pr_and_route_review(
                     )
                 task_meta["blocked_reason_type"] = "human-gate"
                 task_meta["review_cap_reached"] = True
+                transition_task(
+                    cursor.connection,
+                    task_id,
+                    "blocked",
+                    target_assignee="human",
+                    blocked_reason=task_meta["blocked_reason"],
+                    metadata_patch=task_meta,
+                    actor="dispatcher",
+                )
                 cursor.execute(
-                    "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-                    (
-                        json.dumps(task_meta),
-                        now,
-                        task_id,
-                    ),
+                    "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                    (now, task_id),
                 )
                 cursor.execute(
                     "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_reached', ?, ?)",
@@ -2214,14 +2270,13 @@ def _poll_pr_and_route_review(
 
             task_meta.pop("blocked_reason", None)
             task_meta.pop("blocked_reason_type", None)
-            cursor.execute(
-                "UPDATE tasks SET assignee = ?, status = 'todo', metadata = ?, updated_at = ? WHERE id = ?",
-                (
-                    builder_author,
-                    json.dumps(task_meta),
-                    now,
-                    task_id,
-                ),
+            transition_task(
+                cursor.connection,
+                task_id,
+                "todo",
+                target_assignee=builder_author,
+                metadata_patch=task_meta,
+                actor="dispatcher",
             )
             repo_alias = (
                 str(row["repo_alias"]).strip()
@@ -2349,20 +2404,23 @@ def _poll_pr_and_route_review(
                     task_meta.pop("blocked_reason", None)
                     task_meta.pop("blocked_reason_type", None)
                     cursor.execute(
-                        "UPDATE tasks SET status = 'done', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-                        (
-                            json.dumps(task_meta),
-                            now,
-                            task_id,
-                        ),
-                    )
-                    cursor.execute(
                         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'automerged', ?, ?)",
                         (
                             task_id,
                             f"PR automatically merged via Auto-Merge mode ({merge_msg})",
                             now,
                         ),
+                    )
+                    transition_task(
+                        cursor.connection,
+                        task_id,
+                        "done",
+                        metadata_patch=task_meta,
+                        actor="dispatcher",
+                    )
+                    cursor.execute(
+                        "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                        (now, task_id),
                     )
                     return True
                 else:
@@ -2379,13 +2437,18 @@ def _poll_pr_and_route_review(
 
                     _disp.stop_task_worker(task_id, cursor)
                     _disp._remove_worktree(workspace_path, repo_path)
+                    transition_task(
+                        cursor.connection,
+                        task_id,
+                        "blocked",
+                        target_assignee="human",
+                        blocked_reason=task_meta["blocked_reason"],
+                        metadata_patch=task_meta,
+                        actor="dispatcher",
+                    )
                     cursor.execute(
-                        "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-                        (
-                            json.dumps(task_meta),
-                            now,
-                            task_id,
-                        ),
+                        "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                        (now, task_id),
                     )
                     cursor.execute(
                         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'approved', ?, ?)",
@@ -2429,13 +2492,18 @@ def _poll_pr_and_route_review(
             # Awaiting-human-merge state lives in
             # assignee/status only (assignee=human
             # + blocked); titles carry no state.
+            transition_task(
+                cursor.connection,
+                task_id,
+                "blocked",
+                target_assignee="human",
+                blocked_reason=task_meta["blocked_reason"],
+                metadata_patch=task_meta,
+                actor="dispatcher",
+            )
             cursor.execute(
-                "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
-                (
-                    json.dumps(task_meta),
-                    now,
-                    task_id,
-                ),
+                "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                (now, task_id),
             )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'approved', 'Reviewer approved PR; task assigned to human awaiting merge', ?)",
@@ -2481,9 +2549,14 @@ def _handle_packaging_failure(
         meta["blocked_reason_type"] = "stuck"
         meta["permanently_blocked"] = True
         meta.pop("awaiting_pr", None)
-        cursor.execute(
-            "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(meta), now, task_id),
+        transition_task(
+            conn,
+            task_id,
+            "blocked",
+            target_assignee="human",
+            blocked_reason=meta["blocked_reason"],
+            metadata_patch=meta,
+            actor="dispatcher",
         )
         cursor.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'dispatcher', ?, ?)",
@@ -2596,9 +2669,14 @@ def _package_and_open_pr(
                 f"Worktree conflict state unverifiable; manual resolution required: {_initial_err}"
             )
             meta["blocked_reason_type"] = "stuck"
-            cursor.execute(
-                "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(meta), now, task_id),
+            transition_task(
+                conn,
+                task_id,
+                "blocked",
+                target_assignee="human",
+                blocked_reason=meta["blocked_reason"],
+                metadata_patch=meta,
+                actor="dispatcher",
             )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'conflict_unverifiable', ?, ?)",
@@ -2794,9 +2872,14 @@ def _package_and_open_pr(
                 f"Post-merge conflict state unverifiable; manual resolution required: {_leftover_err}"
             )
             meta["blocked_reason_type"] = "stuck"
-            cursor.execute(
-                "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(meta), now, task_id),
+            transition_task(
+                conn,
+                task_id,
+                "blocked",
+                target_assignee="human",
+                blocked_reason=meta["blocked_reason"],
+                metadata_patch=meta,
+                actor="dispatcher",
             )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'conflict_unverifiable', ?, ?)",
@@ -3028,9 +3111,17 @@ def _package_and_open_pr(
                     _cmt_err,
                 )
 
+        transition_task(
+            conn,
+            task_id,
+            "todo",
+            target_assignee="zf-reviewer",
+            metadata_patch=meta,
+            actor="dispatcher",
+        )
         cursor.execute(
-            "UPDATE tasks SET assignee = 'zf-reviewer', pr_url = ?, metadata = ?, status = 'todo', updated_at = ? WHERE id = ?",
-            (pr_url, json.dumps(meta), now, task_id),
+            "UPDATE tasks SET pr_url = ?, updated_at = ? WHERE id = ?",
+            (pr_url, now, task_id),
         )
         repo_alias = (
             str(row["repo_alias"]).strip()
@@ -3090,9 +3181,17 @@ def _package_and_open_pr(
                 )
                 _disp.stop_task_worker(task_id, cursor)
                 _disp._remove_worktree(workspace_path, repo_path)
+                transition_task(
+                    conn,
+                    task_id,
+                    "todo",
+                    target_assignee="zf-builder",
+                    metadata_patch=meta,
+                    actor="dispatcher",
+                )
                 cursor.execute(
-                    "UPDATE tasks SET workspace_path = NULL, status = 'todo', assignee = 'zf-builder', metadata = ?, updated_at = ? WHERE id = ?",
-                    (json.dumps(meta), now, task_id),
+                    "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
+                    (now, task_id),
                 )
                 cursor.execute(
                     "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'no_commits_retry', 'Worker exited with no commits on the task branch (possible signal interruption); re-dispatching builder once before completing as no-op.', ?)",
@@ -3107,8 +3206,14 @@ def _package_and_open_pr(
             )
             _disp.stop_task_worker(task_id, cursor)
             _disp._remove_worktree(workspace_path, repo_path)
+            transition_task(
+                conn,
+                task_id,
+                "done",
+                actor="dispatcher",
+            )
             cursor.execute(
-                "UPDATE tasks SET workspace_path = NULL, status = 'done', updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
                 (now, task_id),
             )
             if had_conflict:

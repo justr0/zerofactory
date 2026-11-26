@@ -169,6 +169,9 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
             (now, now),
         )
         conn.execute(
+            "UPDATE tasks SET blocked_reason = 'dependency pending' WHERE id = 'child-1'"
+        )
+        conn.execute(
             "INSERT INTO task_links (parent_id, child_id, link_type, created_at) VALUES ('parent-1', 'child-1', 'blocks', ?)",
             (now,),
         )
@@ -190,9 +193,12 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        child = conn.execute("SELECT status FROM tasks WHERE id = 'child-1'").fetchone()
+        child = conn.execute(
+            "SELECT status, blocked_reason FROM tasks WHERE id = 'child-1'"
+        ).fetchone()
         # Either unblocked to 'todo' or promoted to 'running'
         assert child["status"] in ("todo", "running")
+        assert child["blocked_reason"] is None
 
 
 def test_run_dispatch_cycle_defers_todo_with_unfinished_blocking_parent(

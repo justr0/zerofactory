@@ -125,6 +125,7 @@ def transition_task(
         )
     except Exception:
         meta = {}
+    original_meta = meta.copy()
 
     if metadata_patch:
         for key, value in metadata_patch.items():
@@ -135,13 +136,15 @@ def transition_task(
 
     if is_human:
         meta.pop("last_worker_failure", None)
-        meta.pop("permanently_blocked", None)
+        if not (
+            target_status == "blocked"
+            and metadata_patch
+            and metadata_patch.get("permanently_blocked") is True
+        ):
+            meta.pop("permanently_blocked", None)
         meta.pop("worker_failure_retries", None)
         meta.pop("conflict_retries", None)
         meta.pop("precommit_retries", None)
-        if target_status != "blocked":
-            meta.pop("blocked_reason", None)
-            meta.pop("blocked_reason_type", None)
 
     if target_status == "todo":
         meta.pop("awaiting_pr", None)
@@ -151,18 +154,38 @@ def transition_task(
     if target_status != "running" or worker_pid is None:
         meta.pop("worker_execution_id", None)
 
-    if current_status == "blocked" and target_status != "blocked":
+    reason_in_patch = (
+        metadata_patch.get("blocked_reason")
+        if (
+            metadata_patch
+            and isinstance(metadata_patch.get("blocked_reason"), str)
+            and metadata_patch.get("blocked_reason")
+            != original_meta.get("blocked_reason")
+        )
+        else None
+    )
+    reason_to_record = blocked_reason if blocked_reason is not None else reason_in_patch
+    if target_status == "blocked":
+        if reason_to_record is not None:
+            new_blocked_reason = reason_to_record
+            meta["blocked_reason"] = reason_to_record
+        elif current_status == "blocked":
+            new_blocked_reason = current_blocked_reason
+        else:
+            # Never carry a reason from an earlier lifecycle into a new block.
+            new_blocked_reason = None
+            meta.pop("blocked_reason", None)
+            meta.pop("blocked_reason_type", None)
+    else:
         new_blocked_reason = None
+        meta.pop("blocked_reason_type", None)
+        if reason_in_patch is None:
+            meta.pop("blocked_reason", None)
+
+    if current_status == "blocked" and target_status != "blocked":
         meta.pop("worker_failure_retries", None)
         meta.pop("last_worker_failure", None)
-        meta.pop("blocked_reason_type", None)
         meta.pop("permanently_blocked", None)
-        if not (metadata_patch and "blocked_reason" in metadata_patch):
-            meta.pop("blocked_reason", None)
-    elif target_status == "blocked":
-        new_blocked_reason = blocked_reason or current_blocked_reason
-    else:
-        new_blocked_reason = blocked_reason if blocked_reason is not None else None
 
     if is_exiting_running:
         new_worker_pid = None
@@ -260,6 +283,17 @@ def transition_task(
             now,
         ),
     )
+
+    if target_status == "blocked" and (
+        current_status != "blocked" or reason_to_record is not None
+    ):
+        cursor.execute(
+            """
+            INSERT INTO task_activity (task_id, actor, action, details, created_at)
+            VALUES (?, ?, 'blocked', ?, ?)
+            """,
+            (task_id, actor, new_blocked_reason or "No reason provided", now),
+        )
 
     if comment:
         cursor.execute(
