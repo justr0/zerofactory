@@ -39,6 +39,11 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
               icon: "🧠",
               title: "Mem0 Vector Memory",
               desc: "Hybrid semantic vector memory via Mem0 + Qdrant (FastEmbed ONNX CPU / OpenAI), auto-recorded on task completion."
+            },
+            {
+              icon: "🔒",
+              title: "Standalone Dashboard CSRF Boundary",
+              desc: "Standalone rejects cross-site/same-site browser mutations, validates Host as localhost/loopback, and requires any supplied Origin to match the request scheme, host, and port. Headerless API clients remain supported, so standalone mode is not authentication; GitHub issue sync is POST-only."
             }
           ].map((card, idx) =>
             React.createElement(
@@ -1144,7 +1149,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
           title: "Codebase Improvement Scanner (zf-orchestrator)",
           interval: "On Idle (Configured Capacity Gate)",
           tokens: "0 Tokens when Busy / Cooldown",
-          desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
+          desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. LLM capacity counts agent-running tasks and active scanners; deterministic packaging consumes no LLM slot, but still counts toward task WIP and board running limits. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
           badge: "Dispatcher-Gated • zf-orchestrator"
         },
         {
