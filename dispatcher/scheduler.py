@@ -25,6 +25,11 @@ try:
 except (ImportError, ValueError):
     from git_url import parse_git_url
 
+try:
+    from ..paths import derive_task_stage
+except (ImportError, ValueError):
+    from paths import derive_task_stage
+
 from .config import (
     DEFAULT_IDLE_SCAN_COOLDOWN_MINUTES,
     DEFAULT_IDLE_SCAN_MAX_TODO,
@@ -48,6 +53,20 @@ from .config import (
 from . import review_cap_arbitration as _cap_arb
 from .process_manager import is_pid_alive
 from .state_machine import transition_task
+
+
+def _count_running_agent_tasks(cursor: sqlite3.Cursor) -> int:
+    """Count running tasks in agent stages, excluding deterministic packaging."""
+    rows = cursor.execute(
+        "SELECT status, assignee, pr_url, metadata FROM tasks WHERE status = 'running'"
+    ).fetchall()
+    return sum(
+        derive_task_stage(
+            row["status"], row["assignee"], row["pr_url"], row["metadata"]
+        )
+        != "packaging"
+        for row in rows
+    )
 
 
 def _task_worktree_boundary(
@@ -207,7 +226,9 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 
                 cursor.execute("SELECT COUNT(*) FROM tasks WHERE status = 'running'")
                 active_count = cursor.fetchone()[0]
-                llm_workers = _disp._global_llm_occupancy(active_count)
+                llm_workers = _disp._global_llm_occupancy(
+                    _count_running_agent_tasks(cursor)
+                )
 
                 # Per-board concurrent running caps (boards.max_concurrent_running, default 1).
                 board_max_running: dict[str, int] = {}
@@ -911,10 +932,9 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 
                 # 4. Capacity-driven / Idle Improvement Scanner Check
                 _disp.reap_active_scanners()
-                active_count = cursor.execute(
-                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-                ).fetchone()[0]
-                llm_workers = _disp._global_llm_occupancy(active_count)
+                llm_workers = _disp._global_llm_occupancy(
+                    _count_running_agent_tasks(cursor)
+                )
 
                 try:
                     b_rows = cursor.execute(
