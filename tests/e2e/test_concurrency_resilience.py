@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import shutil
 import subprocess
@@ -16,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import dispatcher
 import profile_manager
+from dispatcher import fcntl
 from dashboard.plugin_api import (
     BoardCreate,
     TaskCreate,

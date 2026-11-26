@@ -46,10 +46,18 @@ def start_dispatcher():
     """Start the in-process background dispatcher polling loop (explicit user opt-in)."""
     try:
         from ...profile_manager import check_setup_status
-        from ...dispatcher import start_background_dispatcher
+        from ...dispatcher import (
+            dispatcher_owned_elsewhere,
+            live_dispatcher_threads,
+            start_background_dispatcher,
+        )
     except (ImportError, ValueError):
         from profile_manager import check_setup_status  # type: ignore
-        from dispatcher import start_background_dispatcher  # type: ignore
+        from dispatcher import (  # type: ignore
+            dispatcher_owned_elsewhere,
+            live_dispatcher_threads,
+            start_background_dispatcher,
+        )
 
     try:
         from .cron import ensure_builtin_cron_jobs
@@ -66,16 +74,25 @@ def start_dispatcher():
 
     ensure_builtin_cron_jobs()
     started = bool(start_background_dispatcher())
+    in_process = bool(live_dispatcher_threads())
+    owned_elsewhere = not in_process and dispatcher_owned_elsewhere()
+    if started:
+        message = "Background dispatcher started."
+    elif in_process:
+        message = "Background dispatcher is already running in this process."
+    elif owned_elsewhere:
+        message = (
+            "A background dispatcher in another process already owns dispatching; "
+            "nothing to start here."
+        )
+    else:
+        message = "Background dispatcher could not be started in this process."
     return {
         "ok": True,
         "started": started,
-        "dispatcher_running": True,
-        "dispatcher_in_process": True,
-        "message": (
-            "Background dispatcher started."
-            if started
-            else "Background dispatcher is already running."
-        ),
+        "dispatcher_running": in_process or owned_elsewhere,
+        "dispatcher_in_process": in_process,
+        "message": message,
     }
 
 
@@ -83,21 +100,36 @@ def start_dispatcher():
 def stop_dispatcher():
     """Stop the in-process background dispatcher polling loop."""
     try:
-        from ...dispatcher import stop_background_dispatcher
+        from ...dispatcher import (
+            dispatcher_owned_elsewhere,
+            live_dispatcher_threads,
+            stop_background_dispatcher,
+        )
     except (ImportError, ValueError):
-        from dispatcher import stop_background_dispatcher  # type: ignore
+        from dispatcher import (  # type: ignore
+            dispatcher_owned_elsewhere,
+            live_dispatcher_threads,
+            stop_background_dispatcher,
+        )
 
     stopped = bool(stop_background_dispatcher())
+    in_process = bool(live_dispatcher_threads())
+    owned_elsewhere = not in_process and dispatcher_owned_elsewhere()
+    if stopped:
+        message = "Background dispatcher stopped."
+    elif owned_elsewhere:
+        message = (
+            "The background dispatcher runs in another process (for example the "
+            "Hermes gateway) and cannot be stopped from here."
+        )
+    else:
+        message = "No in-process background dispatcher was running."
     return {
         "ok": True,
         "stopped": stopped,
-        "dispatcher_running": False,
-        "dispatcher_in_process": False,
-        "message": (
-            "Background dispatcher stopped."
-            if stopped
-            else "No in-process background dispatcher was running."
-        ),
+        "dispatcher_running": in_process or owned_elsewhere,
+        "dispatcher_in_process": in_process,
+        "message": message,
     }
 
 
@@ -133,10 +165,11 @@ def get_setup_status():
             _sched = None
 
     if _sched is not None:
-        thread = getattr(_sched, "_dispatcher_thread", None)
-        if thread is not None and thread.is_alive():
-            dispatcher_running = True
-            dispatcher_in_process = True
+        # Process-wide: a loop started by any copy of the scheduler module counts.
+        dispatcher_in_process = bool(_sched.live_dispatcher_threads())
+        dispatcher_running = dispatcher_in_process or bool(
+            _sched.dispatcher_owned_elsewhere()
+        )
 
     if not dispatcher_running:
         lock_path = get_dispatcher_lock_path()
