@@ -203,9 +203,9 @@ flowchart TD
 - **Reap** first (see §4). Then select claim candidates:
   `status = 'todo' OR (status='triage' AND assignee='zf-orchestrator')`,
   ordered by priority (`P0`→`P3`) then age.
-- **Capacity guards** (all must pass): global `max_active_tasks`, global
-  `max_concurrent_llm_workers` (counts running tasks + active scanners + in-flight LLM cron jobs),
-  per-board `max_concurrent_running` (default 1).
+- **Capacity guards** (all must pass): global `max_active_tasks` (all running tasks, including packaging),
+  global `max_concurrent_llm_workers` (agent-running stages, excluding deterministic packaging, + active scanners + in-flight LLM cron jobs),
+  per-board `max_concurrent_running` (default 1; all running tasks, including packaging).
 - **Pre-flight (git boards)**: `check_unresolved_conflicts_safe` + `pull_and_merge_main` —
   conflicts route the task to the conflict handler **before** any worker burns tokens
   (fail-closed: unverifiable state → skip claim).
@@ -528,7 +528,9 @@ flowchart TD
 | `zero-factory-openwiki-update-{slug}` | daily | **no-agent** (0 tokens) | docs fresh across all repos / task already queued | exactly **1 job per board** runs `scripts/zf_openwiki_gate.py` to synchronize the OpenWiki workspace, evaluate repositories, and file targeted refresh tasks |
 
 Global LLM capacity (`max_concurrent_llm_workers`) counts scanners and cron LLM jobs together
-with running tasks — busy boards suppress scans automatically. Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.
+with agent-running stages, excluding deterministic packaging (`running` + `awaiting_pr`). Packaging
+still counts toward task WIP and per-board running limits; busy boards suppress scans automatically.
+Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.
 
 ---
 
