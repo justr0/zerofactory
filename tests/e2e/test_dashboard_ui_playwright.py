@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 import shutil
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qsl, urlparse
 
 import pytest
 from fastapi import FastAPI
@@ -459,6 +462,15 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             "VALUES ('demo', 'main', 'https://example.com/demo.git', ?, ?)",
             (now, now),
         )
+        conn.execute(
+            "INSERT INTO boards (slug, created_at, updated_at) VALUES ('other', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) "
+            "VALUES ('other', 'main', 'https://example.com/other.git', ?, ?)",
+            (now, now),
+        )
         conn.commit()
 
     httpd, thread, port = _start_http_bridge(_build_test_app())
@@ -471,8 +483,54 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             page = browser.new_page()
             page_errors: list[str] = []
             page.on("pageerror", lambda err: page_errors.append(str(err)))
+            api_requests: list[str] = []
+            api_prefix = "/api/plugins/zerofactory"
+            page.on(
+                "request",
+                lambda request: (
+                    api_requests.append(request.url)
+                    if api_prefix + "/" in request.url
+                    else None
+                ),
+            )
+            page.clock.install()
+            page.clock.pause_at(datetime.now() + timedelta(seconds=1))
 
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+
+            def assert_api_requests(
+                expected: list[tuple[str, tuple[tuple[str, str], ...]]],
+            ) -> None:
+                actual = Counter(
+                    (
+                        parsed.path.removeprefix(api_prefix),
+                        tuple(sorted(parse_qsl(parsed.query, keep_blank_values=True))),
+                    )
+                    for url in api_requests
+                    if (parsed := urlparse(url)).path.startswith(api_prefix + "/")
+                )
+                assert actual == Counter(expected), f"Unexpected API requests: {actual}"
+
+            def request(
+                path: str, **query: str
+            ) -> tuple[str, tuple[tuple[str, str], ...]]:
+                return path, tuple(sorted(query.items()))
+
+            # Initial mount must load all-board data once, not repeat it on selection effects.
+            assert_api_requests(
+                [
+                    request("/boards"),
+                    request("/tasks"),
+                    request("/stats"),
+                    request("/cron"),
+                    request("/settings"),
+                    request("/activities", limit="15", offset="0"),
+                    request("/sessions", limit="15"),
+                    request("/agents"),
+                    request("/boards/all/memories", limit="100"),
+                    request("/setup/status"),
+                ]
+            )
 
             # 1. Setup Wizard banner renders CLI setup & start commands
             page.get_by_text("hermes zerofactory setup").wait_for(timeout=10000)
@@ -586,6 +644,71 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             assert "All Human Gates (0 Tokens)" in (lane_info.text_content() or "")
             info_btn.click()
             lane_info.wait_for(state="hidden", timeout=10000)
+
+            def select_board(slug: str) -> None:
+                api_requests.clear()
+
+                def click_board_option() -> None:
+                    page.locator('button[aria-haspopup="listbox"]').click()
+                    if slug == "all":
+                        page.get_by_role(
+                            "button", name="All Boards", exact=False
+                        ).last.click()
+                    else:
+                        page.get_by_text(slug, exact=True).last.click()
+
+                if slug == "all":
+                    click_board_option()
+                else:
+                    with page.expect_request(f"**/boards/{slug}/precommit-status"):
+                        with page.expect_request(f"**/boards/{slug}/openwiki-status"):
+                            with page.expect_request(
+                                f"**/boards/{slug}/gh-issues-status"
+                            ):
+                                click_board_option()
+                page.wait_for_load_state("networkidle")
+                expected = (
+                    [
+                        request("/tasks"),
+                        request("/stats"),
+                        request("/boards/all/memories", limit="100"),
+                        request("/sessions", limit="15"),
+                        request("/agents"),
+                    ]
+                    if slug == "all"
+                    else [
+                        request("/tasks", board=slug),
+                        request("/stats", board=slug),
+                        request(f"/boards/{slug}/memories", limit="100"),
+                        request(f"/boards/{slug}/precommit-status"),
+                        request(f"/boards/{slug}/openwiki-status"),
+                        request(f"/boards/{slug}/gh-issues-status"),
+                        request("/sessions", limit="15", board_slug=slug),
+                        request("/agents", board_slug=slug),
+                    ]
+                )
+                assert_api_requests(expected)
+
+            # Board-view changes and same-board selections each refresh once.
+            select_board("demo")
+            select_board("demo")
+            select_board("all")
+
+            # Sessions/Agents view must not add a second board-change refresh.
+            page.get_by_role("button", name="🤖 Agents").click()
+            page.wait_for_load_state("networkidle")
+            select_board("other")
+
+            # The active-view poll must follow the newly selected board, not its old closure.
+            api_requests.clear()
+            page.clock.run_for(3500)
+            page.wait_for_load_state("networkidle")
+            assert_api_requests(
+                [
+                    request("/sessions", limit="15", board_slug="other"),
+                    request("/agents", board_slug="other"),
+                ]
+            )
 
             # 5. Open Settings modal and verify it renders without errors
             page.get_by_role("button", name="⚙️ Settings").click()

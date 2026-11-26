@@ -476,17 +476,11 @@ var ZeroFactoryDashboard = (function(exports) {
 	//#endregion
 	//#region dashboard/src/components/Header.jsx
 	function Header(props) {
-		const { activeView, setActiveView, hasActiveAgents, sessionsList = [], agentsList = [], loadSessions, loadAgents, loadMemories, boards = [], selectedBoard, setSelectedBoard, handleOpenEditBoard, handleOpenEditBoardModal, handleOpenNewBoardModal, handleOpenCronModal, setShowCronModal, loadCronJobs, cronSchedulerEnabled = true, cronJobs = [], handleOpenSettingsModal, setShowSettingsModal, loadSettings, setShowNewTaskModal, setNewTaskForm, isDispatching, handleRunDispatcher, handleDispatch, setupStatus, isTogglingDispatcher, handleStartDispatcher, handleStopDispatcher, loadBoards, loadTasksAndStats } = props;
+		const { activeView, setActiveView, hasActiveAgents, sessionsList = [], agentsList = [], boards = [], selectedBoard, onSelectBoard, handleOpenEditBoard, handleOpenEditBoardModal, handleOpenNewBoardModal, handleOpenCronModal, setShowCronModal, loadCronJobs, cronSchedulerEnabled = true, cronJobs = [], handleOpenSettingsModal, setShowSettingsModal, loadSettings, setShowNewTaskModal, setNewTaskForm, isDispatching, handleRunDispatcher, handleDispatch, setupStatus, isTogglingDispatcher, handleStartDispatcher, handleStopDispatcher, loadBoards } = props;
 		return React.createElement("header", { className: "space-y-4 pb-5 border-b border-slate-800/80" }, React.createElement("div", { className: "flex flex-col lg:flex-row lg:items-center justify-between gap-4" }, React.createElement("div", { className: "flex items-center gap-4 flex-wrap" }, React.createElement(BoardSelector, {
 			boards,
 			selectedBoard,
-			onSelectBoard: (val) => {
-				setSelectedBoard(val);
-				loadTasksAndStats(val);
-				loadMemories(val);
-				loadSessions(val);
-				loadAgents(val);
-			},
+			onSelectBoard,
 			onOpenNewBoard: handleOpenNewBoardModal,
 			onOpenEditBoard: handleOpenEditBoard || handleOpenEditBoardModal,
 			liveSessions: sessionsList
@@ -507,12 +501,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			type: "button",
 			"aria-current": activeView === "sessions" || activeView === "agents" ? "page" : void 0,
 			className: "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-all cursor-pointer relative " + (activeView === "sessions" || activeView === "agents" ? "bg-indigo-600 text-white shadow-xs shadow-indigo-600/30" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"),
-			onClick: () => {
-				setActiveView("agents");
-				loadSessions();
-				loadAgents();
-				loadMemories(selectedBoard);
-			}
+			onClick: () => setActiveView("agents")
 		}, "🤖 Agents", (hasActiveAgents || sessionsList.some((s) => s.status === "ongoing" || s.is_active) || agentsList.some((a) => a.is_active)) && React.createElement("span", { className: "w-2 h-2 rounded-full bg-emerald-400 zfk-pulse-active shrink-0 ml-0.5" })), React.createElement("button", {
 			type: "button",
 			"aria-current": activeView === "instructions" ? "page" : void 0,
@@ -5529,6 +5518,21 @@ var ZeroFactoryDashboard = (function(exports) {
 				setMemoriesLoading(false);
 			}
 		}, [fetchJSON]);
+		const loadBoardData = useCallback((boardSlug) => {
+			loadTasksAndStats(boardSlug);
+			loadMemories(boardSlug);
+			loadSessions(boardSlug);
+			loadAgents(boardSlug);
+		}, [
+			loadTasksAndStats,
+			loadMemories,
+			loadSessions,
+			loadAgents
+		]);
+		const handleSelectBoard = useCallback((boardSlug) => {
+			if (boardSlug === selectedBoardRef.current) loadBoardData(boardSlug);
+			else setSelectedBoard(boardSlug);
+		}, [loadBoardData]);
 		const handleDeleteMemory = useCallback(async (memId) => {
 			if (!await confirmAction({
 				title: "Delete Repository Memory",
@@ -5629,42 +5633,35 @@ var ZeroFactoryDashboard = (function(exports) {
 		useEffect(() => {
 			if (prevSelectedBoard.current === selectedBoard) return;
 			prevSelectedBoard.current = selectedBoard;
-			if (selectedBoard) {
-				loadTasksAndStats(selectedBoard);
-				loadMemories(selectedBoard);
-				loadSessions(selectedBoard);
-				loadAgents(selectedBoard);
-			}
-		}, [
-			selectedBoard,
-			loadTasksAndStats,
-			loadMemories,
-			loadSessions,
-			loadAgents
-		]);
+			if (selectedBoard) loadBoardData(selectedBoard);
+		}, [selectedBoard, loadBoardData]);
 		useEffect(() => {
 			if (activeView === "activities") loadActivities();
-			else if (activeView === "sessions" || activeView === "agents") {
-				loadSessions(selectedBoard);
-				loadAgents(selectedBoard);
-				loadMemories(selectedBoard);
-				const sTimer = setInterval(() => {
-					loadSessions(selectedBoard);
-					loadAgents(selectedBoard);
-				}, 3500);
-				return () => clearInterval(sTimer);
-			}
 		}, [
 			activeView,
 			activityActorFilter,
 			activityActionFilter,
 			activityBoardFilter,
 			activityPage,
-			loadActivities,
+			loadActivities
+		]);
+		useEffect(() => {
+			if (activeView !== "sessions" && activeView !== "agents") return;
+			const boardSlug = selectedBoardRef.current;
+			loadSessions(boardSlug);
+			loadAgents(boardSlug);
+			loadMemories(boardSlug);
+			const sTimer = setInterval(() => {
+				const currentBoard = selectedBoardRef.current;
+				loadSessions(currentBoard);
+				loadAgents(currentBoard);
+			}, 3500);
+			return () => clearInterval(sTimer);
+		}, [
+			activeView,
 			loadSessions,
 			loadAgents,
-			loadMemories,
-			selectedBoard
+			loadMemories
 		]);
 		useEffect(() => {
 			if (!autoRefresh) return;
@@ -6406,12 +6403,9 @@ var ZeroFactoryDashboard = (function(exports) {
 			hasActiveAgents,
 			sessionsList,
 			agentsList,
-			loadSessions,
-			loadAgents,
-			loadMemories,
 			boards,
 			selectedBoard,
-			setSelectedBoard,
+			onSelectBoard: handleSelectBoard,
 			handleOpenEditBoard,
 			handleOpenNewBoardModal,
 			setShowCronModal,
@@ -6428,8 +6422,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			isTogglingDispatcher,
 			handleStartDispatcher,
 			handleStopDispatcher,
-			loadBoards,
-			loadTasksAndStats
+			loadBoards
 		}), activeView === "activities" ? React.createElement(ActivitiesView, {
 			activities,
 			activitiesTotal,
