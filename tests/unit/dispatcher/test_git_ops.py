@@ -109,6 +109,25 @@ def test_get_default_branch_origin_head():
         assert get_default_branch(Path("/tmp/fake_repo")) == "main"
 
 
+def test_get_default_branch_origin_head_preserves_slashes(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/release/v1",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    assert get_default_branch(repo) == "release/v1"
+
+
 def test_get_default_branch_origin_main_showref():
     rec = _ProcRecorder(
         {
