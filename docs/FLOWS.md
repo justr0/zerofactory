@@ -581,6 +581,13 @@ the pinned test stack — the dispatcher's bare `python3` may lack project depen
 
 ## 14. Agentic Roles (summary)
 
+`hermes zerofactory sync-profiles` refreshes profile prompts and bundled skill
+copies; profile setup also synchronizes skills while initializing missing
+profiles. Fallback copies update only changed files and remove only tracked files
+deleted upstream while preserving user-added files. Setup status reports stale
+copies and broken skill links; existing live skill symlinks, including noncanonical
+links, are preserved as configured.
+
 | Profile | Does | Never does | Config highlights |
 |---|---|---|---|
 | `zf-orchestrator` | triage, decomposition, grill-with-docs interviews, improvement scans | write/review code, mark tasks done | temp 0.0, 120 turns |
