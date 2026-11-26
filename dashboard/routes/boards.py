@@ -945,7 +945,6 @@ def setup_board_gh_issues_endpoint(slug: str, repo_alias: str | None = None):
     return res
 
 
-@router.get("/boards/{slug}/sync-gh-issues")
 @router.post("/boards/{slug}/sync-gh-issues")
 @router.post("/boards/{slug}/repositories/{repo_alias}/sync-gh-issues")
 def sync_board_gh_issues_endpoint(
