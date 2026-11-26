@@ -5,11 +5,12 @@ Standardized, deterministic issue ingestion for GitHub.
 
 from __future__ import annotations
 
-from .base import ExternalIssue
+from .base import AI_REQUEST_LABELS, ExternalIssue
 from .github import GitHubIssueClient, parse_github_issue_ref
 from .importer import import_external_issue, resolve_board_for_issue
 
 __all__ = [
+    "AI_REQUEST_LABELS",
     "ExternalIssue",
     "GitHubIssueClient",
     "import_external_issue",

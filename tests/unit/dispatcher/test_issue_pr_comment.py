@@ -7,6 +7,7 @@ are mocked (no real GitHub or network access).
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -61,7 +62,8 @@ def _gh_mock(
             return MagicMock(returncode=0, stdout="")
         if "issue" in cmd and "view" in cmd:
             # Dedup check: `gh issue view <id> --repo <r> --json comments`
-            return MagicMock(returncode=0, stdout=json.dumps(view_comments or []))
+            comments = [{"body": body} for body in (view_comments or [])]
+            return MagicMock(returncode=0, stdout=json.dumps({"comments": comments}))
         if "issue" in cmd and "comment" in cmd:
             gh_calls.append(cmd)
             return MagicMock(
@@ -88,6 +90,7 @@ def _run_cycle(db_path: Path, fake_run):
                 "ZEROFACTORY_SKIP_GIT": "",
                 "ZEROFACTORY_SKIP_WORKER_SPAWN": "1",
                 "ZEROFACTORY_SKIP_PRECOMMIT": "1",
+                "ZEROFACTORY_WORKSPACES_DIR": str(db_path.parent / "workspaces"),
             },
         ),
         patch.object(dispatcher, "resolve_task_repo_path", return_value=db_path.parent),
@@ -114,7 +117,11 @@ def _seed_task(db_path: Path, metadata: dict, workspace_dir: Path):
     # dispatcher packaging (PR sync); 'done' is strictly terminal and would be
     # finalized instead of packaged.
     metadata.setdefault("awaiting_pr", True)
-    now = 1000
+    now = int(time.time())
+    managed_workspace = (
+        workspace_dir / "workspaces" / "b1" / "worktrees" / TASK_ID / "main"
+    )
+    managed_workspace.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute("INSERT INTO boards (slug, name) VALUES ('b1', 'Board')")
         conn.execute(
@@ -125,7 +132,7 @@ def _seed_task(db_path: Path, metadata: dict, workspace_dir: Path):
             "INSERT INTO tasks (id, title, description, status, assignee, priority, metadata, skills, workspace_kind, workspace_path, branch_name, board_slug, tenant, pr_url, updated_at, created_at) "
             "VALUES (?, 'Work Item', '', 'running', 'zf-builder', "
             "'P1', ?, '[]', '', ?, '', 'b1', '', '', ?, ?)",
-            (TASK_ID, json.dumps(metadata), str(workspace_dir), now, now),
+            (TASK_ID, json.dumps(metadata), str(managed_workspace), now, now),
         )
         conn.commit()
 
@@ -256,7 +263,7 @@ def test_issue_comment_skipped_for_jira_task(tmp_path: Path):
 def test_issue_comment_no_duplicate_on_retry_when_marker_present(tmp_path: Path):
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
-    meta = _github_meta(issue_pr_comment_posted=True)
+    meta = _github_meta()
     _seed_task(db_path, meta, tmp_path)
     # Existing issue comment already carries the marker from the first run
     fake_run, gh_calls = _gh_mock(tmp_path, view_comments=[f"🔀 PR opened\n{MARKER}"])
@@ -304,7 +311,9 @@ def test_helper_dedup_marker_present_skips_comment():
             # Existing comment already carries the marker (earlier dispatcher run)
             return MagicMock(
                 returncode=0,
-                stdout=json.dumps([{"body": f"🔀 PR opened\n\n{MARKER}"}]),
+                stdout=json.dumps(
+                    {"comments": [{"body": f"🔀 PR opened\n\n{MARKER}"}]}
+                ),
             )
         return MagicMock(returncode=0, stdout="")
 
@@ -322,6 +331,37 @@ def test_helper_dedup_marker_present_skips_comment():
 
     assert ok is True
     assert gh_calls == []
+
+
+@pytest.mark.parametrize("fetch_failure", ["nonzero", "exception"])
+def test_helper_posts_when_issue_comment_fetch_fails(fetch_failure: str):
+    gh_calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cmd = [str(c) for c in cmd]
+        if "issue" in cmd and "view" in cmd:
+            if fetch_failure == "exception":
+                raise OSError("GitHub CLI unavailable")
+            return MagicMock(returncode=1, stdout="", stderr="fetch failed")
+        if "issue" in cmd and "comment" in cmd:
+            gh_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run):
+        ok = post_issue_pr_comment(
+            TASK_ID,
+            {
+                "source": "github",
+                "id": ISSUE_ID,
+                "has_ai_request": True,
+                "repo_or_project": "foo/bar",
+            },
+            PR_URL,
+        )
+
+    assert ok is True
+    assert len(gh_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -343,7 +383,7 @@ def test_helper_posts_once_and_repo_fallback_from_board_url(
         if "issue" in cmd and "comment" in cmd:
             return MagicMock(returncode=0, stdout="")
         if "issue" in cmd and "view" in cmd:
-            return MagicMock(returncode=0, stdout=json.dumps([]))
+            return MagicMock(returncode=0, stdout=json.dumps({"comments": []}))
         return MagicMock(returncode=0, stdout="")
 
     with patch("dispatcher.scheduler.subprocess.run", side_effect=fake_run):

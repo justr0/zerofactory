@@ -71,7 +71,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
               [
                 { step: "1. Human", color: "bg-rose-950/80 border-rose-500/70 text-rose-100", role: "All Human Gates (0 Tokens)", actor: "human", desc: "Sorted by urgency: awaiting_merge (PR ready), spec_approval, interview, blocked, and triage. Consumes zero LLM tokens until activated or merged." },
                 { step: "2. Todo", color: "bg-sky-950/90 border-sky-500/70 text-sky-100", role: "AI Execution Queue", actor: "zf-* (Queued)", desc: "Tasks waiting for concurrency slots across 6 AI stages: grill, spec_draft, spec_audit, building, review, and recovery." },
-                { step: "3. Running", color: "bg-emerald-950/90 border-emerald-500/70 text-emerald-100", role: "Active AI & Packaging", actor: "zf-* / dispatcher", desc: "Active worker subprocesses inside isolated Git worktrees (grill, spec_draft, spec_audit, building, review, recovery) plus deterministic packaging (precommit & PR)." },
+                { step: "3. Running", color: "bg-emerald-950/90 border-emerald-500/70 text-emerald-100", role: "Active AI & Packaging", actor: "zf-* / dispatcher", desc: "Active worker subprocesses inside isolated Git worktrees (grill, spec_draft, spec_audit, building, review, recovery) plus deterministic packaging (precommit & PR). Agent running/done reports require the current dispatch identity, not just the same assignee role. Workerless rows, including stalled awaiting_pr packaging, recover after the spawn grace; fresh packaging proceeds during it. Recovered reviewers remain pollable across no-verdict cycles without a redundant spawn until feedback is consumed or ownership changes." },
                 { step: "4. Done", color: "bg-slate-900 border-violet-500/70 text-violet-200", role: "Terminal Completed", actor: "System (Closed)", desc: "PR merged on GitHub or task closed terminally. Worktree pruned and background Mem0 repository memory extracted." }
               ].map((col, idx) =>
                 React.createElement(
@@ -296,14 +296,14 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                   title: "Precommit, Slop Gate & PR",
                   badge: "Running: packaging",
                   bcolor: "text-sky-100 bg-sky-900/90 border-sky-500/70",
-                  desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens)."
+                  desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens). Workerless packaging gets the spawn grace to proceed; stalled packaging is then recovered so it cannot hold a running slot forever."
                 },
                 {
                   num: "6",
                   title: "Thematic Review",
                   badge: "Running: review",
                   bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); unresolved Round 2 escalates to Human (blocked); approval moves to Human (awaiting_merge)."
+                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge). A recovered reviewer remains queued for PR polling until a verdict routes it, without a redundant reviewer spawn."
                 },
                 {
                   num: "7",
@@ -566,7 +566,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                 title: "1. Deterministic Reaper (0 Tokens)",
                 badge: "Dispatcher Reaper",
                 badgeColor: "bg-emerald-950 border-emerald-500/70 text-emerald-200",
-                desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions are reaped and restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
+                desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions and expired workerless packaging are restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
               },
               {
                 title: "2. Autonomous Recovery Stage (Max 1)",
@@ -1062,13 +1062,13 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
             { cmd: "hermes zerofactory approve <task_id> [--split]", desc: "Approve triage specification and promote/split to Todo" },
             { cmd: "hermes zerofactory reject <task_id> --feedback \"...\"", desc: "Request spec revision back to zf-orchestrator" },
             { cmd: "hermes zerofactory split <task_id> [--repos api,web]", desc: "Decompose multi-repo triage into sibling Todo tasks" },
-            { cmd: "hermes zerofactory move <task_id> running", desc: "Transition ticket status" },
+            { cmd: "hermes zerofactory move <task_id> running", desc: "Transition ticket status; agent running/done reports are bound to the current dispatcher execution" },
             { cmd: "hermes zerofactory recover <task_id> [--guidance \"...\"]", desc: "Recover stuck task to Todo with builder advice" },
             { cmd: "hermes zerofactory report-bug --task <task_id> --title \"...\"", desc: "Report internal Zero Factory defect to GitHub issues" },
             { cmd: "hermes zerofactory block <task_id> --reason \"<reason>\"", desc: "Mark ticket as blocked with explanation" },
             { cmd: "hermes zerofactory comment <task_id> \"<message>\"", desc: "Post a comment to a ticket" },
             { cmd: "hermes zerofactory import-gh-issue <issue> [--force]", desc: "Import GitHub issue into human-gated Triage task" },
-            { cmd: "hermes zerofactory import-gh-issue --sync", desc: "Batch import open issues requested for AI investigation" }
+            { cmd: "hermes zerofactory import-gh-issue --sync", desc: "Batch import open issues labeled zerofactory, ai-investigate, or ai-triage; --label narrows the sync" }
           ]
         },
         {

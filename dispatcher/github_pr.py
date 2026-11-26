@@ -22,6 +22,65 @@ def extract_gh_repo_info(pr_url: str) -> tuple[str, str, int] | None:
     return match.group(1), match.group(2), int(match.group(3))
 
 
+_COMMENT_PAGE_SIZE = 100
+# Bounds a pathological thread; also ends the loop if a stub keeps returning
+# full pages.
+_MAX_COMMENT_PAGES = 20
+
+
+def fetch_pr_conversation_comments(
+    repo_path: Path, pr_url: str | None = None
+) -> list[dict[str, Any]] | None:
+    """Every PR conversation (issue) comment, oldest first, across all pages.
+
+    Returns the raw GitHub REST items (``id``, ``body``, ``user.login``,
+    ``created_at``, ``author_association``), or None when GitHub could not be
+    queried - callers such as the review-cap arbitration poller fail closed
+    on that. No trust filtering happens here; each caller applies its own
+    identity rules.
+    """
+    info = extract_gh_repo_info(pr_url or "")
+    if not info or os.environ.get("ZEROFACTORY_SKIP_GIT"):
+        return None
+    owner, repo, pr_num = info
+    items: list[dict[str, Any]] = []
+    for page in range(1, _MAX_COMMENT_PAGES + 1):
+        try:
+            res = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    (
+                        f"repos/{owner}/{repo}/issues/{pr_num}/comments"
+                        f"?per_page={_COMMENT_PAGE_SIZE}&page={page}"
+                    ),
+                ],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode != 0:
+                raise RuntimeError((res.stderr or "").strip()[:200])
+            batch = json.loads(res.stdout)
+        except Exception as e:
+            _log.debug(
+                "Failed to fetch conversation comments for %s/%s#%s (page %s): %s",
+                owner,
+                repo,
+                pr_num,
+                page,
+                e,
+            )
+            return None
+        if not isinstance(batch, list) or not batch:
+            break
+        items.extend(item for item in batch if isinstance(item, dict))
+        if len(batch) < _COMMENT_PAGE_SIZE:
+            break
+    return items
+
+
 def fetch_pr_review_comments(
     repo_path: Path,
     pr_url: str | None = None,
@@ -272,44 +331,36 @@ def fetch_pr_review_comments(
     except Exception as e:
         _log.debug("Failed to fetch reviews for %s/%s#%s: %s", owner, repo, pr_num, e)
 
-    # 4. Fetch PR conversation/issue comments if not already retrieved
+    # 4. Fetch PR conversation/issue comments (all pages) if not already retrieved
     try:
-        res = subprocess.run(
-            ["gh", "api", f"repos/{owner}/{repo}/issues/{pr_num}/comments"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            raw_issues = json.loads(res.stdout)
-            if isinstance(raw_issues, list):
-                for item in raw_issues:
-                    cid = f"issue_{item.get('id')}"
-                    if cid in seen_ids:
-                        continue
-                    author = item.get("user", {}).get("login") or ""
-                    if not is_trusted_reviewer(
-                        author, item.get("author_association") or ""
-                    ):
-                        continue
-                    body = (item.get("body") or "").strip()
-                    if body and "Automated PR for task" not in body:
-                        seen_ids.add(cid)
-                        comments.append(
-                            {
-                                "comment_id": cid,
-                                "type": "pr_comment",
-                                "author": author,
-                                "state": "COMMENTED",
-                                "body": body,
-                                "path": None,
-                                "line": None,
-                                "diff_hunk": None,
-                                "suggestion": None,
-                                "created_at": item.get("created_at") or "",
-                            }
-                        )
+        raw_issues = fetch_pr_conversation_comments(repo_path=repo_path, pr_url=pr_url)
+        if isinstance(raw_issues, list):
+            for item in raw_issues:
+                cid = f"issue_{item.get('id')}"
+                if cid in seen_ids:
+                    continue
+                author = item.get("user", {}).get("login") or ""
+                if not is_trusted_reviewer(
+                    author, item.get("author_association") or ""
+                ):
+                    continue
+                body = (item.get("body") or "").strip()
+                if body and "Automated PR for task" not in body:
+                    seen_ids.add(cid)
+                    comments.append(
+                        {
+                            "comment_id": cid,
+                            "type": "pr_comment",
+                            "author": author,
+                            "state": "COMMENTED",
+                            "body": body,
+                            "path": None,
+                            "line": None,
+                            "diff_hunk": None,
+                            "suggestion": None,
+                            "created_at": item.get("created_at") or "",
+                        }
+                    )
     except Exception as e:
         _log.debug(
             "Failed to fetch issue comments for %s/%s#%s: %s", owner, repo, pr_num, e
