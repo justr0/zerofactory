@@ -379,7 +379,8 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
         "real bugs, duplicate logic, or net-LOC-reducing simplifications (never cosmetic or "
         "speculative rewrites). (2) Cite exact file/line references and the Ponytail rung. "
         "(3) Queue newly filed tasks in `todo` assigned to `zf-builder` "
-        "(`--status todo --assignee zf-builder`) so the dispatcher can pick them up "
+        f"(`--board {board_slug} --status todo --assignee zf-builder`) "
+        "so the dispatcher can pick them up "
         "(respecting the board's `idle_scan_max_todo` cap)."
     )
     cmd = [hermes_bin, "-p", "zf-orchestrator"]

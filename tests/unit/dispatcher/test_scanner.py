@@ -451,6 +451,43 @@ def test_spawn_board_scanner_closes_log_when_popen_raises(tmp_path, monkeypatch)
         _active_scanners.clear()
 
 
+def test_spawn_board_scanner_prompt_targets_scanned_board(tmp_path, monkeypatch):
+    """Scanner instructions explicitly route findings to the scanned board."""
+    _active_scanners.clear()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    proc = MagicMock(pid=515151)
+
+    try:
+        with (
+            patch.dict(
+                scanner.os.environ,
+                {
+                    "ZEROFACTORY_SKIP_WORKER_SPAWN": "",
+                    "ZEROFACTORY_SKIP_SCANNER_SPAWN": "",
+                },
+            ),
+            patch.object(
+                scanner,
+                "get_scanner_cron_config",
+                return_value={"scan_on_idle": True},
+            ),
+            patch.object(scanner, "get_active_scanner_pids", return_value={}),
+            patch.object(scanner, "resolve_hermes_bin", return_value="hermes"),
+            patch.object(scanner, "sync_repo_main"),
+            patch.object(
+                scanner, "build_shell_wrapper", side_effect=lambda cmd, _: cmd
+            ),
+            patch.object(scanner.subprocess, "Popen", return_value=proc) as mock_popen,
+        ):
+            assert scanner.spawn_board_scanner("board-b", tmp_path) == proc.pid
+
+        command = mock_popen.call_args.args[0]
+        prompt = command[command.index("-q") + 1]
+        assert "--board board-b --status todo --assignee zf-builder" in prompt
+    finally:
+        _active_scanners.clear()
+
+
 def test_reap_active_scanners_preserves_embedded_scanner_in_slug(tmp_path):
     """Dead PID-file reaping uses the complete board slug for artifact cleanup."""
     _active_scanners.clear()
