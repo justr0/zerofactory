@@ -294,7 +294,6 @@ def spawn_agent_worker(
         skip_untested = bool(task_meta.get("skip_untested_check"))
         pre_digested_git = _d().digest_reviewer_git_context(
             Path(workdir),
-            branch_name,
             target_branch=target_branch or None,
             spec_text=spec_text,
             skip_untested_check=skip_untested,
