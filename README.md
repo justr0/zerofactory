@@ -155,6 +155,8 @@ hermes zerofactory approve <task_id> [--split]    # Approve triage specification
 hermes zerofactory reject <task_id> --feedback "..." # Request spec revision back to zf-orchestrator
 hermes zerofactory split <task_id> [--repos api,web]       # Decompose multi-repo triage into Todo tasks
 hermes zerofactory import-gh-issue 42             # Deterministically import GitHub issue #42
+hermes zerofactory import-gh-issue --sync         # Sync open issues with zerofactory, ai-investigate, or ai-triage labels
+hermes zerofactory import-gh-issue --sync --label custom # Sync open issues with a specific request label
 hermes zerofactory move <task_id> running          # Transition task status
 hermes zerofactory recover <task_id> [--guidance "..."] # Recover stuck task to Todo with builder advice
 hermes zerofactory report-bug --task <task_id> --title "..." # Report internal Zero Factory defect to GitHub issues

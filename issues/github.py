@@ -8,7 +8,7 @@ import re
 import subprocess
 from typing import Any
 
-from .base import ExternalIssue
+from .base import AI_REQUEST_LABELS, ExternalIssue
 
 _log = logging.getLogger("zerofactory.issues.github")
 
@@ -157,62 +157,73 @@ class GitHubIssueClient:
     def fetch_investigation_issues(
         self,
         repo: str | None = None,
-        label: str = "zerofactory",
+        label: str | None = None,
         state: str = "open",
         limit: int = 50,
     ) -> list[ExternalIssue]:
-        """Fetch all issues from GitHub flagged for AI investigation via label."""
+        """Fetch issues carrying any of the selected AI investigation labels."""
         target_repo = repo or self.default_repo
         if not target_repo:
             raise ValueError(
                 "Repository is required to list issues. Specify --repo owner/repo or set up a board."
             )
 
-        cmd = [
-            "gh",
-            "issue",
-            "list",
-            "--repo",
-            target_repo,
-            "--state",
-            state,
-            "--limit",
-            str(limit),
-            "--json",
-            "number,title,body,url,author,state,labels,assignees",
-        ]
-        if label:
-            cmd.extend(["--label", label])
+        labels = (label,) if label is not None else AI_REQUEST_LABELS
+        issues: list[ExternalIssue] = []
+        seen: set[str] = set()
+        for request_label in labels:
+            cmd = [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                target_repo,
+                "--state",
+                state,
+                "--limit",
+                str(limit),
+                "--json",
+                "number,title,body,url,author,state,labels,assignees",
+            ]
+            if request_label:
+                cmd.extend(["--label", request_label])
 
-        try:
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except FileNotFoundError:
-            raise RuntimeError(
-                "GitHub CLI ('gh') is not installed or not in PATH. Please install gh to import GitHub issues."
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"Timed out fetching issues from '{target_repo}' via GitHub CLI."
-            )
+            try:
+                res = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "GitHub CLI ('gh') is not installed or not in PATH. Please install gh to import GitHub issues."
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    f"Timed out fetching issues from '{target_repo}' via GitHub CLI."
+                )
 
-        if res.returncode != 0:
-            err_msg = (
-                res.stderr.strip()
-                or res.stdout.strip()
-                or f"exit code {res.returncode}"
-            )
-            raise RuntimeError(
-                f"Failed to list GitHub issues from '{target_repo}': {err_msg}"
-            )
+            if res.returncode != 0:
+                err_msg = (
+                    res.stderr.strip()
+                    or res.stdout.strip()
+                    or f"exit code {res.returncode}"
+                )
+                raise RuntimeError(
+                    f"Failed to list GitHub issues from '{target_repo}': {err_msg}"
+                )
 
-        try:
-            data_list = json.loads(res.stdout) if res.stdout.strip() else []
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse GitHub CLI response: {e}")
+            try:
+                data_list = json.loads(res.stdout) if res.stdout.strip() else []
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse GitHub CLI response: {e}")
 
-        return [_normalize_issue(item, "", target_repo) for item in data_list]
+            for item in data_list:
+                issue = _normalize_issue(item, "", target_repo)
+                dedup_key = issue.to_dedup_key()
+                if not issue.id or dedup_key not in seen:
+                    issues.append(issue)
+                    seen.add(dedup_key)
+
+        return issues

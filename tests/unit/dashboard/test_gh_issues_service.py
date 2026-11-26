@@ -126,15 +126,18 @@ def test_sync_and_import_gh_issues_endpoints(
         url="https://github.com/testowner/testrepo/issues/42",
         author="alice",
         state="open",
-        labels=["bug", "zerofactory"],
+        labels=["bug", "ai-investigate"],
         repo_or_project="testowner/testrepo",
     )
 
     class MockClient:
+        fetch_calls = []
+
         def __init__(self, default_repo=None):
             self.default_repo = default_repo
 
         def fetch_investigation_issues(self, repo, label, state="open"):
+            self.fetch_calls.append((repo, label, state))
             return [mock_issue]
 
         def fetch_issue(self, issue_ref, repo=None):
@@ -145,14 +148,15 @@ def test_sync_and_import_gh_issues_endpoints(
     monkeypatch.setattr(issues.github, "GitHubIssueClient", MockClient)
 
     # 1. Sync endpoint
-    sync_res = sync_board_gh_issues_endpoint(slug, label="zerofactory")
+    sync_res = sync_board_gh_issues_endpoint(slug)
+    assert MockClient.fetch_calls[-1][1] is None
     assert sync_res["ok"] is True
     assert sync_res["imported_count"] == 1
     assert sync_res["duplicate_count"] == 0
     assert len(sync_res["imported"]) == 1
 
     # Syncing again should detect duplicate
-    sync_res2 = sync_board_gh_issues_endpoint(slug, label="zerofactory")
+    sync_res2 = sync_board_gh_issues_endpoint(slug)
     assert sync_res2["ok"] is True
     assert sync_res2["imported_count"] == 0
     assert sync_res2["duplicate_count"] == 1
@@ -161,6 +165,84 @@ def test_sync_and_import_gh_issues_endpoints(
     import_res = import_board_gh_issue_endpoint(slug, {"issue": "42"})
     assert import_res["ok"] is True
     assert import_res["duplicate"] is True
+
+
+@pytest.mark.parametrize(
+    ("selected_label", "expected_labels", "expected_imports"),
+    [
+        (None, ["zerofactory", "ai-investigate", "ai-triage"], 3),
+        ("custom-request", ["custom-request"], 1),
+    ],
+)
+def test_sync_gh_issues_http_route_label_selection(
+    api_client,
+    initialized_db: Path,
+    monkeypatch,
+    selected_label,
+    expected_labels,
+    expected_imports,
+):
+    import json
+    import subprocess
+
+    import issues.github
+
+    board_response = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"git_url": "https://github.com/testowner/testrepo.git"},
+    )
+    slug = board_response.json()["slug"]
+
+    def payload(number, *labels):
+        return {
+            "number": number,
+            "title": f"Issue {number}",
+            "body": f"Description for issue {number}",
+            "url": f"https://github.com/testowner/testrepo/issues/{number}",
+            "author": {"login": "tester"},
+            "state": "OPEN",
+            "labels": [{"name": label} for label in labels],
+            "assignees": [],
+        }
+
+    responses = {
+        "zerofactory": [payload(42, "zerofactory", "ai-investigate")],
+        "ai-investigate": [
+            payload(42, "zerofactory", "ai-investigate"),
+            payload(43, "ai-investigate", "ai-triage"),
+        ],
+        "ai-triage": [
+            payload(43, "ai-investigate", "ai-triage"),
+            payload(44, "ai-triage"),
+        ],
+        "custom-request": [payload(45, "custom-request")],
+    }
+    calls = []
+
+    def fake_gh_run(command, **kwargs):
+        label = command[command.index("--label") + 1]
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout=json.dumps(responses[label]), stderr=""
+        )
+
+    monkeypatch.setattr(issues.github.subprocess, "run", fake_gh_run)
+    params = {"label": selected_label} if selected_label is not None else None
+    response = api_client.post(
+        f"/api/plugins/zerofactory/boards/{slug}/sync-gh-issues", params=params
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["imported_count"] == expected_imports
+    assert result["duplicate_count"] == 0
+    assert [
+        command[command.index("--label") + 1] for command in calls
+    ] == expected_labels
+    with sqlite3.connect(initialized_db) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == expected_imports
+        )
 
 
 def test_import_gh_issue_resolves_repo_from_board_repositories(

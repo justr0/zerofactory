@@ -484,6 +484,10 @@ flowchart LR
 
 Entry points: dashboard **Sync GitHub Issues**, `import-gh-issue` endpoint/CLI,
 and the queue watchdog's rate-limited auto-sync (15-min per-repo cooldown).
+Batch sync without a label scans the supported request labels
+`zerofactory`, `ai-investigate`, and `ai-triage`, deduplicating issues returned
+by more than one label; an explicit `--label` (CLI) or `label` query parameter
+(dashboard) limits the sync to that label.
 
 ### Outbound (PR → source issue reply, "Option B")
 
