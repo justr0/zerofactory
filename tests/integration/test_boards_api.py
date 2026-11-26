@@ -307,7 +307,7 @@ def test_same_name_custom_openwiki_workspace_survives_board_deletion(
 
     registry = _read_openwiki_registry(openwiki_home)
     custom_workspace = {
-        "id": "user-workspace-42",
+        "id": slug,
         "name": slug,
         "wikis": ["user-wiki"],
     }
@@ -315,7 +315,7 @@ def test_same_name_custom_openwiki_workspace_survives_board_deletion(
         {"id": "user-wiki", "name": "user-wiki", "root": str(tmp_path / "user-wiki")}
     )
     registry["workspaces"] = [custom_workspace]
-    custom_active = {"wiki": "user-wiki", "workspace": "user-workspace-42"}
+    custom_active = {"wiki": "user-wiki", "workspace": slug}
     registry["active"] = [custom_active]
     (openwiki_home / "wiki-workspaces.json").write_text(json.dumps(registry))
 
@@ -325,6 +325,65 @@ def test_same_name_custom_openwiki_workspace_survives_board_deletion(
     after = _read_openwiki_registry(openwiki_home)
     assert after["workspaces"] == [custom_workspace]
     assert after["active"] == [custom_active]
+
+
+def test_unlink_with_unresolved_shared_checkout_uses_repository_identity(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    shared_path = tmp_path / "shared-checkout"
+    obsolete_path = tmp_path / "obsolete-checkout"
+    (shared_path / ".git").mkdir(parents=True)
+    (obsolete_path / ".git").mkdir(parents=True)
+    board_a = "openwiki-shared-source"
+    board_b = "openwiki-shared-consumer"
+    source_url = f"https://github.com/openwiki-test/{board_a}-original.git"
+    mirror_url = f"https://github.com/openwiki-test/{board_b}-mirror.git"
+    obsolete_url = f"https://github.com/openwiki-test/{board_b}-obsolete.git"
+    repo_paths.update(
+        {source_url: shared_path, mirror_url: shared_path, obsolete_url: obsolete_path}
+    )
+
+    for slug, repositories in (
+        (board_a, [{"repo_alias": "original", "git_url": source_url}]),
+        (
+            board_b,
+            [
+                {"repo_alias": "mirror", "git_url": mirror_url},
+                {"repo_alias": "obsolete", "git_url": obsolete_url},
+            ],
+        ),
+    ):
+        response = api_client.post(
+            "/api/plugins/zerofactory/boards",
+            json={"slug": slug, "repositories": repositories},
+        )
+        assert response.status_code == 200
+
+    before = _read_openwiki_registry(openwiki_home)
+    workspace_a = next(ws for ws in before["workspaces"] if ws["name"] == board_a)
+    workspace_b = next(ws for ws in before["workspaces"] if ws["name"] == board_b)
+    shared_wiki = workspace_a["wikis"][0]
+    obsolete_wiki = next(
+        wiki_id for wiki_id in workspace_b["wikis"] if wiki_id != shared_wiki
+    )
+    assert {entry["wiki"]: entry["workspace"] for entry in before["active"]}[
+        shared_wiki
+    ] == workspace_a["id"]
+
+    repo_paths.pop(source_url)
+    repo_paths.pop(mirror_url)
+    response = api_client.delete(
+        f"/api/plugins/zerofactory/boards/{board_b}/repositories/obsolete"
+    )
+
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    updated_b = next(ws for ws in after["workspaces"] if ws["name"] == board_b)
+    assert updated_b["wikis"] == [shared_wiki]
+    active = {entry["wiki"]: entry["workspace"] for entry in after["active"]}
+    assert active[shared_wiki] == workspace_a["id"]
+    assert obsolete_wiki not in active
 
 
 def test_unresolved_still_linked_repository_keeps_workspace_membership(

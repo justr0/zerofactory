@@ -59,7 +59,7 @@ def _get_board_repository_rows(
     with sqlite3.connect(str(eff_db), timeout=5.0) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT repo_alias, git_url, target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
+            "SELECT id, repo_alias, git_url, target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
             (board_slug,),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -281,15 +281,20 @@ def sync_board_openwiki_workspace(
         return {"status": "error", "error": f"Failed to read board repositories: {e}"}
 
     linked_repos = []
-    unresolved_aliases = []
+    unresolved_repos = []
     for repo in repository_rows:
         path = _resolve_board_repo_path(board_slug, repo)
         if path:
             linked_repos.append(
-                {"alias": repo["repo_alias"], "path": path, "url": repo["git_url"]}
+                {
+                    "id": repo.get("id"),
+                    "alias": repo["repo_alias"],
+                    "path": path,
+                    "url": repo["git_url"],
+                }
             )
         else:
-            unresolved_aliases.append(repo["repo_alias"])
+            unresolved_repos.append(repo)
 
     openwiki_dir = get_openwiki_home_dir()
     registry_file = openwiki_dir / WIKI_WORKSPACES_FILE
@@ -327,19 +332,11 @@ def sync_board_openwiki_workspace(
         s = re.sub(r"-+", "-", s)
         return s[:63] if s else prefix
 
-    # Identify only canonical or known legacy board-managed workspaces. A
-    # matching display name alone is not proof that a workspace belongs here.
+    # The collision-resistant ID is the ownership boundary. Display names and
+    # legacy slug IDs are user-controlled and cannot prove board ownership.
     ws_id = f"{_slugify(board_slug, 'workspace')[:63]}-{hashlib.sha256(board_slug.encode()).hexdigest()}"
-    legacy_workspace_ids = {board_slug, _slugify(board_slug, "workspace")} - {ws_id}
-    matching_workspaces = [
-        ws
-        for ws in existing_workspaces
-        if ws.get("id") == ws_id
-        or (ws.get("id") in legacy_workspace_ids and ws.get("name") == board_slug)
-    ]
-    target_workspace_ids = {ws_id} | {
-        ws.get("id") for ws in matching_workspaces if ws.get("id")
-    }
+    matching_workspaces = [ws for ws in existing_workspaces if ws.get("id") == ws_id]
+    target_workspace_ids = {ws_id}
     target_ws = next((ws for ws in matching_workspaces if ws.get("id") == ws_id), None)
     if target_ws is None and matching_workspaces:
         target_ws = matching_workspaces[0]
@@ -350,7 +347,26 @@ def sync_board_openwiki_workspace(
         if isinstance(wiki_id, str)
     }
 
-    # 1. Register or update resolved wikis.
+    def _repository_key(repo: dict[str, Any]) -> str:
+        repo_id = repo.get("id")
+        return f"id:{repo_id}" if repo_id is not None else f"alias:{repo['repo_alias']}"
+
+    repository_wikis = (
+        target_ws.get("repository_wikis", {})
+        if target_ws and isinstance(target_ws.get("repository_wikis", {}), dict)
+        else {}
+    )
+    current_repository_keys = {_repository_key(repo) for repo in repository_rows}
+    repo_wiki_ids = {
+        key: wiki_id
+        for key, wiki_id in repository_wikis.items()
+        if key in current_repository_keys
+        and isinstance(wiki_id, str)
+        and wiki_id in old_member_ids
+    }
+
+    # 1. Register or update resolved wikis, preserving a stable row-to-wiki
+    # identity for linked repositories whose local checkout is unavailable.
     root_to_wiki_id: dict[str, str] = {}
     used_wiki_ids: set[str] = {w.get("id") for w in existing_wikis if w.get("id")}
 
@@ -360,51 +376,69 @@ def sync_board_openwiki_workspace(
 
     for lr in linked_repos:
         r_str = str(lr["path"])
-        if r_str in root_to_wiki_id:
-            continue
-        base_id = _slugify(lr["alias"], "wiki")
-        wiki_id = base_id
-        counter = 1
-        while wiki_id in used_wiki_ids:
-            wiki_id = f"{base_id}-{counter}"
-            counter += 1
-        used_wiki_ids.add(wiki_id)
-        existing_wikis.append(
-            {
-                "id": wiki_id,
-                "name": lr["alias"],
-                "root": r_str,
-            }
+        wiki_id = root_to_wiki_id.get(r_str)
+        if wiki_id is None:
+            base_id = _slugify(lr["alias"], "wiki")
+            wiki_id = base_id
+            counter = 1
+            while wiki_id in used_wiki_ids:
+                wiki_id = f"{base_id}-{counter}"
+                counter += 1
+            used_wiki_ids.add(wiki_id)
+            existing_wikis.append(
+                {
+                    "id": wiki_id,
+                    "name": lr["alias"],
+                    "root": r_str,
+                }
+            )
+            root_to_wiki_id[r_str] = wiki_id
+        repo_wiki_ids[_repository_key({"id": lr["id"], "repo_alias": lr["alias"]})] = (
+            wiki_id
         )
-        root_to_wiki_id[r_str] = wiki_id
-
-    member_wiki_ids = [
-        root_to_wiki_id[str(repo["path"])]
-        for repo in linked_repos
-        if str(repo["path"]) in root_to_wiki_id
-    ]
 
     # Keep prior membership for linked repositories whose local checkout is
-    # unavailable. Database membership is authoritative; path resolution is not.
+    # unavailable. Their persisted repository identity prevents aliases of the
+    # same checkout from being confused with detached repositories.
     unresolved_member_ids = set()
     unresolved_unmatched = False
-    for alias in unresolved_aliases:
-        matching_ids = {
-            wiki.get("id")
-            for wiki in existing_wikis
-            if wiki.get("id") in old_member_ids
-            and (
-                wiki.get("name") == alias
-                or (wiki.get("root") and Path(wiki["root"]).name == alias)
-            )
-        }
+    for repo in unresolved_repos:
+        repo_key = _repository_key(repo)
+        if repo_key in repo_wiki_ids:
+            continue
+        matching_ids = []
+        for wiki in existing_wikis:
+            wiki_id = wiki.get("id")
+            if (
+                isinstance(wiki_id, str)
+                and wiki_id in old_member_ids
+                and (
+                    wiki.get("name") == repo["repo_alias"]
+                    or (
+                        wiki.get("root")
+                        and Path(wiki["root"]).name == repo["repo_alias"]
+                    )
+                )
+            ):
+                matching_ids.append(wiki_id)
         if matching_ids:
-            unresolved_member_ids.update(matching_ids)
+            repo_wiki_ids[repo_key] = matching_ids[0]
         else:
             unresolved_unmatched = True
     if unresolved_unmatched:
         unresolved_member_ids.update(old_member_ids)
-    member_wiki_ids = list(dict.fromkeys([*member_wiki_ids, *unresolved_member_ids]))
+    member_wiki_ids = list(
+        dict.fromkeys(
+            [
+                *(
+                    repo_wiki_ids[key]
+                    for key in map(_repository_key, repository_rows)
+                    if key in repo_wiki_ids
+                ),
+                *unresolved_member_ids,
+            ]
+        )
+    )
 
     # 2. Reconcile board workspace membership, leaving same-name custom
     # workspaces untouched.
@@ -415,6 +449,11 @@ def sync_board_openwiki_workspace(
     elif target_ws:
         target_ws["id"] = ws_id
         target_ws["wikis"] = member_wiki_ids
+        target_ws["repository_wikis"] = {
+            key: repo_wiki_ids[key]
+            for key in map(_repository_key, repository_rows)
+            if key in repo_wiki_ids
+        }
         target_ws["name"] = board_slug
         existing_workspaces[:] = [
             ws
@@ -423,7 +462,16 @@ def sync_board_openwiki_workspace(
         ]
     else:
         existing_workspaces.append(
-            {"id": ws_id, "name": board_slug, "wikis": member_wiki_ids}
+            {
+                "id": ws_id,
+                "name": board_slug,
+                "wikis": member_wiki_ids,
+                "repository_wikis": {
+                    key: repo_wiki_ids[key]
+                    for key in map(_repository_key, repository_rows)
+                    if key in repo_wiki_ids
+                },
+            }
         )
 
     def _replacement_workspace(wiki_id: str) -> dict[str, Any] | None:
