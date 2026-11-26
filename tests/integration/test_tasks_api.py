@@ -844,6 +844,31 @@ def test_agent_running_or_done_report_requires_current_worker_execution(
     assert task["metadata"].get("worker_execution_id") is None
     assert any(item["action"] == "move_rejected" for item in task["activity"])
 
+    # Matching assignee is not enough when a running row has no tracked execution.
+    workerless_running = api_client.post(
+        endpoint,
+        json={
+            "title": "Workerless running completion report",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-builder",
+            "metadata": {"review_round": 1},
+        },
+    ).json()["id"]
+    original_metadata = api_client.get(f"{endpoint}/{workerless_running}").json()[
+        "task"
+    ]["metadata"]
+    response = api_client.post(
+        f"{endpoint}/{workerless_running}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{workerless_running}").json()["task"]
+    assert task["status"] == "running"
+    assert task["metadata"] == original_metadata
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
     # A replacement builder has the same role but a different dispatcher execution id.
     replaced = api_client.post(
         endpoint,
@@ -868,6 +893,31 @@ def test_agent_running_or_done_report_requires_current_worker_execution(
     assert task["status"] == "running"
     assert task["metadata"]["worker_execution_id"] == "execution-new"
     assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+
+def test_recovered_reviewer_marker_clears_when_task_ownership_changes(
+    api_client: TestClient, default_board: str
+):
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Recovered reviewer ownership change",
+            "board_slug": default_board,
+            "status": "todo",
+            "assignee": "zf-reviewer",
+            "metadata": {"reviewer_orphan_recovered": True},
+        },
+    ).json()["id"]
+
+    response = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "todo", "assignee": "zf-builder", "actor": "user"},
+    )
+
+    assert response.status_code == 200
+    task = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert task["assignee"] == "zf-builder"
+    assert "reviewer_orphan_recovered" not in task["metadata"]
 
 
 def test_triage_task_split_multi_repo(api_client: TestClient):

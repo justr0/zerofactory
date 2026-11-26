@@ -810,12 +810,10 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
 ):
     """Recovered reviewers stay pollable through delayed verdicts, without respawn."""
     import dispatcher
-    from dispatcher.config import _active_workers
 
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
     now = int(time.time()) - 600
-    current_time = now + 600
     workspace_root = tmp_path / "workspaces"
     workspace = _task_workspace(workspace_root, "t-reviewer-orphan")
     repo_path = tmp_path / "repo"
@@ -837,33 +835,16 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
                 now - 600,
             ),
         )
-        conn.execute(
-            "INSERT INTO tasks "
-            + _TASK_COLS
-            + " VALUES ('t-capacity-holder', 'Capacity holder', '', 'running', 'zf-builder', 'P1', ?, '[]', '', '', '', 'b1', '', '', ?, ?)",
-            (
-                json.dumps(
-                    {
-                        "worker_pid": 5555,
-                        "started_at": current_time - 5,
-                        "sessions": [{"status": "ongoing"}],
-                    }
-                ),
-                now,
-                now,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('max_concurrent_llm_workers', '1')"
-        )
         conn.commit()
 
     lock_file = tmp_path / "dispatcher.lock"
 
     decision_state = {"decision": None if delayed else review_decision}
+    pr_views = []
 
     def fake_subprocess_run(cmd, *args, **kwargs):
         if cmd and cmd[0] == "gh":
+            pr_views.append(cmd)
             return MagicMock(
                 returncode=0,
                 stdout=json.dumps(
@@ -899,25 +880,20 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
         patch.object(dispatcher, "fetch_pr_review_comments", return_value=[]),
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
     ):
-        capacity_proc = MagicMock()
-        capacity_proc.pid = 5555
-        capacity_proc.poll.return_value = None
-        _active_workers["t-capacity-holder"] = capacity_proc
-        try:
-            result = run_dispatch_cycle(db_path)
-            assert result["ok"] is True
-            if delayed:
-                with sqlite3.connect(str(db_path)) as conn:
-                    first = conn.execute(
-                        "SELECT status, assignee, metadata FROM tasks WHERE id = 't-reviewer-orphan'"
-                    ).fetchone()
-                    assert first[0:2] == ("todo", "zf-reviewer")
-                    assert json.loads(first[2])["reviewer_orphan_recovered"] is True
-                decision_state["decision"] = review_decision
-                assert run_dispatch_cycle(db_path)["ok"] is True
-        finally:
-            _active_workers.pop("t-capacity-holder", None)
+        result = run_dispatch_cycle(db_path)
+        assert result["ok"] is True
+        if delayed:
+            with sqlite3.connect(str(db_path)) as conn:
+                first = conn.execute(
+                    "SELECT status, assignee, metadata FROM tasks WHERE id = 't-reviewer-orphan'"
+                ).fetchone()
+                assert first[0:2] == ("todo", "zf-reviewer")
+                assert json.loads(first[2])["reviewer_orphan_recovered"] is True
+            decision_state["decision"] = review_decision
+            assert run_dispatch_cycle(db_path)["ok"] is True
         mock_spawn.assert_not_called()
+
+    assert len(pr_views) == (2 if delayed else 1)
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -933,6 +909,156 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
         ]
         assert "worker_recovered" in actions
         assert expected_activity in actions
+
+
+def test_run_dispatch_cycle_reclaims_stalled_packaging_slot(tmp_path: Path):
+    """Expired workerless packaging is reaped before another task is dispatched."""
+    import dispatcher
+    from dispatcher.config import _active_workers
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = int(time.time())
+    workspace_root = tmp_path / "workspaces"
+    next_workspace = _task_workspace(workspace_root, "t-next")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running, created_at, updated_at) VALUES ('b1', 'Board', 3, ?, ?)",
+            (now - 1000, now - 1000),
+        )
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-stalled-packaging', 'Stalled packaging', '', 'running', 'zf-builder', 'P2', ?, '[]', '', '', '', 'b1', '', '', ?, ?)",
+            (json.dumps({"awaiting_pr": True, "sessions": []}), now - 600, now - 600),
+        )
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-capacity-holder', 'Capacity holder', '', 'running', 'zf-builder', 'P1', ?, '[]', '', '', '', 'b1', '', '', ?, ?)",
+            (
+                json.dumps(
+                    {
+                        "worker_pid": 5555,
+                        "started_at": now - 5,
+                        "sessions": [{"status": "ongoing"}],
+                    }
+                ),
+                now - 5,
+                now - 5,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-next', 'Next task', '', 'todo', 'zf-builder', 'P0', '{}', '[]', '', ?, '', 'b1', '', '', ?, ?)",
+            (str(next_workspace), now, now),
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('max_concurrent_llm_workers', '2')"
+        )
+        conn.commit()
+
+    capacity_proc = MagicMock()
+    capacity_proc.pid = 5555
+    capacity_proc.poll.return_value = None
+    lock_file = tmp_path / "dispatcher.lock"
+    try:
+        with (
+            patch.object(
+                dispatcher, "get_dispatcher_lock_path", return_value=lock_file
+            ),
+            patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": "1"}),
+            patch.object(
+                dispatcher, "spawn_agent_worker", return_value=(None, None)
+            ) as mock_spawn,
+        ):
+            _active_workers["t-capacity-holder"] = capacity_proc
+            result = run_dispatch_cycle(db_path)
+            assert result["ok"] is True
+            mock_spawn.assert_called_once()
+    finally:
+        _active_workers.pop("t-capacity-holder", None)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        tasks = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute("SELECT id, status, assignee FROM tasks")
+        }
+        assert tasks["t-stalled-packaging"] == ("todo", "zf-builder")
+        assert tasks["t-next"] == ("running", "zf-builder")
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM task_activity WHERE task_id = 't-stalled-packaging' AND action = 'worker_recovered'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_run_dispatch_cycle_allows_fresh_workerless_packaging(tmp_path: Path):
+    """Fresh packaging gets a cycle to progress before orphan recovery."""
+    import dispatcher
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = int(time.time())
+    workspace_root = tmp_path / "workspaces"
+    workspace = _task_workspace(workspace_root, "t-healthy-packaging")
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running, created_at, updated_at) VALUES ('b1', 'Board', 3, ?, ?)",
+            (now - 1000, now - 1000),
+        )
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-healthy-packaging', 'Healthy packaging', '', 'running', 'zf-builder', 'P1', ?, '[]', '', ?, '', 'b1', '', '', ?, ?)",
+            (
+                json.dumps({"awaiting_pr": True, "sessions": []}),
+                str(workspace),
+                now - 30,
+                now - 30,
+            ),
+        )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+    fake_subprocess_run = lambda cmd, *args, **kwargs: MagicMock(
+        returncode=1, stdout="", stderr=""
+    )
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_SKIP_GIT": "",
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+            },
+        ),
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=repo_path),
+        patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
+        patch(
+            "dispatcher.scheduler._package_and_open_pr", return_value=False
+        ) as mock_package,
+    ):
+        result = run_dispatch_cycle(db_path)
+        assert result["ok"] is True
+        mock_package.assert_called_once()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, metadata FROM tasks WHERE id = 't-healthy-packaging'"
+        ).fetchone()
+        assert row[0] == "running"
+        assert json.loads(row[1])["awaiting_pr"] is True
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM task_activity WHERE task_id = 't-healthy-packaging' AND action = 'worker_recovered'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):

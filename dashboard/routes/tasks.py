@@ -997,6 +997,15 @@ def move_task(task_id: str, req: TaskMove):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
+        if (
+            req.actor
+            and req.actor.startswith("zf-")
+            and req.status in ("running", "done")
+            and not conn.in_transaction
+        ):
+            # Serialize the ownership check with dispatcher claims/recovery so
+            # a stale report cannot pass on a snapshot from before reassignment.
+            conn.execute("BEGIN IMMEDIATE")
         cursor.execute(
             "SELECT status, assignee, metadata, board_slug, title, pr_url FROM tasks WHERE id = ?",
             (task_id,),
@@ -1205,6 +1214,11 @@ def move_task(task_id: str, req: TaskMove):
             target_assignee=getattr(req, "assignee", None),
             metadata=meta,
         )
+        if meta.get("reviewer_orphan_recovered") and (
+            new_status != "todo" or resolved_assignee != "zf-reviewer"
+        ):
+            meta.pop("reviewer_orphan_recovered", None)
+            meta_updated = True
         if new_status == "todo" and resolved_assignee == "zf-builder":
             if "awaiting_approval" in meta:
                 meta.pop("awaiting_approval", None)

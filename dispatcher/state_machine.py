@@ -196,6 +196,8 @@ def transition_task(
         blocked_reason_type=meta.get("blocked_reason_type"),
         triage_phase=meta.get("triage_phase"),
     )
+    if target_status != "todo" or new_assignee != "zf-reviewer":
+        meta.pop("reviewer_orphan_recovered", None)
     if target_status == "todo" and new_assignee == "zf-builder":
         meta.pop("awaiting_approval", None)
         if meta.get("triage_phase") in (

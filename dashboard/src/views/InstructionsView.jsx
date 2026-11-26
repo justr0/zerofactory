@@ -71,7 +71,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
               [
                 { step: "1. Human", color: "bg-rose-950/80 border-rose-500/70 text-rose-100", role: "All Human Gates (0 Tokens)", actor: "human", desc: "Sorted by urgency: awaiting_merge (PR ready), spec_approval, interview, blocked, and triage. Consumes zero LLM tokens until activated or merged." },
                 { step: "2. Todo", color: "bg-sky-950/90 border-sky-500/70 text-sky-100", role: "AI Execution Queue", actor: "zf-* (Queued)", desc: "Tasks waiting for concurrency slots across 6 AI stages: grill, spec_draft, spec_audit, building, review, and recovery." },
-                { step: "3. Running", color: "bg-emerald-950/90 border-emerald-500/70 text-emerald-100", role: "Active AI & Packaging", actor: "zf-* / dispatcher", desc: "Active worker subprocesses inside isolated Git worktrees (grill, spec_draft, spec_audit, building, review, recovery) plus deterministic packaging (precommit & PR). Agent running/done reports require the current dispatch identity; workerless rows, including awaiting_pr packaging, recover after the spawn grace." },
+                { step: "3. Running", color: "bg-emerald-950/90 border-emerald-500/70 text-emerald-100", role: "Active AI & Packaging", actor: "zf-* / dispatcher", desc: "Active worker subprocesses inside isolated Git worktrees (grill, spec_draft, spec_audit, building, review, recovery) plus deterministic packaging (precommit & PR). Agent running/done reports require the current dispatch identity, not just the same assignee role. Workerless rows, including stalled awaiting_pr packaging, recover after the spawn grace; fresh packaging proceeds during it. Recovered reviewers remain pollable across no-verdict cycles without a redundant spawn until feedback is consumed or ownership changes." },
                 { step: "4. Done", color: "bg-slate-900 border-violet-500/70 text-violet-200", role: "Terminal Completed", actor: "System (Closed)", desc: "PR merged on GitHub or task closed terminally. Worktree pruned and background Mem0 repository memory extracted." }
               ].map((col, idx) =>
                 React.createElement(
@@ -296,7 +296,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                   title: "Precommit, Slop Gate & PR",
                   badge: "Running: packaging",
                   bcolor: "text-sky-100 bg-sky-900/90 border-sky-500/70",
-                  desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens). Workerless packaging gets the spawn grace to proceed before orphan recovery."
+                  desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens). Workerless packaging gets the spawn grace to proceed; stalled packaging is then recovered so it cannot hold a running slot forever."
                 },
                 {
                   num: "6",
@@ -565,7 +565,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                 title: "1. Deterministic Reaper (0 Tokens)",
                 badge: "Dispatcher Reaper",
                 badgeColor: "bg-emerald-950 border-emerald-500/70 text-emerald-200",
-                desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions are reaped and restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
+                desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions and expired workerless packaging are restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
               },
               {
                 title: "2. Autonomous Recovery Stage (Max 1)",

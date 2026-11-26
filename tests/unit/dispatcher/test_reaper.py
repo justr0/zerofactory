@@ -417,6 +417,32 @@ def test_reaper_recovers_orphan_after_spawn_grace_expires():
     assert activity == 1
 
 
+def test_reaper_recovers_stalled_awaiting_pr_packaging():
+    """A workerless builder packaging handoff is bounded by the spawn grace."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-stalled-packaging",
+        {"awaiting_pr": True, "sessions": [], "spawning_at": now - 400},
+        now,
+    )
+
+    reaped = reap_active_workers(conn.cursor(), now=now)
+    conn.commit()
+
+    task = conn.execute(
+        "SELECT status, metadata FROM tasks WHERE id = 't-stalled-packaging'"
+    ).fetchone()
+    assert reaped == 1
+    assert task["status"] == "todo"
+    assert "awaiting_pr" not in json.loads(task["metadata"])
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM task_activity WHERE task_id = 't-stalled-packaging' AND action = 'worker_recovered'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def test_reaper_spawn_grace_env_override(monkeypatch):
     """ZEROFACTORY_SPAWN_GRACE_SECONDS tunes the grace window."""
     import dispatcher

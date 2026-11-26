@@ -288,9 +288,9 @@ flowchart TD
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
   with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`.
-- Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
-- Workerless `running` rows, including `awaiting_pr` packaging rows, recover after `ZEROFACTORY_SPAWN_GRACE_SECONDS` (default **180s**) if no process, live PID, or ongoing session exists. Healthy deterministic packaging gets that grace window to proceed.
-- A recovered reviewer stays queued for PR polling instead of being respawned. Its orphan marker persists across polls until feedback routes the task or task ownership changes.
+- Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
+- Workerless `running` rows, including `awaiting_pr` packaging rows, recover after `ZEROFACTORY_SPAWN_GRACE_SECONDS` (default **180s**) if no process, live PID, or ongoing session exists. Stalled packaging therefore releases its running slot; healthy deterministic packaging gets that grace window to proceed.
+- A recovered reviewer stays queued for PR polling instead of being respawned. Polling happens before any reviewer restart and the orphan marker persists through polls with no verdict until feedback routes the task or ownership changes.
 - Stuck detection: `running > 3600s` (`ZEROFACTORY_TASK_TIMEOUT_SECONDS`) **or**
   `running > 900s && no log activity > 900s` (`DEFAULT_INACTIVITY_TIMEOUT_SECONDS`).
 - Retry budget: `DEFAULT_MAX_WORKER_RETRIES = 3` per task, then `permanently_blocked` (human only).
