@@ -1750,6 +1750,11 @@ var ZeroFactoryDashboard = (function(exports) {
 					icon: "🧠",
 					title: "Mem0 Vector Memory",
 					desc: "Hybrid semantic vector memory via Mem0 + Qdrant (FastEmbed ONNX CPU / OpenAI), auto-recorded on task completion."
+				},
+				{
+					icon: "🔒",
+					title: "Standalone Dashboard CSRF Boundary",
+					desc: "Standalone rejects cross-site/same-site browser mutations, validates Host as localhost/loopback, and requires any supplied Origin to match the request scheme, host, and port. Headerless API clients remain supported, so standalone mode is not authentication; GitHub issue sync is POST-only."
 				}
 			].map((card, idx) => React.createElement("div", {
 				key: idx,
@@ -1774,7 +1779,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					color: "bg-emerald-950/90 border-emerald-500/70 text-emerald-100",
 					role: "Active AI & Packaging",
 					actor: "zf-* / dispatcher",
-					desc: "Active worker subprocesses inside isolated Git worktrees (grill, spec_draft, spec_audit, building, review, recovery) plus deterministic packaging (precommit & PR)."
+					desc: "Active worker subprocesses inside isolated Git worktrees (grill, spec_draft, spec_audit, building, review, recovery) plus deterministic packaging (precommit & PR). Agent running/done reports require the current dispatch identity, not just the same assignee role. Workerless rows, including stalled awaiting_pr packaging, recover after the spawn grace; fresh packaging proceeds during it. Recovered reviewers remain pollable across no-verdict cycles without a redundant spawn until feedback is consumed or ownership changes."
 				},
 				{
 					step: "4. Done",
@@ -2132,14 +2137,14 @@ var ZeroFactoryDashboard = (function(exports) {
 					title: "Precommit, Slop Gate & PR",
 					badge: "Running: packaging",
 					bcolor: "text-sky-100 bg-sky-900/90 border-sky-500/70",
-					desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens)."
+					desc: "Dispatcher runs .zerofactory/precommit.sh (format ➔ build ➔ tests) and the zero-token Anti-Slop Gate (blocking debuggers, placeholder comments, skipped or assertion-free tests, untested >20-line production diffs, Do Not Touch file edits, and >800-line diffs, up to 3 retries), merges latest main, pushes, and opens a GitHub PR (0 LLM tokens). Workerless packaging gets the spawn grace to proceed; stalled packaging is then recovered so it cannot hold a running slot forever."
 				},
 				{
 					num: "6",
 					title: "Thematic Review",
 					badge: "Running: review",
 					bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); unresolved Round 2 escalates to Human (blocked); approval moves to Human (awaiting_merge)."
+					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge). A recovered reviewer remains queued for PR polling until a verdict routes it, without a redundant reviewer spawn."
 				},
 				{
 					num: "7",
@@ -2259,7 +2264,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					title: "1. Deterministic Reaper (0 Tokens)",
 					badge: "Dispatcher Reaper",
 					badgeColor: "bg-emerald-950 border-emerald-500/70 text-emerald-200",
-					desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions are reaped and restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
+					desc: "The built-in dispatcher reaper (dispatcher/reaper.py) audits active processes every 30s without invoking LLMs. Dead or orphaned sessions and expired workerless packaging are restored to Todo (worker_recovered), and invalid (status, assignee) pairs are auto-repaired."
 				},
 				{
 					title: "2. Autonomous Recovery Stage (Max 1)",
@@ -2436,7 +2441,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory move <task_id> running",
-							desc: "Transition ticket status"
+							desc: "Transition ticket status; agent running/done reports are bound to the current dispatcher execution"
 						},
 						{
 							cmd: "hermes zerofactory recover <task_id> [--guidance \"...\"]",
@@ -2460,7 +2465,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory import-gh-issue --sync",
-							desc: "Batch import open issues requested for AI investigation"
+							desc: "Batch import open issues labeled zerofactory, ai-investigate, or ai-triage; --label narrows the sync"
 						}
 					]
 				},
@@ -2566,7 +2571,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					title: "Codebase Improvement Scanner (zf-orchestrator)",
 					interval: "On Idle (Configured Capacity Gate)",
 					tokens: "0 Tokens when Busy / Cooldown",
-					desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
+					desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. LLM capacity counts agent-running tasks and active scanners; deterministic packaging consumes no LLM slot, but still counts toward task WIP and board running limits. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
 					badge: "Dispatcher-Gated • zf-orchestrator"
 				},
 				{

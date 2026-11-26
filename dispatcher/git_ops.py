@@ -43,7 +43,11 @@ def get_default_branch(repo_path: Path) -> str:
             timeout=5,
         )
         if res.returncode == 0 and res.stdout.strip():
-            return res.stdout.strip().split("/")[-1]
+            ref = res.stdout.strip()
+            origin_prefix = "refs/remotes/origin/"
+            if ref.startswith(origin_prefix):
+                return ref[len(origin_prefix) :]
+            return ref.split("/")[-1]
     except Exception:
         pass
 
