@@ -826,6 +826,54 @@ def test_reaper_retries_signal_interrupted_exit0_instead_of_packaging(tmp_path: 
     assert "signal_number=15" in (tmp_path / "worker.log").read_text()
 
 
+def test_reaper_retries_exit_130_and_records_signal_diagnostics(tmp_path: Path):
+    """A conventional SIGINT exit is a failure, not a successful worker handoff."""
+    task_id = "t-signal-exit130"
+    now = 5000
+    conn = _spawn_grace_conn(
+        task_id,
+        {"worker_pid": 4245, "started_at": now - 16},
+        now=now,
+    )
+    mock_proc = MagicMock()
+    mock_proc.pid = 4245
+    mock_proc.poll.return_value = 130
+    _active_workers[task_id] = mock_proc
+    try:
+        with (
+            patch("dispatcher.reaper.read_worker_signal", return_value=None),
+            patch(
+                "dispatcher.reaper._worker_log_path",
+                return_value=tmp_path / "worker.log",
+            ),
+        ):
+            reaped = reap_active_workers(conn.cursor(), now=now)
+            conn.commit()
+    finally:
+        _active_workers.pop(task_id, None)
+
+    assert reaped == 1
+    row = conn.execute(
+        "SELECT status, metadata FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert json.loads(row["metadata"])["worker_failure_retries"] == 1
+    actions = conn.execute(
+        "SELECT action, details FROM task_activity WHERE task_id = ?", (task_id,)
+    ).fetchall()
+    signal_event = next(
+        row["details"]
+        for row in actions
+        if row["action"] == "worker_signal_interrupted"
+    )
+    assert "signal_number=2" in signal_event
+    assert f"task_id={task_id}" in signal_event
+    assert "elapsed_seconds=16" in signal_event
+    assert not any(row["action"] == "worker_done" for row in actions)
+    assert any(row["action"] == "worker_failed" for row in actions)
+    assert "signal_number=2" in (tmp_path / "worker.log").read_text()
+
+
 def test_reaper_infers_signal_number_from_exit_130():
     """Signal-style nonzero exits remain failures even without a sidecar marker."""
     from dispatcher.reaper import _worker_signal_details

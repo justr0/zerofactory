@@ -276,6 +276,25 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         ):
                             break
                         task_id = str(row["id"])
+                        cursor.execute(
+                            """
+                            SELECT 1 FROM task_links tl
+                            JOIN tasks parent ON parent.id = tl.parent_id
+                            WHERE tl.child_id = ?
+                            AND (tl.link_type = 'blocks' OR tl.link_type IS NULL)
+                            AND parent.status != 'done'
+                            LIMIT 1
+                            """,
+                            (task_id,),
+                        )
+                        if cursor.fetchone():
+                            log_step_state(
+                                "dispatch",
+                                task_id,
+                                "deferred",
+                                "blocking parent dependencies are not all done; will dispatch next cycle",
+                            )
+                            continue
                         proc = _active_workers.get(task_id)
                         if proc is not None and proc.poll() is None:
                             continue
@@ -508,7 +527,19 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         meta["worker_execution_id"] = uuid.uuid4().hex
 
                         cursor.execute(
-                            "UPDATE tasks SET status = ?, updated_at = ?, metadata = ? WHERE id = ? AND (status = 'todo' OR (status = 'triage' AND assignee = 'zf-orchestrator'))",
+                            """
+                            UPDATE tasks
+                            SET status = ?, updated_at = ?, metadata = ?
+                            WHERE id = ?
+                            AND (status = 'todo' OR (status = 'triage' AND assignee = 'zf-orchestrator'))
+                            AND NOT EXISTS (
+                                SELECT 1 FROM task_links tl
+                                JOIN tasks parent ON parent.id = tl.parent_id
+                                WHERE tl.child_id = tasks.id
+                                AND (tl.link_type = 'blocks' OR tl.link_type IS NULL)
+                                AND parent.status != 'done'
+                            )
+                            """,
                             (
                                 target_dispatch_status,
                                 now,

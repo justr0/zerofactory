@@ -60,6 +60,17 @@ flowchart TD
 | 7 | Exactly one status reply is posted to a source GitHub issue, only at PR-open time | `scheduler.post_issue_pr_comment` |
 | 8 | Nothing runs unbounded: worker timeout 3600s, retries capped, review rounds capped | reaper + `_handle_precommit_failure` + review cap |
 
+### Standalone Dashboard Request Boundary
+
+The optional `dashboard.standalone` server binds only to a loopback IP. For
+state-changing browser requests, it rejects cross-site/same-site Fetch Metadata,
+validates the HTTP Host as `localhost` or a loopback IP (including `::1`), and
+requires any supplied `Origin` to be valid and match the request scheme, host, and
+port. Headerless non-browser API clients remain supported; this is a CSRF check,
+not authentication, so do not expose the standalone API through a non-loopback
+proxy. GitHub issue synchronization is POST-only so its importer cannot be invoked
+by a cross-origin GET.
+
 ---
 
 ## 2. Board & Task Model
@@ -287,8 +298,6 @@ flowchart TD
 ```
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
-  with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`.
-- The process-group wrapper atomically records caught `SIGHUP`, `SIGINT`, or `SIGTERM` in the worker log and a signal marker. The reaper records `worker_signal_interrupted` with signal number, task ID, elapsed seconds, and turn state; even Hermes' signal-handler exit code 0 is retried as a worker failure, never routed to packaging.
   with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`.
 - The process-group wrapper atomically records caught `SIGHUP`, `SIGINT`, or `SIGTERM` in the worker log and a signal marker. The reaper records `worker_signal_interrupted` with signal number, task ID, elapsed seconds, and turn state; even Hermes' signal-handler exit code 0 is retried as a worker failure, never routed to packaging.
 - Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.

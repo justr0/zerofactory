@@ -73,6 +73,7 @@ def test_standalone_ui_wires_every_management_surface(initialized_db, default_bo
         ("POST", "/boards"),
         ("PATCH", "/boards/{slug}"),
         ("POST", "/boards/test-clone"),
+        ("POST", "/boards/{slug}/sync-gh-issues"),
         ("GET", "/dispatch/status"),
         ("POST", "/dispatch/start"),
         ("POST", "/dispatch/stop"),
