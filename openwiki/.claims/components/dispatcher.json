@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b173ec66903efccbbfc1cab581d35305e9a077517aef8f00a13337bfa142975c",
+  "pageVersion": "sha256:14d114daac7a355c09163eae886c64f35e06a7410c5a3a851f96f9bc7b591c93",
   "claims": [
     {
       "id": "claim_c2147ad6765547fc8b36019ed25959a4",
@@ -305,10 +305,24 @@
           "version": "repo-lines-v1:sha256:4aa7abfcc12fb059ffa8379668f699fba03b942888a1c23b5751638a01acdc66:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmNmI3ZmZiODIwMzdhMmJlYTk2YjE0MTU4Yzg3ZDFlN2IwNDM4NzhkNWU5ODJmMDQ5MjA3MWM1MzUxMWYxNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkMDhiMDllODc4ZDdlMGVkYjhjYjkxN2ZlMjY1OTFmY2M0YWM3ZjhmMTRmMTZhY2NkNWQyYjM2NGIwZDgwZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFlMzFjZmE2MTc0M2Y0MTI3Zjg5NzEwMmVkODdjNmQ2YmMyMTQ0ZTFmMjBmYjM3NzFlMTFiYzZiMTdkZTZmZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhMzBiNWU5N2Y5N2VjYjQ4YjllNmM1YWRmYTViYzIzY2JiMTE5MWQ4NjQwMDkzYmNlYTQ2ZDRkMDcyM2RkODIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_afa766e2a269491aa59e4d67a39b9fac",
+      "statement": "The scanner reaper can process live and completed scanners in the same pass, removing the completed scanner and its PID record while preserving the live scanner and its PID record.",
+      "evidence": [
+        {
+          "resource": "repo://dispatcher/scanner.py#L221-L262",
+          "version": "repo-lines-v1:sha256:02affb855b7a6dbfeda47d8480f9f45be13ec58904acfe5b4136878cc1e06c5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3OTEzMDNlZmI0MWJlNGEyODk3NjYzMWNlY2NlYzJhM2MzM2E0MzkxODg3NWJhZWVkMTMzZmFiYjdhOGQyZDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmNGE0ZGFmOTMyNzMwNDYyOTFlZDc1NDQyOTVkODQ4NmFhYWRlNzZiMmM4MzMyZTA2MTMyNGY5N2M1NmFjZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlNzU3NWMzYjc3NzZjZjJmOWMyYmZiY2E0NGYyMTQ4MTNhNzgyN2VhYTljMzg0NTRjNzAzYjY4OWE3NDQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwNDkxZGVhZTk2M2ZiMmU4MzM2ZGVhZTg3YjJlYzgzYWU0MjNjOWZhMjQ4MmI2YTgwOTAxMzNhYTkxODcyYzEifQ"
+        },
+        {
+          "resource": "repo://tests/unit/dispatcher/test_scanner.py#L516-L562",
+          "version": "repo-lines-v1:sha256:0df17807ae2acbff8cd8a02587bef5d6aecb307d1f78a85c55a9c3d3230b56d9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliYjQ3OWVkMmJlNjFjMWRmODQyMmI0NWZhMzc2ZmE0Y2FkMjY5ZWQ2NTc3MzAwOTU5YTUwNjdhMmI4ZjJhMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2YTI5ZjcwNzhlNGQ3OTA2NTVmY2IyNThhY2VkZGE5ZDAzMzE1ZGI1YzNmM2QwMjQyOGEyN2MxYzkwYWY1ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyMjU4YjE4NGE1ZGQ1NjIyMDY3NTE5NTI2ZmZhNDEzNDJiMzZiZDM4Nzk0N2U0YWUxYWRjMjllOWFkMzFlYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-22T19:54:57.790Z"
+    "at": "2026-11-26T14:39:36.019Z"
   }
 }

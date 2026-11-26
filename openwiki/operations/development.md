@@ -5,7 +5,7 @@ description: Gives the supported repository precommit and dashboard build comman
 tags: [operations, development, testing, build]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T19:30:17.111Z
+    at: 2026-11-26T14:39:36.019Z
 sources:
   - id: openwiki-source-9ab161c6e9774cf771b19ced
     resource: repo://.zerofactory/precommit.sh

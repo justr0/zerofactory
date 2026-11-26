@@ -28,10 +28,12 @@ sources:
     resource: repo://dispatcher/worktree.py
   - id: openwiki-source-57b14ecc6ef51ae6212b15f0
     resource: repo://settings.py
-generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
+  - id: openwiki-source-e06a9686c31922a42e06fb20
+    resource: repo://tests/unit/dispatcher/test_scanner.py
+generated: { by: "hermes", at: "2026-11-26T14:39:36.019Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T19:54:57.790Z
+    at: 2026-11-26T14:39:36.019Z
 ---
 
 # Dispatch Engine
@@ -121,7 +123,7 @@ Todo backlog, the scanner setting, existing scanner state, and cooldown allow it
 `idle_scan_max_todo`) so the dispatcher picks them up without a human
 triage step (`repo://dispatcher/scanner.py#L375-L384`). The scanner lifecycle
 helpers are `get_active_scanner_pids` and `kill_board_scanner`
-(`repo://dispatcher/scanner.py#L59-L72`, `repo://dispatcher/scanner.py#L152-L218`).
+(`repo://dispatcher/scanner.py#L59-L72`, `repo://dispatcher/scanner.py#L152-L218`). The focused reaper test verifies that a completed scanner's PID record and artifacts are removed while a live scanner and its PID record remain (`repo://tests/unit/dispatcher/test_scanner.py#L516-L562`).
 
 ## Isolated-worktree invariant
 
@@ -324,8 +326,7 @@ ops).
   human-recovered task a fresh round budget
   (`repo://dashboard/routes/tasks.py#L1724-L1726`).
 - **External-issue PR linkage** — when a task carries `external_issue` metadata
-<!-- openwiki: broken internal link [/openwiki/components/issues-importer.md] link "/openwiki/components/issues-importer.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-  (see [External Issue Import](/openwiki/components/issues-importer.md)), the
+  (see `repo://issues/importer.py`), the
   PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
   `Resolves: <KEY>` branch still exists for pre-Jira-removal `jira`-source
   metadata rows) so merging the PR closes the source issue
@@ -414,12 +415,8 @@ step that died; the full grep playbook lives in
 ## Relationships
 
 Upstream: claims work off the durable Kanban SQLite substrate described in
-<!-- openwiki: broken internal link [/openwiki/architecture.md] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[Architecture](/openwiki/architecture.md). Downstream: the deterministic
-precommit and PR ops hand off to the reviewer, and the dashboard layer
-<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-([Dashboard & Automation](/openwiki/components/dashboard-cron.md)) triggers
-`run_dispatch_cycle` and inspects worker liveness. Coding rules for touching
-this code live in
-<!-- openwiki: broken internal link [/openwiki/conventions.md] link "/openwiki/conventions.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[Conventions](/openwiki/conventions.md).
+[Architecture](../architecture/overview.md). Downstream: the deterministic precommit
+and PR ops hand off to the reviewer, and the dashboard dispatch route
+(`repo://dashboard/routes/dispatch.py`) triggers `run_dispatch_cycle` and
+inspects worker liveness. Coding rules for touching this code live in
+[Conventions](../conventions.md).
