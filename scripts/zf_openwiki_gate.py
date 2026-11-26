@@ -190,6 +190,10 @@ def _request_openwiki_refresh(
                 False,
                 f"{reason} Created task '{task['id']}' in 'todo' for zf-builder.",
             )
+        return (
+            True,
+            f"{reason} Failed to create an OpenWiki refresh task; wake requested.",
+        )
     return True, reason
 
 
