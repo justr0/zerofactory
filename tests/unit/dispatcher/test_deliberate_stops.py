@@ -11,7 +11,7 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -171,7 +171,7 @@ def test_forget_deliberate_stop_removes_only_the_matching_marker():
 def test_terminate_task_worker_marks_the_stop_when_it_signals():
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", mock_open(read_data=f"hermes -q {TASK_ID}".encode())),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch(
             "dispatcher.process_manager.terminate_process_group", return_value=True
         ) as term,
@@ -183,10 +183,9 @@ def test_terminate_task_worker_marks_the_stop_when_it_signals():
 
 
 def test_terminate_worker_process_marks_only_after_a_signal_was_sent():
-    cmdline = mock_open(read_data=f"hermes -q {TASK_ID}".encode())
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", cmdline),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch("dispatcher.process_manager.terminate_process_group", return_value=True),
     ):
         terminate_worker_process(None, 9876, task_id=TASK_ID)
@@ -194,12 +193,25 @@ def test_terminate_worker_process_marks_only_after_a_signal_was_sent():
 
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("builtins.open", cmdline),
+        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
         patch("dispatcher.process_manager.terminate_process_group", return_value=False),
     ):
         terminate_worker_process(None, 9876, task_id=TASK_ID)
     # Nothing was signalled (e.g. own process group, pid already gone): the
     # worker's later exit must still be judged on its own merits.
+    assert _stop_marker_path(TASK_ID).exists() is False
+
+
+def test_terminate_worker_process_skips_mismatched_identity():
+    with (
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch(
+            "dispatcher.process_manager.process_matches_identity", return_value=False
+        ),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+    ):
+        terminate_worker_process(None, 9876, task_id=TASK_ID)
+    mock_term.assert_not_called()
     assert _stop_marker_path(TASK_ID).exists() is False
 
 
@@ -228,18 +240,19 @@ def test_terminate_process_group_reports_a_real_signal():
 # --- reaper: deliberate stop is not a crash ------------------------------
 
 
-def test_reaper_books_exit_of_dispatcher_stopped_worker_as_worker_stopped():
+@pytest.mark.parametrize("exit_code", [0, 130])
+def test_reaper_books_exit_of_dispatcher_stopped_worker_as_worker_stopped(exit_code):
     conn = _board_db()
     mock_proc = MagicMock()
     mock_proc.pid = 7171
-    mock_proc.poll.return_value = 130  # SIGINT status of a killed worker
+    mock_proc.poll.return_value = exit_code
     _active_workers[TASK_ID] = mock_proc
     mark_deliberate_stop(TASK_ID, 7171)
 
     reaped = reap_active_workers(conn.cursor(), now=9000)
     conn.commit()
 
-    assert reaped == 1
+    assert reaped == 1, f"unexpected reaper count for exit code {exit_code}"
     row = conn.execute(
         "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (TASK_ID,)
     ).fetchone()

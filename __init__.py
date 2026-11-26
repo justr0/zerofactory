@@ -235,9 +235,13 @@ except ImportError:
     from profile_manager import ZF_PROFILES, ensure_zf_profiles  # type: ignore
 
 try:
-    from .issues import GitHubIssueClient, import_external_issue
+    from .issues import AI_REQUEST_LABELS, GitHubIssueClient, import_external_issue
 except ImportError:
-    from issues import GitHubIssueClient, import_external_issue  # type: ignore
+    from issues import (  # type: ignore
+        AI_REQUEST_LABELS,
+        GitHubIssueClient,
+        import_external_issue,
+    )
 
 try:
     from .paths import get_active_profile
@@ -464,8 +468,8 @@ def register(ctx: Any):
         )
         p_import_gh.add_argument(
             "--label",
-            default="zerofactory",
-            help="Required human request label for AI investigation (default: 'zerofactory')",
+            default=None,
+            help="Request label (default: zerofactory; sync without this option also recognizes ai-investigate and ai-triage)",
         )
         p_import_gh.add_argument(
             "--force",
@@ -1056,7 +1060,8 @@ def register(ctx: Any):
         elif action == "import-gh-issue":
             client = GitHubIssueClient(default_repo=getattr(args, "repo", None))
             actor = getattr(args, "actor", None) or get_active_profile() or "user"
-            req_label = getattr(args, "label", "zerofactory")
+            selected_label = getattr(args, "label", None) or None
+            req_label = selected_label or "zerofactory"
             force = getattr(args, "force", False)
             sync_mode = getattr(args, "sync", False)
 
@@ -1077,14 +1082,21 @@ def register(ctx: Any):
                         )
                         sys.exit(1)
 
+                    labels_to_scan = (
+                        (selected_label,) if selected_label else AI_REQUEST_LABELS
+                    )
                     print(
-                        f"\nScanning {repo_to_sync} for open issues labeled '{req_label}'..."
+                        f"\nScanning {repo_to_sync} for open issues labeled "
+                        f"{', '.join(labels_to_scan)}..."
                     )
                     issues_to_import = client.fetch_investigation_issues(
-                        repo=repo_to_sync, label=req_label, state="open"
+                        repo=repo_to_sync, label=selected_label, state="open"
                     )
                     if not issues_to_import:
-                        print(f"No open issues found with label '{req_label}'.\n")
+                        print(
+                            "No open issues found with labels "
+                            f"{', '.join(labels_to_scan)}.\n"
+                        )
                         return
 
                     print(
@@ -1123,7 +1135,7 @@ def register(ctx: Any):
                     )
                     # Check human request label
                     if not force and not issue.has_ai_request_label(
-                        {req_label, "zerofactory", "ai-investigate", "ai-triage"}
+                        set(AI_REQUEST_LABELS) | {req_label}
                     ):
                         print(
                             f"\nError: GitHub issue #{issue.id} ('{issue.title}') lacks an explicit human AI investigation label "
@@ -1247,7 +1259,11 @@ def register(ctx: Any):
             reason = getattr(args, "reason", None)
             assignee = getattr(args, "assignee", None)
             req = TaskMove(
-                status=args.status, actor=actor, reason=reason, assignee=assignee
+                status=args.status,
+                actor=actor,
+                reason=reason,
+                assignee=assignee,
+                worker_execution_id=os.environ.get("ZEROFACTORY_WORKER_EXECUTION_ID"),
             )
             res = _move_task(args.task_id, req)
             if res.get("ignored"):

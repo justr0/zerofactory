@@ -119,9 +119,14 @@ def get_agents_status(board_slug: str | None = None):
                         LIMIT 100
                     """).fetchall()
 
-                    total_sessions = len(rows)
+                    totals = cur.execute("""
+                        SELECT COUNT(*) AS total_sessions,
+                               COALESCE(SUM(tool_call_count), 0) AS total_tool_calls
+                        FROM sessions
+                    """).fetchone()
+                    total_sessions = totals["total_sessions"]
+                    total_tool_calls = totals["total_tool_calls"]
                     for r in rows:
-                        total_tool_calls += r["tool_call_count"] or 0
                         act_ts = r["last_activity_at"] or r["started_at"]
                         if act_ts and (
                             last_active_at is None or act_ts > last_active_at

@@ -22,6 +22,7 @@ from .process_manager import (
     consume_deliberate_stop,
     get_process_exit_code,
     read_worker_signal,
+    is_pid_alive,
 )
 from .state_machine import transition_task
 
@@ -33,6 +34,7 @@ def _record_deliberate_stop(
     meta: dict[str, Any],
     now: int,
     detail: str,
+    retcode: int | None = None,
 ) -> None:
     """Book a dispatcher-initiated worker stop without spending the failure budget.
 
@@ -41,6 +43,15 @@ def _record_deliberate_stop(
     signal status, which the reaper used to book as a crash: retrying the same
     role (duplicate reviews) and parking the task after three stops.
     """
+    exit_details = _worker_signal_details(task_id, retcode, meta, now) or (
+        _worker_exit_details(task_id, retcode, meta, now)
+    )
+    detail = (
+        f"{detail}; signal_number={exit_details['signal_number']} "
+        f"signal_name={exit_details['signal_name']} task_id={task_id} "
+        f"elapsed_seconds={exit_details['elapsed_seconds']} "
+        f"turn_state={exit_details['turn_state']}"
+    )
     meta = _mark_task_session_ended(meta, now, "stopped")
     meta["last_worker_stop"] = {"pid": pid, "stopped_at": now}
     cursor.execute(
@@ -56,6 +67,7 @@ def _record_deliberate_stop(
             now,
         ),
     )
+    cleanup_process_artifacts(task_id)
     _log.info(
         "Worker for task %s was stopped by the dispatcher (pid %s, %s); not a failure",
         task_id,
@@ -327,9 +339,14 @@ def _mark_task_session_ended(
 
 def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
     """Check running tasks and reap finished, crashed, or stuck worker processes."""
-    cursor.execute(
-        "SELECT id, title, status, assignee, metadata, updated_at, created_at FROM tasks WHERE status = 'running' OR (status = 'triage' AND metadata LIKE '%\"status\": \"ongoing\"%')"
-    )
+    try:
+        cursor.execute(
+            "SELECT id, title, status, assignee, metadata, updated_at, created_at, worker_pid FROM tasks WHERE status = 'running' OR (status = 'triage' AND metadata LIKE '%\"status\": \"ongoing\"%')"
+        )
+    except sqlite3.OperationalError:
+        cursor.execute(
+            "SELECT id, title, status, assignee, metadata, updated_at, created_at, NULL AS worker_pid FROM tasks WHERE status = 'running' OR (status = 'triage' AND metadata LIKE '%\"status\": \"ongoing\"%')"
+        )
     running_rows = cursor.fetchall()
     reaped = 0
 
@@ -348,22 +365,34 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
         meta = _parse_task_metadata(row["metadata"])
 
         proc = _active_workers.get(task_id)
-        pid = meta.get("worker_pid") or (proc.pid if proc else None)
+        pid = proc.pid if proc else (meta.get("worker_pid") or row["worker_pid"])
 
         sessions = meta.get("sessions")
         has_ongoing_session = isinstance(sessions, list) and any(
             isinstance(session, dict) and session.get("status") == "ongoing"
             for session in sessions
         )
-        if proc is None and pid and not has_ongoing_session:
+        if (
+            proc is None
+            and pid
+            and not has_ongoing_session
+            and not is_pid_alive(int(pid))
+        ):
             meta.pop("worker_pid", None)
             meta.pop("session_id", None)
             meta.pop("started_at", None)
+            meta.pop("worker_execution_id", None)
             pid = None
-            cursor.execute(
-                "UPDATE tasks SET metadata = ? WHERE id = ?",
-                (json.dumps(meta), task_id),
-            )
+            try:
+                cursor.execute(
+                    "UPDATE tasks SET worker_pid = NULL, started_at = NULL, metadata = ? WHERE id = ?",
+                    (json.dumps(meta), task_id),
+                )
+            except sqlite3.OperationalError:
+                cursor.execute(
+                    "UPDATE tasks SET metadata = ? WHERE id = ?",
+                    (json.dumps(meta), task_id),
+                )
 
         # Detect exit using either in-memory proc or atomic .exit file
         retcode = None
@@ -375,6 +404,19 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 retcode = file_rc
 
         if retcode is not None:
+            if consume_deliberate_stop(task_id, pid):
+                _active_workers.pop(task_id, None)
+                _record_deliberate_stop(
+                    cursor,
+                    task_id,
+                    pid,
+                    meta,
+                    now,
+                    f"exit code {retcode}",
+                    retcode,
+                )
+                reaped += 1
+                continue
             signal_details = _worker_signal_details(task_id, retcode, meta, now)
             unfinished_session = (
                 retcode == 0
@@ -527,12 +569,6 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 t_check = cursor.fetchone()
                 curr_stat = t_check["status"] if t_check else row_status
-                if consume_deliberate_stop(task_id, pid):
-                    _record_deliberate_stop(
-                        cursor, task_id, pid, meta, now, f"exit code {retcode}"
-                    )
-                    reaped += 1
-                    continue
                 if curr_stat in ("todo", "done"):
                     meta = _d()._mark_task_session_ended(meta, now, "finished")
                     cursor.execute(
@@ -666,8 +702,6 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
         elif proc is None and pid:
             proc_state, _ = get_process_exit_code(task_id, pid)
             if proc_state == ProcessState.CRASHED or not _d().is_pid_alive(int(pid)):
-                if row_status == "running" and meta.get("awaiting_pr"):
-                    continue
                 if consume_deliberate_stop(task_id, pid):
                     _record_deliberate_stop(
                         cursor, task_id, int(pid), meta, now, "process gone"
@@ -774,9 +808,12 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 reaped += 1
                 continue
-        elif row_status == "running" and meta.get("awaiting_pr"):
-            continue
-        elif row_status == "running" and not has_ongoing_session:
+        elif (
+            row_status == "running"
+            and proc is None
+            and not pid
+            and not has_ongoing_session
+        ):
             claim_age = max(0, now - int(row["updated_at"] or now))
             spawning_at = meta.get("spawning_at")
             spawn_age = max(0, now - int(spawning_at)) if spawning_at else claim_age
@@ -796,7 +833,17 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 else "todo"
             )
-            transition_task(conn, task_id, orphan_status, actor="dispatcher")
+            transition_task(
+                conn,
+                task_id,
+                orphan_status,
+                metadata_patch=(
+                    {"reviewer_orphan_recovered": True}
+                    if curr_asgn == "zf-reviewer"
+                    else None
+                ),
+                actor="dispatcher",
+            )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'worker_recovered', 'Orphaned running task (no active worker process or session) recovered to todo', ?)",
                 (task_id, now),

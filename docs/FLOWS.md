@@ -229,6 +229,27 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      remove worktree, clear `blocked_reason` / `blocked_reason_type`, route back to builder on Round 1: `todo` + `assignee=<PR author>` + review-comment
      prompt block. Actionable review feedback from reviewers/humans overrides any prior `approved` status and unparks tasks back to `todo`. When `review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**)
      → escalate: `blocked` + `assignee=human` + `review_cap_reached` (short-circuiting idempotently on subsequent poll cycles until recovered).
+     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **1**; `0` restores the plain human park)
+     the cap also posts exactly one `[AI:zf-dispatcher] ARBITRATION REQUEST` conversation comment on the PR —
+     carrying the request key `arbitration:<task_id>:<full_head_sha>` and the full head SHA — and parks the task
+     (`blocked` + `assignee=human`) for the arbiter profile (`ZEROFACTORY_REVIEW_CAP_ARBITER`, default
+     `zf-gatekeeper`) instead of the human. While parked (request open or settled) the task is excluded from
+     conflict handling, ordinary review-comment routing and auto-merge; only a bound verdict, the request
+     timeout, a merged/closed PR or an operator recovery moves it. A verdict counts only when the **first line**
+     of a PR conversation comment (never an inline review body or review summary) is exactly
+     `[AI:<arbiter>] ARBITRATION VERDICT: <FIX|MERGE|ESCALATE> | REQUEST: <key> | HEAD: <full sha>`, posted by an
+     authorized GitHub account (`ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS`, default the account `gh` is
+     authenticated as plus the repository owner), with `REQUEST` equal to the task's open request key and `HEAD`
+     equal to both the request head and the live PR head; anything else is logged and ignored. **FIX** re-opens
+     one bounded fix round (fresh review budget; the verdict body is the builder's entire brief, earlier findings
+     are deferred), **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
+     leaves it parked for the human. Before a verdict is consumed the dispatcher re-checks the flag and the
+     human-review opt-outs (voiding the request into a plain park), and a reply is applied only inside
+     `requested_at + ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` (default **24**), after which the request
+     expires into the human park. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
+     (default **2**); beyond that the cap parks for a human as before. Tasks already flagged for human review
+     (`permanently_blocked`, `hitl` / `manual-review` tags, HITL-labelled external issues) are never arbitrated,
+     and without the arbiter profile on the host the request is not posted.
    - **`approved` verdict or `reviewDecision == APPROVED` (with no actionable comments)** → `blocked` +
      `assignee=human` ("Reviewer approved; awaiting human merge"). If late non-actionable comments arrive while already parked, they are forwarded to task comments idempotently without re-parking side effects.
 3. **Packaging fallback** (no PR yet, or `done`/`blocked` handoff): deterministic
@@ -262,12 +283,17 @@ flowchart TD
     FB -->|no| PERM["blocked + permanently_blocked<br/>human gate"]
     FB -->|yes| RETRY["todo — auto-retry on claim"]
     POLL -->|"PID gone / stuck"| STUCK["terminate, retries++, blocked<br/>timeout 3600s / inactivity 900s"]
-    RUN -.->|"no proc, no PID, no session,<br/>claim age >= 30s"| ORPH["orphaned running -> todo<br/>activity worker_recovered"]
+    RUN -.->|"no proc, no live PID, no session,<br/>spawn grace expired"| ORPH["orphaned running -> todo<br/>activity worker_recovered"]
 ```
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
   with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`.
 - The process-group wrapper atomically records caught `SIGHUP`, `SIGINT`, or `SIGTERM` in the worker log and a signal marker. The reaper records `worker_signal_interrupted` with signal number, task ID, elapsed seconds, and turn state; even Hermes' signal-handler exit code 0 is retried as a worker failure, never routed to packaging.
+  with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`.
+- The process-group wrapper atomically records caught `SIGHUP`, `SIGINT`, or `SIGTERM` in the worker log and a signal marker. The reaper records `worker_signal_interrupted` with signal number, task ID, elapsed seconds, and turn state; even Hermes' signal-handler exit code 0 is retried as a worker failure, never routed to packaging.
+- Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
+- Workerless `running` rows, including `awaiting_pr` packaging rows, recover after `ZEROFACTORY_SPAWN_GRACE_SECONDS` (default **180s**) if no process, live PID, or ongoing session exists. Stalled packaging therefore releases its running slot; healthy deterministic packaging gets that grace window to proceed.
+- A recovered reviewer stays queued for PR polling instead of being respawned. Polling happens before any reviewer restart and the orphan marker persists through polls with no verdict until feedback routes the task or ownership changes.
 - Stuck detection: `running > 3600s` (`ZEROFACTORY_TASK_TIMEOUT_SECONDS`) **or**
   `running > 900s && no log activity > 900s` (`DEFAULT_INACTIVITY_TIMEOUT_SECONDS`).
 - Retry budget: `DEFAULT_MAX_WORKER_RETRIES = 3` per task, then `permanently_blocked` (human only).
@@ -435,7 +461,8 @@ stateDiagram-v2
     TERM --> TERM: step 3 guard: cleanup only<br/>stop worker, rm worktree,<br/>gh pr close + rm branch if close_pr
 ```
 
-- **Agent** `move done` (actor `zf-*`): "builder finished" → the task stays **`running`** with `awaiting_pr` → packaging pipeline → `todo` + reviewer. `done` appears only after merge/close/human close.
+- **Agent** `move done` (actor `zf-*`): only the current dispatcher-tracked execution may report completion; stale/untracked reports are rejected. A valid builder completion → the task stays **`running`** with `awaiting_pr` → packaging pipeline → `todo` + reviewer. `done` appears only after merge/close/human close.
+- **Workerless recovery**: `running` tasks with no process, live PID, or ongoing session recover to `todo` after the spawn grace even if `awaiting_pr` is set. A recovered reviewer remains eligible for PR verdict polling before any reviewer worker can be started.
 - **Human** `move done` (actor `user`, e.g. drag-and-drop): **terminal** — aborts sessions,
   stops the worker, and if a PR is open sets `close_pr` so the next cycle
   archives the PR (close + branch delete, activity `manual_done`). Never re-dispatched.
@@ -460,6 +487,10 @@ flowchart LR
 
 Entry points: dashboard **Sync GitHub Issues**, `import-gh-issue` endpoint/CLI,
 and the queue watchdog's rate-limited auto-sync (15-min per-repo cooldown).
+Batch sync without a label scans the supported request labels
+`zerofactory`, `ai-investigate`, and `ai-triage`, deduplicating issues returned
+by more than one label; an explicit `--label` (CLI) or `label` query parameter
+(dashboard) limits the sync to that label.
 
 ### Outbound (PR → source issue reply, "Option B")
 
@@ -562,7 +593,12 @@ runtime → installed deps → simple functions → minimum viable diff) via bun
 | `ZEROFACTORY_SKIP_PRECOMMIT` | unset | gate returns pass without running |
 | `ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS` | `300` | gate hard timeout |
 | `ZEROFACTORY_MAX_PRECOMMIT_RETRIES` | `3` | self-heal retries before blocking |
-| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before human escalation |
+| `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before escalation |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `1` | at the review cap, ask an arbiter profile instead of parking for a human (`0`: plain human park) |
+| `ZEROFACTORY_REVIEW_CAP_ARBITER` | `zf-gatekeeper` | arbiter profile (role tag on the verdict comment) |
+| `ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS` | `gh` login + repo owner | comma-separated GitHub accounts whose verdict comment counts |
+| `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` | `2` | arbitrations per task before falling back to the human |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` | `24` | unanswered request expires into the human park |
 | `ZEROFACTORY_MAX_CONFLICT_RETRIES` | `3` | merge-conflict resolution attempts |
 | `ZEROFACTORY_TASK_TIMEOUT_SECONDS` | `3600` | max worker runtime |
 | (inactivity) | `900` | max silence before stuck |

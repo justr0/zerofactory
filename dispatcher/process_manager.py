@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import re
 import signal
 import sqlite3
 import stat
@@ -319,8 +320,33 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
             cmd_data = cmdline_path.read_bytes()
             if not cmd_data:
                 return False
-            return f"worker_{task_id}.exit".encode() in cmd_data
-        return f"worker_{task_id}.exit" in cmd_data
+        if isinstance(cmd_data, bytes):
+            args = [os.fsdecode(arg) for arg in cmd_data.split(b"\0") if arg]
+        else:
+            args = [
+                quoted or bare
+                for quoted, bare in re.findall(r'"([^"]*)"|(\S+)', cmd_data)
+            ]
+
+        def is_exit_prefix(argument: str) -> bool:
+            basename = argument.replace("\\", "/").rsplit("/", 1)[-1]
+            return basename in (f"worker_{task_id}", f"worker_{task_id}.exit")
+
+        # POSIX build_shell_wrapper: sh -c <script> zf-runner <prefix> ...
+        if (
+            len(args) > 4
+            and args[0].replace("\\", "/").rsplit("/", 1)[-1] == "sh"
+            and args[1] == "-c"
+            and args[3] == "zf-runner"
+            and is_exit_prefix(args[4])
+        ):
+            return True
+        # Windows build_shell_wrapper: python _worker_wrapper.py <prefix> ...
+        return (
+            len(args) > 2
+            and args[1].replace("\\", "/").rsplit("/", 1)[-1] == "_worker_wrapper.py"
+            and is_exit_prefix(args[2])
+        )
     except Exception:
         # Fail closed if procfs exists but this PID's command line is unavailable.
         return False
@@ -498,8 +524,8 @@ def terminate_worker_process(
 ) -> None:
     """Safely terminate a worker process group with SIGTERM then SIGKILL.
 
-    When ``task_id`` is provided, the live PID's cmdline is verified to still
-    reference the task before signaling: worker PIDs recorded in the DB can
+    When ``task_id`` is provided, the live PID's identity is verified to still
+    belong to that worker before signaling: worker PIDs recorded in the DB can
     go stale and be recycled by the OS for an unrelated process, and
     signaling that PID kills an innocent process — a suspected contributor to
     the worker-loss churn. Mismatched PIDs are skipped and logged instead.
