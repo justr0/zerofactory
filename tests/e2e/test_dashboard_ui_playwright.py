@@ -438,7 +438,7 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
         conn.commit()
 
     httpd, thread, port = _start_http_bridge(_build_test_app())
-    stop_requests: list[str] = []
+    stop_requests: list[tuple[str, str]] = []
     pending_stop_routes = []
 
     def add_session_for_other_task(route) -> None:
@@ -458,7 +458,7 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
         )
 
     def intercept_stop(route) -> None:
-        stop_requests.append(route.request.url)
+        stop_requests.append((route.request.method, route.request.url))
         pending_stop_routes.append(route)
 
     try:
@@ -500,22 +500,32 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
 
             stop_button = page.get_by_role("button", name="Stop task task-ui-newest")
             stop_button.click()
-            with page.expect_request("**/stop") as stop_request_info:
-                page.get_by_role("button", name="Stop Session").click()
+            stop_dialog = page.get_by_role("dialog", name="Stop AI Session")
+            assert "Task task-ui-newest" in (stop_dialog.inner_text() or "")
+            with page.expect_request(
+                lambda request: request.url.endswith("/stop")
+            ) as stop_request_info:
+                stop_dialog.get_by_role(
+                    "button", name="Stop Session", exact=True
+                ).click()
             stop_request = stop_request_info.value
             sync_api.expect(stop_button).to_be_disabled()
             sync_api.expect(stop_button).to_contain_text("Stopping...")
             assert stop_request.method == "POST"
-            assert stop_requests == [stop_request.url]
+            expected_stop_url = (
+                f"http://127.0.0.1:{port}/api/plugins/zerofactory/"
+                "tasks/task-ui-newest/stop"
+            )
+            assert stop_requests == [("POST", expected_stop_url)]
             assert len(pending_stop_routes) == 1
-            assert stop_request.url.endswith("/tasks/task-ui-newest/stop")
+            assert stop_request.url == expected_stop_url
             pending_stop_routes[0].fulfill(
                 status=200,
                 content_type="application/json",
                 body=json.dumps({"ok": True, "message": "intercepted test stop"}),
             )
             stop_button.get_by_text("Stop", exact=True).wait_for(timeout=5000)
-            assert stop_requests == [stop_request.url]
+            assert stop_requests == [("POST", expected_stop_url)]
             assert page_errors == [], f"Uncaught page errors: {page_errors}"
             browser.close()
     finally:

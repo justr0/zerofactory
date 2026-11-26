@@ -1512,23 +1512,32 @@ var ZeroFactoryDashboard = (function(exports) {
 			const currentTasks = Array.isArray(agentInfo.current_tasks) && agentInfo.current_tasks.length > 0 ? agentInfo.current_tasks : agentInfo.current_task ? [agentInfo.current_task] : [];
 			const currentTask = currentTasks[0] || null;
 			const activeSession = agentInfo.active_session || agentSessions.find((s) => s.status === "ongoing" || s.is_active);
-			const stopTargetLabel = currentTask ? "task " + currentTask.id : "session";
-			const stopTargetId = currentTask ? currentTask.id : activeSession?.session_id;
+			const stopTarget = currentTask ? {
+				taskId: currentTask.id,
+				sessionId: null,
+				key: currentTask.id,
+				label: "task " + currentTask.id
+			} : activeSession ? {
+				taskId: null,
+				sessionId: activeSession.session_id,
+				key: activeSession.session_id,
+				label: "session"
+			} : null;
 			const totalAgentTurns = agentSessions.reduce((acc, s) => acc + (s.turn_count || 0), 0);
 			return React.createElement("div", {
 				key: meta.id,
 				className: "bg-slate-900/70 backdrop-blur-md border border-slate-800/90 hover:border-slate-700/80 rounded-2xl p-4.5 transition-all shadow-sm flex flex-col justify-between space-y-4"
-			}, React.createElement("div", { className: "space-y-3" }, React.createElement("div", { className: "flex items-center justify-between gap-2" }, React.createElement("div", { className: "flex items-center gap-2.5" }, React.createElement("div", { className: "w-9 h-9 rounded-xl flex items-center justify-center text-xl bg-slate-800/90 border border-slate-700/60 shadow-xs" }, meta.icon), React.createElement("div", null, React.createElement("h3", { className: "text-sm font-bold text-white tracking-tight leading-none" }, meta.label), React.createElement("span", { className: "text-[10px] text-slate-500 font-mono" }, meta.id))), React.createElement("div", { className: "flex items-center gap-1.5" }, React.createElement("span", { className: "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border " + (isAgentActive ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "bg-slate-800/80 text-slate-400 border-slate-700/60") }, React.createElement("span", { className: "w-1.5 h-1.5 rounded-full " + (isAgentActive ? "bg-emerald-400 zfk-pulse-active" : "bg-slate-500") }), isAgentActive ? "Active" : "Idle"), isAgentActive && (currentTask || activeSession) && React.createElement("button", {
+			}, React.createElement("div", { className: "space-y-3" }, React.createElement("div", { className: "flex items-center justify-between gap-2" }, React.createElement("div", { className: "flex items-center gap-2.5" }, React.createElement("div", { className: "w-9 h-9 rounded-xl flex items-center justify-center text-xl bg-slate-800/90 border border-slate-700/60 shadow-xs" }, meta.icon), React.createElement("div", null, React.createElement("h3", { className: "text-sm font-bold text-white tracking-tight leading-none" }, meta.label), React.createElement("span", { className: "text-[10px] text-slate-500 font-mono" }, meta.id))), React.createElement("div", { className: "flex items-center gap-1.5" }, React.createElement("span", { className: "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border " + (isAgentActive ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "bg-slate-800/80 text-slate-400 border-slate-700/60") }, React.createElement("span", { className: "w-1.5 h-1.5 rounded-full " + (isAgentActive ? "bg-emerald-400 zfk-pulse-active" : "bg-slate-500") }), isAgentActive ? "Active" : "Idle"), isAgentActive && stopTarget && React.createElement("button", {
 				type: "button",
-				"aria-label": "Stop " + stopTargetLabel,
-				disabled: stoppingSessionId === stopTargetId,
+				"aria-label": "Stop " + stopTarget.label,
+				disabled: stoppingSessionId === stopTarget.key,
 				className: "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-800/80 hover:border-rose-800/60 transition-colors shadow-xs cursor-pointer disabled:opacity-50",
-				title: "Stop " + stopTargetLabel,
+				title: "Stop " + stopTarget.label,
 				onClick: (e) => {
 					e.stopPropagation();
-					handleStopTaskSession(currentTask ? currentTask.id : null, currentTask ? null : activeSession?.session_id);
+					handleStopTaskSession(stopTarget.taskId, stopTarget.sessionId);
 				}
-			}, React.createElement("span", { className: "text-[9px]" }, "⏹"), React.createElement("span", null, stoppingSessionId === stopTargetId ? "Stopping..." : "Stop")))), React.createElement("p", { className: "text-xs text-slate-400 leading-relaxed" }, meta.role), React.createElement("div", { className: "bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-1.5" }, React.createElement("div", { className: "text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between" }, React.createElement("span", null, isAgentActive ? "Current Work" : "Status"), isAgentActive && React.createElement("span", { className: "text-emerald-400 font-mono text-[10px]" }, "Executing")), currentTasks.length > 0 ? React.createElement("div", { className: "space-y-1" }, currentTasks.map((task) => React.createElement("button", {
+			}, React.createElement("span", { className: "text-[9px]" }, "⏹"), React.createElement("span", null, stoppingSessionId === stopTarget.key ? "Stopping..." : "Stop")))), React.createElement("p", { className: "text-xs text-slate-400 leading-relaxed" }, meta.role), React.createElement("div", { className: "bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-1.5" }, React.createElement("div", { className: "text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between" }, React.createElement("span", null, isAgentActive ? "Current Work" : "Status"), isAgentActive && React.createElement("span", { className: "text-emerald-400 font-mono text-[10px]" }, "Executing")), currentTasks.length > 0 ? React.createElement("div", { className: "space-y-1" }, currentTasks.map((task) => React.createElement("button", {
 				key: task.id,
 				type: "button",
 				className: "block text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer w-full",
