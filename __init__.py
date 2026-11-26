@@ -1247,7 +1247,11 @@ def register(ctx: Any):
             reason = getattr(args, "reason", None)
             assignee = getattr(args, "assignee", None)
             req = TaskMove(
-                status=args.status, actor=actor, reason=reason, assignee=assignee
+                status=args.status,
+                actor=actor,
+                reason=reason,
+                assignee=assignee,
+                worker_execution_id=os.environ.get("ZEROFACTORY_WORKER_EXECUTION_ID"),
             )
             res = _move_task(args.task_id, req)
             if res.get("ignored"):

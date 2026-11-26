@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from dispatcher.config import _active_workers
 from dispatcher.reaper import (
     _compute_stuck_state,
     _mark_task_session_ended,
@@ -416,6 +417,32 @@ def test_reaper_recovers_orphan_after_spawn_grace_expires():
     assert activity == 1
 
 
+def test_reaper_recovers_stalled_awaiting_pr_packaging():
+    """A workerless builder packaging handoff is bounded by the spawn grace."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-stalled-packaging",
+        {"awaiting_pr": True, "sessions": [], "spawning_at": now - 400},
+        now,
+    )
+
+    reaped = reap_active_workers(conn.cursor(), now=now)
+    conn.commit()
+
+    task = conn.execute(
+        "SELECT status, metadata FROM tasks WHERE id = 't-stalled-packaging'"
+    ).fetchone()
+    assert reaped == 1
+    assert task["status"] == "todo"
+    assert "awaiting_pr" not in json.loads(task["metadata"])
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM task_activity WHERE task_id = 't-stalled-packaging' AND action = 'worker_recovered'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def test_reaper_spawn_grace_env_override(monkeypatch):
     """ZEROFACTORY_SPAWN_GRACE_SECONDS tunes the grace window."""
     import dispatcher
@@ -759,6 +786,85 @@ def test_reaper_does_not_reap_awaiting_pr_stale_pid(tmp_path: Path):
         "WHERE task_id = 't-packaged' AND action = 'worker_lost'"
     ).fetchone()[0]
     assert lost == 0
+
+
+def test_reaper_recovers_workerless_awaiting_pr_reviewer_after_spawn_grace():
+    """A reviewer-routed row is not packaging work and must not stay running
+    just because a late builder report left awaiting_pr set."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-awaiting-pr-reviewer",
+        {"awaiting_pr": True, "spawning_at": now - 400, "sessions": []},
+        now,
+    )
+    conn.execute(
+        "UPDATE tasks SET assignee = 'zf-reviewer' WHERE id = 't-awaiting-pr-reviewer'"
+    )
+
+    reaped = reap_active_workers(conn.cursor(), now=now)
+    conn.commit()
+
+    assert reaped == 1
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = 't-awaiting-pr-reviewer'"
+    ).fetchone()
+    assert row["status"] == "todo"
+    activity = conn.execute(
+        "SELECT action FROM task_activity WHERE task_id = 't-awaiting-pr-reviewer'"
+    ).fetchall()
+    assert [item["action"] for item in activity].count("worker_recovered") == 1
+
+
+def test_reaper_keeps_live_awaiting_pr_reviewer_worker():
+    """A live worker remains protected from orphan recovery, even with awaiting_pr."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-live-awaiting-pr",
+        {"awaiting_pr": True, "spawning_at": now - 400, "sessions": []},
+        now,
+    )
+    conn.execute(
+        "UPDATE tasks SET assignee = 'zf-reviewer' WHERE id = 't-live-awaiting-pr'"
+    )
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.poll.return_value = None
+    _active_workers["t-live-awaiting-pr"] = proc
+    try:
+        assert reap_active_workers(conn.cursor(), now=now) == 0
+    finally:
+        _active_workers.pop("t-live-awaiting-pr", None)
+
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = 't-live-awaiting-pr'"
+    ).fetchone()
+    assert row["status"] == "running"
+
+
+def test_reaper_recovers_stalled_workerless_packaging_after_spawn_grace():
+    """A builder packaging handoff with no worker is bounded by the spawn grace."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-stalled-packaging",
+        {"awaiting_pr": True, "spawning_at": now - 400, "sessions": []},
+        now,
+    )
+
+    assert reap_active_workers(conn.cursor(), now=now) == 1
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT status, metadata FROM tasks WHERE id = 't-stalled-packaging'"
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert "awaiting_pr" not in json.loads(row["metadata"])
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM task_activity "
+            "WHERE task_id = 't-stalled-packaging' AND action = 'worker_recovered'"
+        ).fetchone()[0]
+        == 1
+    )
 
 
 def _reaper_db_file(tmp_path: Path) -> Path:

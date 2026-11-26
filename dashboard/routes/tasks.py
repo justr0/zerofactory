@@ -997,6 +997,15 @@ def move_task(task_id: str, req: TaskMove):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
+        if (
+            req.actor
+            and req.actor.startswith("zf-")
+            and req.status in ("running", "done")
+            and not conn.in_transaction
+        ):
+            # Serialize the ownership check with dispatcher claims/recovery so
+            # a stale report cannot pass on a snapshot from before reassignment.
+            conn.execute("BEGIN IMMEDIATE")
         cursor.execute(
             "SELECT status, assignee, metadata, board_slug, title, pr_url FROM tasks WHERE id = ?",
             (task_id,),
@@ -1051,13 +1060,28 @@ def move_task(task_id: str, req: TaskMove):
         # 'close_pr' so GitHub matches the board.
         wants_packaging = is_agent_actor and not is_orchestrator_actor
 
+        current_worker_report = (
+            req.worker_execution_id is not None
+            and req.worker_execution_id == meta.get("worker_execution_id")
+            and prev_status == "running"
+            and (curr["assignee"] or "") == (req.actor or "")
+        )
+        worker_report_rejected = (
+            wants_packaging
+            and req.status in ("done", "running")
+            and not current_worker_report
+        )
+
         # A completion report from a stale/zombie worker must never clobber a
         # parked state: 'done' is strictly terminal and 'blocked' is a
         # human/reviewer gate. The sole builder-bound exception is
         # 'changes-requested', where finishing the fix is the desired outcome
         # (zf-hdz-4dc03cee: a zombie builder's `move done` flipped an
         # approved-for-merge task back to running and wiped its blocked_reason).
-        if (
+        park_reason = None
+        if worker_report_rejected:
+            park_reason = "no matching dispatcher-tracked worker execution"
+        elif (
             wants_packaging
             and req.status == "done"
             and (
@@ -1067,13 +1091,26 @@ def move_task(task_id: str, req: TaskMove):
                     and str(meta.get("blocked_reason_type") or "human-gate")
                     != "changes-requested"
                 )
+                or (curr["assignee"] or "") != (req.actor or "")
+                or bool(meta.get("awaiting_pr"))
             )
         ):
             park_reason = (
                 "task is already done (terminal)"
                 if prev_status == "done"
-                else f"task is blocked for {str(meta.get('blocked_reason_type') or 'human-gate')}"
+                else (
+                    f"task is blocked for {str(meta.get('blocked_reason_type') or 'human-gate')}"
+                    if prev_status == "blocked"
+                    and str(meta.get("blocked_reason_type") or "human-gate")
+                    != "changes-requested"
+                    else (
+                        "task is already awaiting PR packaging"
+                        if meta.get("awaiting_pr")
+                        else f"task is assigned to {curr['assignee'] or 'another agent'}"
+                    )
+                )
             )
+        if park_reason:
             log_step_state(
                 "move",
                 task_id,
@@ -1106,6 +1143,9 @@ def move_task(task_id: str, req: TaskMove):
             if wants_packaging:
                 if not meta.get("awaiting_pr"):
                     meta["awaiting_pr"] = True
+                    meta_updated = True
+                if "worker_execution_id" in meta:
+                    meta.pop("worker_execution_id", None)
                     meta_updated = True
                 if "close_pr" in meta:
                     meta.pop("close_pr", None)
@@ -1174,6 +1214,11 @@ def move_task(task_id: str, req: TaskMove):
             target_assignee=getattr(req, "assignee", None),
             metadata=meta,
         )
+        if meta.get("reviewer_orphan_recovered") and (
+            new_status != "todo" or resolved_assignee != "zf-reviewer"
+        ):
+            meta.pop("reviewer_orphan_recovered", None)
+            meta_updated = True
         if new_status == "todo" and resolved_assignee == "zf-builder":
             if "awaiting_approval" in meta:
                 meta.pop("awaiting_approval", None)
