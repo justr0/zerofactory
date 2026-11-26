@@ -28,12 +28,15 @@ TRIAGE_COMMENT_HEADINGS = [
 def _spawn_triage_prompt(
     tmp_path: Path,
     role: str,
+    monkeypatch: pytest.MonkeyPatch,
     comments: list[tuple[str, str, int]] | None = None,
     *,
     create_comments_table: bool = True,
 ) -> tuple[str, MagicMock]:
     """Spawn a triage worker using an isolated comment database and return its prompt/log."""
     db_path = tmp_path / f"{role}.db"
+    monkeypatch.delenv("ZEROFACTORY_WORKER_COMMAND", raising=False)
+    monkeypatch.delenv("ZEROFACTORY_WORKER_ARGS", raising=False)
     with sqlite3.connect(db_path) as conn:
         if create_comments_table:
             conn.execute(
@@ -70,6 +73,7 @@ def _spawn_triage_prompt(
         patch("paths.get_hermes_home", return_value=tmp_path / "hermes"),
         patch("subprocess.Popen") as mock_popen,
         patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}, clear=False),
+        patch.dict(worker_spawner._active_workers),
     ):
         os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
         mock_proc = MagicMock()
@@ -95,10 +99,13 @@ def _spawn_triage_prompt(
 
 
 @pytest.mark.parametrize(("role", "heading"), TRIAGE_COMMENT_HEADINGS)
-def test_triage_prompts_include_ordered_task_comments(tmp_path, role, heading):
+def test_triage_prompts_include_ordered_task_comments(
+    tmp_path, monkeypatch, role, heading
+):
     prompt, _ = _spawn_triage_prompt(
         tmp_path,
         role,
+        monkeypatch,
         [
             ("human", "Later response", 20),
             ("zf-orchestrator", "Earlier question", 10),
@@ -115,18 +122,20 @@ def test_triage_prompts_include_ordered_task_comments(tmp_path, role, heading):
 
 
 @pytest.mark.parametrize(("role", "heading"), TRIAGE_COMMENT_HEADINGS)
-def test_triage_prompts_omit_context_for_empty_comment_set(tmp_path, role, heading):
-    prompt, _ = _spawn_triage_prompt(tmp_path, role)
+def test_triage_prompts_omit_context_for_empty_comment_set(
+    tmp_path, monkeypatch, role, heading
+):
+    prompt, _ = _spawn_triage_prompt(tmp_path, role, monkeypatch)
 
     assert heading not in prompt
 
 
 @pytest.mark.parametrize(("role", "_heading"), TRIAGE_COMMENT_HEADINGS)
 def test_triage_comment_lookup_failure_is_nonfatal_and_role_logged(
-    tmp_path, role, _heading
+    tmp_path, monkeypatch, role, _heading
 ):
     prompt, debug_log = _spawn_triage_prompt(
-        tmp_path, role, create_comments_table=False
+        tmp_path, role, monkeypatch, create_comments_table=False
     )
 
     assert f"Assigned Role: {role}" in prompt
