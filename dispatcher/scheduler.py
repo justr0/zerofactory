@@ -489,11 +489,8 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                             _disp._handle_local_merge_conflict(
                                                 cursor,
                                                 task_id,
-                                                title,
-                                                workspace_path,
                                                 conflict_files,
                                                 now,
-                                                merge_err,
                                             )
                                             continue
 
@@ -2568,11 +2565,8 @@ def _package_and_open_pr(
                 _disp._handle_local_merge_conflict(
                     cursor,
                     task_id,
-                    title,
-                    workspace_path,
                     markers,
                     now,
-                    "Unresolved conflict markers in worktree",
                 )
                 return False
             try:
@@ -2626,11 +2620,8 @@ def _package_and_open_pr(
             _disp._handle_local_merge_conflict(
                 cursor,
                 task_id,
-                title,
-                workspace_path,
                 initial_conflicts,
                 now,
-                "Unresolved conflicts in worktree",
             )
             return False
 
@@ -2650,7 +2641,6 @@ def _package_and_open_pr(
             _disp._handle_precommit_failure(
                 cursor,
                 task_id,
-                title,
                 workspace_path,
                 precommit_out,
                 now,
@@ -2713,7 +2703,6 @@ def _package_and_open_pr(
             _disp._handle_precommit_failure(
                 cursor,
                 task_id,
-                title,
                 workspace_path,
                 slop_out,
                 now,
@@ -2784,11 +2773,8 @@ def _package_and_open_pr(
             _disp._handle_local_merge_conflict(
                 cursor,
                 task_id,
-                title,
-                workspace_path,
                 conflict_files,
                 now,
-                merge_err,
             )
             return False
 
@@ -2827,11 +2813,8 @@ def _package_and_open_pr(
             _disp._handle_local_merge_conflict(
                 cursor,
                 task_id,
-                title,
-                workspace_path,
                 leftover_conflicts,
                 now,
-                "Leftover conflict markers detected after merge",
             )
             return False
 
