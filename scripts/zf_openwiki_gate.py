@@ -205,9 +205,7 @@ def resolve_board_slug(repo_dir: Path) -> str | None:
     db_path = paths.get_zerofactory_db_path()
     if db_path.exists():
         try:
-            remote_url = _run_cmd(
-                ["git", "config", "--get", "remote.origin.url"], cwd=repo_dir
-            )
+            remote_url = _run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir)
             with sqlite3.connect(str(db_path), timeout=5.0) as conn:
                 cursor = conn.cursor()
                 cursor.execute(

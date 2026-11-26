@@ -404,6 +404,48 @@ class TestOpenWikiGate(unittest.TestCase):
 
         self.assertEqual(slug, "payments")
 
+    def test_no_slug_uses_first_fetch_url_for_multi_url_origin(self):
+        repo_dir = self.tmp / "payments-api"
+        payments_url = "https://github.com/example/payments-api.git"
+        billing_url = "https://github.com/example/billing-api.git"
+        self._make_checkout(repo_dir, payments_url)
+        subprocess.run(
+            ["git", "remote", "set-url", "--add", "origin", billing_url],
+            cwd=repo_dir,
+            check=True,
+        )
+        (repo_dir / "openwiki").mkdir()
+        db_file = self.tmp / "zerofactory.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, git_url TEXT)"
+            )
+            for slug, repo_alias, git_url in (
+                ("payments", "payments-api", payments_url),
+                ("billing", "billing-api", billing_url),
+            ):
+                conn.execute("INSERT INTO boards (slug) VALUES (?)", (slug,))
+                conn.execute(
+                    "INSERT INTO board_repositories (board_slug, repo_alias, git_url) VALUES (?, ?, ?)",
+                    (slug, repo_alias, git_url),
+                )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(os.environ, {"ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "1"}),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
+            wake, reason = self.gate.check_openwiki_gate(repo_dir)
+
+        self.assertFalse(wake)
+        self.assertIn("created task 'task-1'", reason)
+        create_task.assert_called_once()
+        self.assertEqual(create_task.call_args.args[0].board_slug, "payments")
+
     def test_ambiguous_exact_repository_identity_does_not_file_task(self):
         repo_dir = self.tmp / "payments-api"
         remote_url = "https://github.com/example/payments-api.git"
