@@ -749,6 +749,36 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
     )
 
 
+def test_late_builder_completion_rejected_after_reviewer_handoff(
+    api_client: TestClient, default_board: str
+):
+    """A builder report from an untracked worker cannot reclaim reviewer work."""
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Reviewer handoff late completion",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-reviewer",
+            "metadata": {"awaiting_pr": True, "review_round": 1},
+        },
+    ).json()["id"]
+
+    before = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    response = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    after = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert after["status"] == before["status"] == "running"
+    assert after["assignee"] == before["assignee"] == "zf-reviewer"
+    assert after["metadata"] == before["metadata"]
+    assert any(item["action"] == "move_rejected" for item in after["activity"])
+
+
 def test_triage_task_split_multi_repo(api_client: TestClient):
     """Verify decomposing a multi-repo triage task into separate todo tasks per repo."""
     # 1. Create a multi-repo board with frontend and backend

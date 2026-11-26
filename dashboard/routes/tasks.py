@@ -1067,12 +1067,24 @@ def move_task(task_id: str, req: TaskMove):
                     and str(meta.get("blocked_reason_type") or "human-gate")
                     != "changes-requested"
                 )
+                or (curr["assignee"] or "") != (req.actor or "")
+                or bool(meta.get("awaiting_pr"))
             )
         ):
             park_reason = (
                 "task is already done (terminal)"
                 if prev_status == "done"
-                else f"task is blocked for {str(meta.get('blocked_reason_type') or 'human-gate')}"
+                else (
+                    f"task is blocked for {str(meta.get('blocked_reason_type') or 'human-gate')}"
+                    if prev_status == "blocked"
+                    and str(meta.get("blocked_reason_type") or "human-gate")
+                    != "changes-requested"
+                    else (
+                        "task is already awaiting PR packaging"
+                        if meta.get("awaiting_pr")
+                        else f"task is assigned to {curr['assignee'] or 'another agent'}"
+                    )
+                )
             )
             log_step_state(
                 "move",

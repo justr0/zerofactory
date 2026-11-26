@@ -20,6 +20,7 @@ from .process_manager import (
     cleanup_process_artifacts,
     consume_deliberate_stop,
     get_process_exit_code,
+    is_pid_alive,
 )
 from .state_machine import transition_task
 
@@ -225,7 +226,12 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
             isinstance(session, dict) and session.get("status") == "ongoing"
             for session in sessions
         )
-        if proc is None and pid and not has_ongoing_session:
+        if (
+            proc is None
+            and pid
+            and not has_ongoing_session
+            and not is_pid_alive(int(pid))
+        ):
             meta.pop("worker_pid", None)
             meta.pop("session_id", None)
             meta.pop("started_at", None)
@@ -512,7 +518,11 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
         elif proc is None and pid:
             proc_state, _ = get_process_exit_code(task_id, pid)
             if proc_state == ProcessState.CRASHED or not _d().is_pid_alive(int(pid)):
-                if row_status == "running" and meta.get("awaiting_pr"):
+                if (
+                    row_status == "running"
+                    and meta.get("awaiting_pr")
+                    and curr_asgn != "zf-reviewer"
+                ):
                     continue
                 if consume_deliberate_stop(task_id, pid):
                     _record_deliberate_stop(
@@ -606,9 +616,18 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 reaped += 1
                 continue
-        elif row_status == "running" and meta.get("awaiting_pr"):
+        elif (
+            row_status == "running"
+            and meta.get("awaiting_pr")
+            and curr_asgn != "zf-reviewer"
+        ):
             continue
-        elif row_status == "running" and not has_ongoing_session:
+        elif (
+            row_status == "running"
+            and proc is None
+            and not pid
+            and not has_ongoing_session
+        ):
             claim_age = max(0, now - int(row["updated_at"] or now))
             spawning_at = meta.get("spawning_at")
             spawn_age = max(0, now - int(spawning_at)) if spawning_at else claim_age
@@ -628,7 +647,17 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 else "todo"
             )
-            transition_task(conn, task_id, orphan_status, actor="dispatcher")
+            transition_task(
+                conn,
+                task_id,
+                orphan_status,
+                metadata_patch=(
+                    {"reviewer_orphan_recovered": True}
+                    if curr_asgn == "zf-reviewer"
+                    else None
+                ),
+                actor="dispatcher",
+            )
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'worker_recovered', 'Orphaned running task (no active worker process or session) recovered to todo', ?)",
                 (task_id, now),

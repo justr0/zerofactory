@@ -1620,6 +1620,7 @@ def _poll_pr_and_route_review(
     task_id = str(row["id"])
     title = row["title"]
     assignee = row["assignee"]
+    reviewer_orphan_recovered = bool(meta.get("reviewer_orphan_recovered"))
     try:
         res = subprocess.run(
             [
@@ -1663,6 +1664,12 @@ def _poll_pr_and_route_review(
         decision = pr_data.get("reviewDecision")
         mergeable = pr_data.get("mergeable")
         current_pr_url = pr_data.get("url") or row["pr_url"] or ""
+        if reviewer_orphan_recovered:
+            meta.pop("reviewer_orphan_recovered", None)
+            cursor.execute(
+                "UPDATE tasks SET metadata = ? WHERE id = ?",
+                (json.dumps(meta), task_id),
+            )
 
         if pr_state == "MERGED":
             log_step_state(
@@ -1822,7 +1829,9 @@ def _poll_pr_and_route_review(
             )
 
         if meta.get("permanently_blocked") or (
-            row["status"] in ("running", "todo") and not meta.get("awaiting_pr")
+            row["status"] in ("running", "todo")
+            and not meta.get("awaiting_pr")
+            and not reviewer_orphan_recovered
         ):
             log_step_state(
                 "pr_poll",
@@ -1940,7 +1949,14 @@ def _poll_pr_and_route_review(
             decision == "APPROVED" or blocked_type == "approved"
         ) and not has_actionable_feedback
 
-        if has_actionable_feedback and row["status"] in ("blocked", "todo"):
+        if has_actionable_feedback and (
+            row["status"] in ("blocked", "todo")
+            or (
+                row["status"] == "running"
+                and assignee == "zf-reviewer"
+                and reviewer_orphan_recovered
+            )
+        ):
             if (
                 bool(task_meta.get("review_cap_reached"))
                 and row["status"] == "blocked"

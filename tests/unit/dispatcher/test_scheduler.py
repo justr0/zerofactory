@@ -3,8 +3,11 @@
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from dispatcher import fcntl
 from dispatcher.scheduler import run_dispatch_cycle
@@ -787,6 +790,104 @@ def test_run_dispatch_cycle_awaiting_pr_handles_conflicting_pr(tmp_path: Path):
         assert task["status"] == "todo"
         assert task["assignee"] == "zf-reviewer"
         assert "[PR Conflict]" not in task["title"]
+
+
+@pytest.mark.parametrize(
+    ("review_decision", "expected_state", "expected_activity"),
+    [
+        ("CHANGES_REQUESTED", ("todo", "zf-builder"), "changes_requested"),
+        ("APPROVED", ("blocked", "human"), "approved"),
+    ],
+)
+def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
+    tmp_path: Path,
+    review_decision: str,
+    expected_state: tuple[str, str],
+    expected_activity: str,
+):
+    """Orphan recovery polls a reviewer PR and routes its verdict in the same cycle."""
+    import dispatcher
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = int(time.time()) - 600
+    workspace_root = tmp_path / "workspaces"
+    workspace = _task_workspace(workspace_root, "t-reviewer-orphan")
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running, created_at, updated_at) "
+            "VALUES ('b1', 'Board', 4, ?, ?)",
+            (now - 1000, now - 1000),
+        )
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-reviewer-orphan', 'Review feedback task', '', 'running', 'zf-reviewer', 'P1', ?, '[]', '', ?, '', 'b1', '', 'https://github.com/foo/bar/pull/50', ?, ?)",
+            (
+                json.dumps({"awaiting_pr": True, "sessions": []}),
+                str(workspace),
+                now - 600,
+                now - 600,
+            ),
+        )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+
+    def fake_subprocess_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "gh":
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "state": "OPEN",
+                        "reviewDecision": review_decision,
+                        "url": "https://github.com/foo/bar/pull/50",
+                        "mergeable": "MERGEABLE",
+                        "headRefOid": "abc1234",
+                    }
+                ),
+            )
+        if "rev-parse" in cmd:
+            return MagicMock(returncode=0, stdout=str(repo_path))
+        return MagicMock(returncode=0, stdout="")
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+                "ZEROFACTORY_SKIP_GIT": "",
+            },
+        ),
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=repo_path),
+        patch.object(dispatcher, "spawn_agent_worker", return_value=(None, None)),
+        patch.object(dispatcher, "setup_worktree", return_value=str(workspace)),
+        patch.object(dispatcher, "stop_task_worker"),
+        patch.object(dispatcher, "_remove_worktree"),
+        patch.object(dispatcher, "fetch_pr_review_comments", return_value=[]),
+        patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
+    ):
+        result = run_dispatch_cycle(db_path)
+        assert result["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        task = conn.execute(
+            "SELECT status, assignee FROM tasks WHERE id = 't-reviewer-orphan'"
+        ).fetchone()
+        assert (task["status"], task["assignee"]) == expected_state
+        actions = [
+            row["action"]
+            for row in conn.execute(
+                "SELECT action FROM task_activity WHERE task_id = 't-reviewer-orphan'"
+            )
+        ]
+        assert "worker_recovered" in actions
+        assert expected_activity in actions
 
 
 def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):

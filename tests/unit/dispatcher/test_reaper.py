@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from dispatcher.config import _active_workers
 from dispatcher.reaper import (
     _compute_stuck_state,
     _mark_task_session_ended,
@@ -759,6 +760,59 @@ def test_reaper_does_not_reap_awaiting_pr_stale_pid(tmp_path: Path):
         "WHERE task_id = 't-packaged' AND action = 'worker_lost'"
     ).fetchone()[0]
     assert lost == 0
+
+
+def test_reaper_recovers_workerless_awaiting_pr_reviewer_after_spawn_grace():
+    """A reviewer-routed row is not packaging work and must not stay running
+    just because a late builder report left awaiting_pr set."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-awaiting-pr-reviewer",
+        {"awaiting_pr": True, "spawning_at": now - 400, "sessions": []},
+        now,
+    )
+    conn.execute(
+        "UPDATE tasks SET assignee = 'zf-reviewer' WHERE id = 't-awaiting-pr-reviewer'"
+    )
+
+    reaped = reap_active_workers(conn.cursor(), now=now)
+    conn.commit()
+
+    assert reaped == 1
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = 't-awaiting-pr-reviewer'"
+    ).fetchone()
+    assert row["status"] == "todo"
+    activity = conn.execute(
+        "SELECT action FROM task_activity WHERE task_id = 't-awaiting-pr-reviewer'"
+    ).fetchall()
+    assert [item["action"] for item in activity].count("worker_recovered") == 1
+
+
+def test_reaper_keeps_live_awaiting_pr_reviewer_worker():
+    """A live worker remains protected from orphan recovery, even with awaiting_pr."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-live-awaiting-pr",
+        {"awaiting_pr": True, "spawning_at": now - 400, "sessions": []},
+        now,
+    )
+    conn.execute(
+        "UPDATE tasks SET assignee = 'zf-reviewer' WHERE id = 't-live-awaiting-pr'"
+    )
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.poll.return_value = None
+    _active_workers["t-live-awaiting-pr"] = proc
+    try:
+        assert reap_active_workers(conn.cursor(), now=now) == 0
+    finally:
+        _active_workers.pop("t-live-awaiting-pr", None)
+
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = 't-live-awaiting-pr'"
+    ).fetchone()
+    assert row["status"] == "running"
 
 
 def _reaper_db_file(tmp_path: Path) -> Path:
