@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { fetchJSON } from "./sdk.js";
 import { API_BASE, COLUMNS, NEXT_STATUS_MAP, STAGE_META } from "./constants.js";
+import { computeGitSlug } from "./utils/formatters.js";
 import { Header } from "./components/Header.jsx";
 import { StatsBar } from "./components/StatsBar.jsx";
 import { FilterBar } from "./components/FilterBar.jsx";
@@ -1509,32 +1510,6 @@ export function ZeroFactoryKanbanApp() {
       } finally {
         setIsSubmittingTask(false);
       }
-    };
-
-    const computeGitSlug = (gitUrl) => {
-      if (!gitUrl) return "";
-      let cleaned = gitUrl.trim().replace(/\.git$/, "").replace(/\/+$/, "");
-      cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
-      if (cleaned.includes("@")) {
-        cleaned = cleaned.split("@")[1];
-        if (cleaned.includes(":")) cleaned = cleaned.split(":")[1];
-        else if (cleaned.includes("/")) cleaned = cleaned.split("/").slice(1).join("/");
-      } else if (cleaned.includes("/")) {
-        const first = cleaned.split("/")[0];
-        if (first.includes(".") || first.includes(":")) {
-          cleaned = cleaned.split("/").slice(1).join("/");
-        }
-      }
-      const parts = cleaned.split("/").filter(Boolean);
-      let repo = parts.length >= 1 ? parts[parts.length - 1].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-      let owner = parts.length >= 2 ? parts[parts.length - 2].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-      if (owner && repo) {
-        return (owner + "-" + repo).toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-      }
-      if (repo) {
-        return repo.toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-      }
-      return "";
     };
 
     // Create Board

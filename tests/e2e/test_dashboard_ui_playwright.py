@@ -148,6 +148,144 @@ def _build_test_app() -> FastAPI:
     return app
 
 
+def test_board_creation_git_slug_fallbacks_playwright(tmp_path, monkeypatch):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    if not (REACT_UMD.is_file() and REACT_DOM_UMD.is_file()):
+        pytest.skip("React UMD assets not found in node_modules")
+    if not (DIST_DIR / "index.js").is_file():
+        pytest.skip("dashboard/dist/index.js not built")
+
+    chromium_bin = _find_chromium_executable()
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zf_board_ui.db"))
+    monkeypatch.setenv("ZEROFACTORY_DISABLE_DISPATCHER", "1")
+
+    import profile_manager
+    from dashboard.db import init_db
+
+    monkeypatch.setattr(
+        profile_manager, "check_gh_auth_status", lambda use_cache=True: True
+    )
+    init_db(force=True)
+
+    submitted_payloads: list[dict] = []
+    boards: list[dict] = []
+
+    def handle_boards(route):
+        if route.request.method == "POST":
+            payload = route.request.post_data_json
+            submitted_payloads.append(payload)
+            boards.append(
+                {
+                    **payload,
+                    "task_count": 0,
+                    "running_count": 0,
+                    "repositories": payload["repositories"],
+                }
+            )
+            response = {"slug": payload["slug"]}
+        else:
+            response = {"boards": boards}
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(response),
+        )
+
+    httpd, thread, port = _start_http_bridge(_build_test_app())
+    try:
+        with sync_api.sync_playwright() as p:
+            launch_kwargs: dict[str, object] = {"headless": True}
+            if chromium_bin:
+                launch_kwargs["executable_path"] = chromium_bin
+            browser = p.chromium.launch(**launch_kwargs)
+            page = browser.new_page()
+            page.route("**/api/plugins/zerofactory/boards", handle_boards)
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.get_by_placeholder(
+                "git@github.com:org/repo.git or https://github.com/org/repo.git"
+            ).wait_for(timeout=10000)
+
+            cases = [
+                (
+                    "https://github.com/Acme/FirstRepo.git",
+                    "acme-firstrepo",
+                    "",
+                    "",
+                    "acme-firstrepo",
+                    "acme-firstrepo",
+                ),
+                (
+                    "git@github.com:Acme/SecondRepo.git",
+                    "acme-secondrepo",
+                    "",
+                    "",
+                    "acme-secondrepo",
+                    "acme-secondrepo",
+                ),
+                (
+                    "https://github.com/Acme/ThirdRepo.git",
+                    "acme-thirdrepo",
+                    "chosen-board",
+                    "chosen-alias",
+                    "chosen-board",
+                    "chosen-alias",
+                ),
+                ("://", "", "", "fallback-alias", "fallback-alias", "fallback-alias"),
+            ]
+
+            for index, (
+                git_url,
+                suggested_slug,
+                explicit_slug,
+                explicit_alias,
+                expected_slug,
+                expected_alias,
+            ) in enumerate(cases):
+                if index:
+                    page.locator('button[aria-haspopup="listbox"]').click()
+                    page.get_by_role("button", name="Create New Board").click()
+
+                form = page.locator("form")
+                # Exercise blank-alias fallback despite the UI's required field.
+                form.evaluate("form => { form.noValidate = true; }")
+                page.get_by_placeholder(
+                    "git@github.com:org/repo.git or https://github.com/org/repo.git"
+                ).fill(git_url)
+
+                slug_field = form.locator("input").first
+                if suggested_slug:
+                    slug_input = page.locator(f'input[placeholder="{suggested_slug}"]')
+                    slug_input.fill(explicit_slug)
+                page.get_by_placeholder("e.g. core-api").fill(explicit_alias)
+                assert slug_field.input_value() == explicit_slug
+                assert (
+                    page.get_by_placeholder("e.g. core-api").input_value()
+                    == explicit_alias
+                )
+
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "POST"
+                        and response.url.endswith("/api/plugins/zerofactory/boards")
+                    )
+                ):
+                    page.locator('form button[type="submit"]').click()
+                form.wait_for(state="detached", timeout=10000)
+
+                payload = submitted_payloads[index]
+                assert payload["slug"] == expected_slug
+                assert payload["repositories"][0]["repo_alias"] == expected_alias
+
+            browser.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monkeypatch):
     sync_api = pytest.importorskip("playwright.sync_api")
     if not (REACT_UMD.is_file() and REACT_DOM_UMD.is_file()):
