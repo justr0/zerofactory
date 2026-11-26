@@ -88,7 +88,15 @@ class TestDispatcherPrCreationUsesAiPrefix:
             case._git(Path(worktree_path), "add", ".")
             case._git(Path(worktree_path), "commit", "-m", "feat: implement feature")
 
-            move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+            metadata = get_task(task_id)["task"].get("metadata") or {}
+            move_task(
+                task_id,
+                TaskMove(
+                    status="done",
+                    actor="zf-builder",
+                    worker_execution_id=metadata.get("worker_execution_id"),
+                ),
+            )
 
             pr_url = "https://github.com/example/repo/pull/900"
             captured = []

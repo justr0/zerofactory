@@ -16,6 +16,7 @@ else:
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -44,8 +45,70 @@ from .config import (
     log_step_state,
     normalize_assignee,
 )
+from . import review_cap_arbitration as _cap_arb
 from .process_manager import is_pid_alive
 from .state_machine import transition_task
+
+
+def _task_worktree_boundary(
+    board_slug: str | None, task_id: str, repo_path: Path | None
+) -> tuple[Path, Path]:
+    """Return the canonical worktree base and lexical per-task root."""
+    from .worktree import _validate_worktree_component
+
+    safe_task_id = _validate_worktree_component(task_id, "task_id")
+    if board_slug:
+        from paths import get_board_worktrees_dir
+
+        worktree_base = get_board_worktrees_dir(board_slug)
+    else:
+        if repo_path is None:
+            raise ValueError("repository path is required for an unboarded task")
+        worktree_base = repo_path.parent / f"{repo_path.name}-worktrees"
+    worktree_base = worktree_base.resolve()
+    return worktree_base, worktree_base / safe_task_id
+
+
+def _safe_task_workspace_path(
+    workspace: str | Path,
+    board_slug: str | None,
+    task_id: str,
+    repo_path: Path | None,
+    phase: str,
+) -> str | None:
+    from .worktree import _validate_worktree_destination
+
+    try:
+        worktree_base, task_root = _task_worktree_boundary(
+            board_slug, task_id, repo_path
+        )
+        return str(
+            _validate_worktree_destination(Path(workspace), task_root, worktree_base)
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        log_step_state(phase, task_id, "failed", f"unsafe task workspace: {exc}")
+        return None
+
+
+def _resolve_task_repo(
+    dispatcher: Any,
+    cursor: sqlite3.Cursor,
+    row: sqlite3.Row,
+    repo_alias: str | None,
+    phase: str,
+) -> tuple[Path | None, bool]:
+    task_id = str(row["id"])
+    tenant = row["tenant"] if "tenant" in row.keys() else None
+    try:
+        repo_path = dispatcher.resolve_task_repo_path(
+            cursor, row["board_slug"], tenant, repo_alias=repo_alias
+        )
+        if not repo_path:
+            raise ValueError("repository path could not be resolved")
+        return repo_path, False
+    except Exception as exc:
+        log_step_state(phase, task_id, "failed", f"repository resolution failed: {exc}")
+        return None, True
 
 
 def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
@@ -218,6 +281,19 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         if assignee == "human":
                             continue
 
+                        if (
+                            row["status"] == "todo"
+                            and assignee == "zf-reviewer"
+                            and cand_meta.get("reviewer_orphan_recovered")
+                        ):
+                            log_step_state(
+                                "dispatch",
+                                task_id,
+                                "deferred",
+                                "recovered reviewer remains available for PR verdict polling",
+                            )
+                            continue
+
                         is_triage_worker = assignee in (
                             "zf-orchestrator",
                             "zf-goldfish",
@@ -283,6 +359,26 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 workspace_path = wt
 
                         if (
+                            workspace_path
+                            and Path(workspace_path).exists()
+                            and not os.environ.get("ZEROFACTORY_SKIP_GIT")
+                        ):
+                            repo_for_task, failed = _resolve_task_repo(
+                                _disp, cursor, row, repo_alias, "dispatch"
+                            )
+                            if failed:
+                                continue
+                            workspace_path = _safe_task_workspace_path(
+                                workspace_path,
+                                board_slug,
+                                task_id,
+                                repo_for_task,
+                                "dispatch",
+                            )
+                            if not workspace_path:
+                                continue
+
+                        if (
                             (not workspace_path or not Path(workspace_path).exists())
                             and assignee in ("zf-builder", "zf-reviewer")
                             and not os.environ.get("ZEROFACTORY_SKIP_GIT")
@@ -332,12 +428,11 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                         _pre_verify_err,
                                     )
                                 else:
-                                    repo_for_task = _disp.resolve_task_repo_path(
-                                        cursor,
-                                        board_slug,
-                                        tenant,
-                                        repo_alias=repo_alias,
+                                    repo_for_task, failed = _resolve_task_repo(
+                                        _disp, cursor, row, repo_alias, "dispatch"
                                     )
+                                    if failed:
+                                        continue
                                     if repo_for_task and repo_for_task.exists():
                                         merged_ok, conflict_files, merge_err = (
                                             _disp.pull_and_merge_main(
@@ -389,6 +484,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 meta.pop("triage_phase", None)
                         elif assignee == "zf-goldfish":
                             meta["triage_phase"] = "goldfish_auditing"
+                        meta["worker_execution_id"] = uuid.uuid4().hex
 
                         cursor.execute(
                             "UPDATE tasks SET status = ?, updated_at = ?, metadata = ? WHERE id = ? AND (status = 'todo' OR (status = 'triage' AND assignee = 'zf-orchestrator'))",
@@ -413,7 +509,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 workspace_path,
                                 branch_name,
                                 board_slug=row["board_slug"],
-                                metadata=row["metadata"],
+                                metadata=json.dumps(meta),
                                 repo_alias=repo_alias,
                             )
                         except Exception as e:
@@ -550,41 +646,53 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         except Exception:
                             pass
 
+                        repo_for_task: Path | None = None
                         if not workspace_path or not Path(workspace_path).exists():
-                            repo_for_task = _disp.resolve_task_repo_path(
-                                cursor, board_slug, tenant, repo_alias=repo_alias
+                            repo_for_task, failed = _resolve_task_repo(
+                                _disp, cursor, row, repo_alias, "package"
                             )
+                            if failed:
+                                continue
                             if repo_for_task:
                                 target_name = repo_alias or repo_for_task.name
-                                if board_slug:
-                                    try:
-                                        from paths import get_board_worktrees_dir  # type: ignore
-                                    except Exception:
-                                        try:
-                                            from ..paths import get_board_worktrees_dir  # type: ignore
-                                        except Exception:
-                                            get_board_worktrees_dir = lambda b: (
-                                                Path.home()
-                                                / ".zerofactory"
-                                                / "workspaces"
-                                                / b
-                                                / "worktrees"
-                                            )  # type: ignore
-                                    task_root = (
-                                        get_board_worktrees_dir(board_slug) / task_id
+                                try:
+                                    from .worktree import (
+                                        _validate_worktree_component,
+                                        _validate_worktree_destination,
                                     )
-                                else:
-                                    task_root = (
-                                        repo_for_task.parent
-                                        / f"{repo_for_task.name}-worktrees"
-                                        / task_id
+
+                                    target_name = _validate_worktree_component(
+                                        target_name, "repo_alias"
                                     )
+                                    worktree_base, task_root = _task_worktree_boundary(
+                                        board_slug, task_id, repo_for_task
+                                    )
+                                except (OSError, TypeError, ValueError) as exc:
+                                    log_step_state(
+                                        "package",
+                                        task_id,
+                                        "failed",
+                                        f"invalid worktree boundary: {exc}",
+                                    )
+                                    continue
 
                                 cand_wt = getattr(
                                     _disp,
                                     "_find_checked_out_worktree",
                                     lambda r, b: None,
                                 )(repo_for_task, f"task/{task_id}")
+                                if cand_wt:
+                                    try:
+                                        cand_wt = _validate_worktree_destination(
+                                            Path(cand_wt), task_root, worktree_base
+                                        )
+                                    except (OSError, ValueError) as exc:
+                                        _log.warning(
+                                            "Ignoring unsafe recovered checkout for task %s: %s",
+                                            task_id,
+                                            exc,
+                                        )
+                                        cand_wt = None
                                 if not cand_wt or not cand_wt.exists():
                                     cand_dirs = [
                                         task_root / target_name,
@@ -602,6 +710,17 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                         except Exception:
                                             pass
                                     for cand in cand_dirs:
+                                        try:
+                                            cand = _validate_worktree_destination(
+                                                cand, task_root, worktree_base
+                                            )
+                                        except (OSError, ValueError) as exc:
+                                            _log.debug(
+                                                "Ignoring unsafe recovered checkout candidate for task %s: %s",
+                                                task_id,
+                                                exc,
+                                            )
+                                            continue
                                         if cand.exists() and (
                                             (cand / ".git").is_file()
                                             or (cand / ".git").is_dir()
@@ -610,11 +729,40 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                             break
 
                                 if cand_wt and cand_wt.exists():
+                                    try:
+                                        cand_wt = _validate_worktree_destination(
+                                            cand_wt, task_root, worktree_base
+                                        )
+                                    except (OSError, ValueError) as exc:
+                                        log_step_state(
+                                            "package",
+                                            task_id,
+                                            "failed",
+                                            f"unsafe recovered worktree: {exc}",
+                                        )
+                                        continue
                                     workspace_path = str(cand_wt)
                                     cursor.execute(
                                         "UPDATE tasks SET workspace_path = ? WHERE id = ?",
                                         (workspace_path, task_id),
                                     )
+
+                        if workspace_path and Path(workspace_path).exists():
+                            if repo_for_task is None:
+                                repo_for_task, failed = _resolve_task_repo(
+                                    _disp, cursor, row, repo_alias, "package"
+                                )
+                                if failed:
+                                    continue
+                            workspace_path = _safe_task_workspace_path(
+                                workspace_path,
+                                board_slug,
+                                task_id,
+                                repo_for_task,
+                                "package",
+                            )
+                            if not workspace_path:
+                                continue
 
                         repo_path = None
                         if workspace_path and Path(workspace_path).exists():
@@ -642,9 +790,11 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 pass
 
                         if not repo_path or not repo_path.exists():
-                            repo_path = _disp.resolve_task_repo_path(
-                                cursor, board_slug, tenant, repo_alias=repo_alias
+                            repo_path, failed = _resolve_task_repo(
+                                _disp, cursor, row, repo_alias, "package"
                             )
+                            if failed:
+                                continue
 
                         if not repo_path or not repo_path.exists():
                             log_step_state(
@@ -775,15 +925,21 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                     b_rows = []
 
                 todo_per_board: dict[str, int] = {}
+                todo_count_query_succeeded = True
                 try:
                     for td_row in cursor.execute(
                         "SELECT board_slug, COUNT(*) AS cnt FROM tasks WHERE status = 'todo' GROUP BY board_slug"
                     ).fetchall():
                         todo_per_board[str(td_row["board_slug"] or "")] = td_row["cnt"]
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.warning(
+                        "Failed to query Todo counts for idle scanner check: %s", e
+                    )
+                    todo_count_query_succeeded = False
 
                 for b_row in b_rows:
+                    if not todo_count_query_succeeded:
+                        break
                     if llm_workers >= max_llm_workers:
                         break
                     board_slug = str(b_row["slug"] or "")
@@ -1054,6 +1210,413 @@ def post_issue_pr_comment(
         return False
 
 
+def _request_review_cap_arbitration(
+    *, row, task_meta, head_sha, rounds, now, pr_url, repo_path
+):
+    """Hand a review-cap park to the arbiter.
+
+    Returns ``(state, body)`` for a live, posted request, or None when
+    arbitration is disabled, opted out, has no arbiter profile on this host,
+    is out of budget, or the request comment could not be posted or verified -
+    in which case the caller keeps the plain park-for-human behaviour. Nothing
+    is persisted here: a failed POST consumes no attempt and leaves no request.
+    """
+    cfg = _cap_arb.arbitration_settings()
+    if not cfg["enabled"]:
+        return None
+    if _cap_arb.is_human_review_task(
+        task_meta, row["tags"] if "tags" in row.keys() else None
+    ):
+        return None
+    if not _cap_arb.arbiter_profile_available(cfg["arbiter"]):
+        return None
+    state = _cap_arb.build_arbitration_request(
+        task_meta,
+        task_id=str(row["id"]),
+        arbiter=cfg["arbiter"],
+        now=now,
+        head_sha=head_sha,
+        rounds=rounds,
+        max_arbitrations=cfg["max_arbitrations"],
+    )
+    if state is None:
+        return None
+    body = _cap_arb.format_arbitration_request(
+        task_id=str(row["id"]),
+        title=row["title"],
+        head_sha=state["request_head"],
+        rounds=rounds,
+        arbiter=cfg["arbiter"],
+        attempt=state["attempts"],
+        max_arbitrations=state["max_arbitrations"],
+    )
+    posted = _cap_arb.post_arbitration_request(
+        pr_url=pr_url,
+        repo_path=repo_path,
+        body=body,
+        key=state["request_key"],
+        head_sha=state["request_head"],
+    )
+    if posted is None:
+        _log.warning(
+            "Task %s: arbitration request %s was not posted; parking for a human instead",
+            row["id"],
+            state["request_key"],
+        )
+        return None
+    state["comment_id"] = posted["comment_id"]
+    state["posted_by"] = posted.get("author") or ""
+    if posted.get("adopted"):
+        # The comment already existed (a previous cycle lost its local state):
+        # anchor the deadline to when it was really posted.
+        state["adopted"] = True
+        state["requested_at"] = posted.get("created_at") or int(now)
+    return state, body
+
+
+def _apply_review_cap_arbitration_decision(
+    *,
+    cursor,
+    row,
+    task_meta,
+    state,
+    decision,
+    builder_author,
+    now,
+    workspace_path,
+    repo_path,
+    tenant,
+    db_path,
+    board_slug,
+):
+    """Record an arbiter verdict on a task parked at the review cap.
+
+    Only called for a verdict already bound to ``state``'s request key and
+    head. MERGE keeps the task parked while the arbiter merges under its own
+    sweep rules; FIX re-opens the task for one bounded fix round whose brief
+    is the verdict body, with a fresh review budget; ESCALATE leaves it parked
+    for the human.
+    """
+    import dispatcher as _disp
+
+    task_id = row["id"]
+    title = row["title"]
+    arbiter = str(state.get("arbiter") or _cap_arb.DEFAULT_ARBITER)
+    verdict = decision["verdict"]
+    attempts = int(state.get("attempts") or 0)
+    max_attempts = int(state.get("max_arbitrations") or 0)
+    short = " ".join(str(decision.get("rationale") or "").split())[:200]
+    verdict_body = str(decision.get("body") or "").strip()[:4000]
+    state.update(
+        status={
+            _cap_arb.VERDICT_FIX: _cap_arb.STATUS_FIX_REQUESTED,
+            _cap_arb.VERDICT_MERGE: _cap_arb.STATUS_MERGE_APPROVED,
+        }.get(verdict, _cap_arb.STATUS_ESCALATED),
+        decision=verdict,
+        decided_at=int(now),
+        # The head the verdict was bound to (== the live head at consumption).
+        decision_head=str(state.get("request_head") or ""),
+        decision_comment_id=decision.get("comment_id"),
+        decision_author=decision.get("author"),
+        decision_created_at=decision.get("created_at"),
+        # The verdict body is the builder's brief for the FIX round.
+        decision_body=verdict_body,
+    )
+    task_meta[_cap_arb.STATE_KEY] = state
+
+    if verdict == _cap_arb.VERDICT_FIX:
+        # One bounded fix round: same reset a human "recover" performs.
+        for key in (
+            "review_cap_reached",
+            "review_round",
+            "commit_review_count",
+            "blocked_reason",
+            "blocked_reason_type",
+        ):
+            task_meta.pop(key, None)
+        _disp.stop_task_worker(task_id, cursor)
+        _disp._remove_worktree(workspace_path, repo_path)
+        cursor.execute(
+            "UPDATE tasks SET assignee = ?, status = 'todo', metadata = ?, workspace_path = NULL, updated_at = ? WHERE id = ?",
+            (builder_author, json.dumps(task_meta), now, task_id),
+        )
+        repo_alias = (
+            str(row["repo_alias"]).strip()
+            if ("repo_alias" in row.keys() and row["repo_alias"])
+            else None
+        )
+        _disp.setup_worktree(
+            cursor,
+            task_id,
+            title,
+            builder_author,
+            tenant,
+            db_path,
+            board_slug=board_slug,
+            repo_alias=repo_alias,
+        )
+        cursor.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'zf-dispatcher', ?, ?)",
+            (
+                task_id,
+                "[AI:zf-dispatcher] Arbitration fix round "
+                f"({attempts}/{max_attempts}): the arbiter's verdict below defines the "
+                "scope of this round. Fix exactly the blocking defects it lists, with a "
+                "test or repro for each, and change nothing else. A reviewer will "
+                "check the new commit once more.\n\n"
+                "=== ARBITRATION VERDICT: FIX ===\n"
+                f"{verdict_body}",
+                now,
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration', ?, ?)",
+            (
+                task_id,
+                f"Arbiter verdict FIX (attempt {attempts}/{max_attempts}); one bounded fix round routed to {builder_author}: {short}",
+                now,
+            ),
+        )
+        return True
+
+    if verdict == _cap_arb.VERDICT_MERGE:
+        task_meta["blocked_reason"] = (
+            f"Review cap reached; arbiter approved the merge ({short}); awaiting merge by {arbiter}."
+        )
+    else:
+        task_meta["blocked_reason"] = (
+            f"Review cap reached; arbiter escalated to human: {short}"
+        )
+    task_meta["blocked_reason_type"] = "human-gate"
+    cursor.execute(
+        "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(task_meta), now, task_id),
+    )
+    cursor.execute(
+        "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration', ?, ?)",
+        (task_id, f"Arbiter verdict {verdict}: {short}", now),
+    )
+    return True
+
+
+def _board_additional_reviewers(cursor, row, board_slug) -> set[str]:
+    """Reviewer accounts the board allows beyond the built-in trust filter."""
+    additional: set[str] = set()
+    if not board_slug:
+        return additional
+    try:
+        task_repo_alias = (
+            row["repo_alias"].strip()
+            if ("repo_alias" in row.keys() and row["repo_alias"])
+            else None
+        )
+        if task_repo_alias:
+            repo_row = cursor.execute(
+                "SELECT additional_reviewer_usernames FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
+                (board_slug, task_repo_alias),
+            ).fetchone()
+            if repo_row and repo_row[0]:
+                additional = set(json.loads(repo_row[0]))
+        else:
+            repo_rows = cursor.execute(
+                "SELECT additional_reviewer_usernames FROM board_repositories WHERE board_slug = ?",
+                (board_slug,),
+            ).fetchall()
+            for r in repo_rows:
+                if r and r[0]:
+                    try:
+                        additional.update(json.loads(r[0]))
+                    except Exception:
+                        pass
+    except (TypeError, ValueError, json.JSONDecodeError):
+        _log.warning(
+            "Ignoring malformed additional reviewer allowlist for board %s",
+            board_slug,
+        )
+    return additional
+
+
+def _poll_arbitration_park(
+    *,
+    cursor,
+    row,
+    task_meta,
+    state,
+    pr_data,
+    current_pr_url,
+    new_pr_comments,
+    processed_cmt_ids,
+    builder_author,
+    now,
+    workspace_path,
+    repo_path,
+    tenant,
+    db_path,
+    board_slug,
+) -> bool:
+    """Hold a task parked on an arbitration request; consume only a bound verdict.
+
+    Called instead of every other routing for a parked task (see
+    ``is_arbitration_park``). For an open request it re-checks the settings the
+    request was created under, then looks for a verdict bound to this request
+    key and head (``find_arbitration_verdict`` fails closed on anything else)
+    and finally the deadline. Any other outcome keeps the task parked until the
+    PR is merged/closed or an operator recovers it.
+    """
+    import dispatcher as _disp
+
+    task_id = str(row["id"])
+    dirty = False
+
+    def _activity(action: str, details: str) -> None:
+        cursor.execute(
+            "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', ?, ?, ?)",
+            (task_id, action, details, now),
+        )
+
+    def _record(comment: dict) -> None:
+        cursor.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+            (
+                task_id,
+                comment.get("author") or "",
+                _disp.format_task_comment_body(comment),
+                now,
+            ),
+        )
+        _activity(
+            "review_comment",
+            f"PR review comment on {comment.get('path') or 'PR'}: {str(comment.get('body') or '')[:80]}",
+        )
+        processed_cmt_ids.add(comment["comment_id"])
+
+    def _hold() -> bool:
+        task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
+        if dirty:
+            # Parked stays parked: never let a stray status/assignee move it on.
+            cursor.execute(
+                "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(task_meta), now, task_id),
+            )
+        return True
+
+    # Comments while parked are recorded for visibility only.
+    for comment in new_pr_comments:
+        _record(comment)
+        dirty = True
+
+    if state.get("status") != _cap_arb.STATUS_REQUESTED:
+        # MERGE / ESCALATE / expired / void: parked until the PR is merged or
+        # closed, or an operator recovers the task. Never re-arbitrated.
+        return _hold()
+
+    cfg = _cap_arb.arbitration_settings()
+    disabled = not cfg["enabled"]
+    if disabled or _cap_arb.is_human_review_task(
+        task_meta, row["tags"] if "tags" in row.keys() else None
+    ):
+        # Consumption-time guard: the request was opened under settings that
+        # changed since. Void it and leave a plain park for the human.
+        reason = (
+            "arbitration disabled" if disabled else "task reserved for human review"
+        )
+        task_meta[_cap_arb.STATE_KEY] = _cap_arb.voided(state, reason, now)
+        task_meta["blocked_reason"] = (
+            "Review cap reached; arbitration request voided "
+            f"({reason}); human review and merge decision required."
+        )
+        task_meta["blocked_reason_type"] = "human-gate"
+        _activity(
+            "review_cap_arbitration_void",
+            f"Arbitration request voided ({reason}); task stays parked for human review",
+        )
+        _log.info("Task %s: arbitration request voided (%s)", task_id, reason)
+        dirty = True
+        return _hold()
+
+    conversation = _disp.fetch_pr_conversation_comments(
+        repo_path=repo_path, pr_url=current_pr_url
+    )
+    poll = _cap_arb.find_arbitration_verdict(
+        conversation or [],
+        arbiter=str(state.get("arbiter") or cfg["arbiter"]),
+        key=str(state.get("request_key") or ""),
+        request_head=str(state.get("request_head") or ""),
+        requested_at=state.get("requested_at"),
+        live_head=str(pr_data.get("headRefOid") or ""),
+        allowed_logins=_cap_arb.arbiter_github_logins(current_pr_url, repo_path),
+        now=now,
+        timeout_hours=cfg["timeout_hours"],
+    )
+    for rejected in _cap_arb.record_rejections(state, poll["rejected"], now):
+        _log.warning(
+            "Task %s: ignoring arbitration verdict comment %s by %s: %s",
+            task_id,
+            rejected.get("comment_id"),
+            rejected.get("author"),
+            rejected.get("reason"),
+        )
+        _activity(
+            "review_cap_arbitration_ignored",
+            (
+                f"Arbitration verdict comment {rejected.get('comment_id')} by "
+                f"{rejected.get('author')} ignored: {rejected.get('reason')}"
+            ),
+        )
+        dirty = True
+    task_meta[_cap_arb.STATE_KEY] = state
+
+    decision = poll["decision"]
+    if decision is not None:
+        verdict_comment = {
+            "comment_id": decision.get("comment_id"),
+            "type": "pr_comment",
+            "author": decision.get("author") or "",
+            "body": decision["body"],
+            "path": None,
+            "line": None,
+        }
+        if (
+            decision.get("comment_id")
+            and decision.get("comment_id") not in processed_cmt_ids
+        ):
+            _record(verdict_comment)
+        # The FIX branch below persists the whole task_meta; carry the recorded
+        # comment ids into it either way.
+        task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
+        return _apply_review_cap_arbitration_decision(
+            cursor=cursor,
+            row=row,
+            task_meta=task_meta,
+            state=state,
+            decision=decision,
+            builder_author=builder_author,
+            now=now,
+            workspace_path=workspace_path,
+            repo_path=repo_path,
+            tenant=tenant,
+            db_path=db_path,
+            board_slug=board_slug,
+        )
+
+    if _cap_arb.arbitration_is_stale(state, now, cfg["timeout_hours"]):
+        state["status"] = _cap_arb.STATUS_EXPIRED
+        state["expired_at"] = int(now)
+        task_meta[_cap_arb.STATE_KEY] = state
+        task_meta["blocked_reason"] = (
+            f"{(task_meta.get('blocked_reason') or 'Review cap reached').rstrip('. ')}; "
+            f"arbiter did not answer within {cfg['timeout_hours']}h; "
+            "human decision required."
+        )
+        task_meta["blocked_reason_type"] = "human-gate"
+        _activity(
+            "review_cap_arbitration_expired",
+            "Arbitration request unanswered; task stays parked for human review",
+        )
+        dirty = True
+    return _hold()
+
+
 def _poll_pr_and_route_review(
     conn: sqlite3.Connection,
     cursor: sqlite3.Cursor,
@@ -1078,6 +1641,11 @@ def _poll_pr_and_route_review(
     task_id = str(row["id"])
     title = row["title"]
     assignee = row["assignee"]
+    reviewer_orphan_recovered = (
+        bool(meta.get("reviewer_orphan_recovered"))
+        and row["status"] == "todo"
+        and assignee == "zf-reviewer"
+    )
     try:
         res = subprocess.run(
             [
@@ -1121,7 +1689,6 @@ def _poll_pr_and_route_review(
         decision = pr_data.get("reviewDecision")
         mergeable = pr_data.get("mergeable")
         current_pr_url = pr_data.get("url") or row["pr_url"] or ""
-
         if pr_state == "MERGED":
             log_step_state(
                 "pr_poll", task_id, "merged", f"{current_pr_url} merged; completing"
@@ -1129,6 +1696,17 @@ def _poll_pr_and_route_review(
             _disp.stop_task_worker(task_id, cursor)
             _disp._remove_worktree(workspace_path, repo_path)
             _disp._delete_remote_branch(task_id, repo_path)
+            _merged_arb = _cap_arb.state_of(meta)
+            if _merged_arb.get("status") == _cap_arb.STATUS_REQUESTED:
+                # Merged before the arbiter answered (or by them after MERGE):
+                # nothing is left to arbitrate.
+                meta[_cap_arb.STATE_KEY] = _cap_arb.voided(
+                    _merged_arb, "pr-merged", now
+                )
+                cursor.execute(
+                    "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration_void', ?, ?)",
+                    (task_id, "Arbitration request voided (pr-merged)", now),
+                )
             meta.pop("blocked_reason", None)
             meta.pop("blocked_reason_type", None)
             cursor.execute(
@@ -1184,6 +1762,16 @@ def _poll_pr_and_route_review(
             _disp.stop_task_worker(task_id, cursor)
             _disp._remove_worktree(workspace_path, repo_path)
             _disp._delete_remote_branch(task_id, repo_path)
+            _closed_arb = _cap_arb.state_of(meta)
+            if _closed_arb.get("status") == _cap_arb.STATUS_REQUESTED:
+                # A closed PR has nothing left to arbitrate.
+                meta[_cap_arb.STATE_KEY] = _cap_arb.voided(
+                    _closed_arb, "pr-closed", now
+                )
+                cursor.execute(
+                    "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration_void', ?, ?)",
+                    (task_id, "Arbitration request voided (pr-closed)", now),
+                )
             meta.pop("blocked_reason", None)
             meta.pop("blocked_reason_type", None)
             cursor.execute(
@@ -1200,8 +1788,68 @@ def _poll_pr_and_route_review(
             )
             return True
 
+        # Review-cap arbitration park. While a request is open - and after any
+        # of its outcomes - the task is parked: conflict handling, ordinary
+        # review-comment routing and auto-merge never see it. Only an accepted
+        # verdict, the request deadline, a merged/closed PR or an operator
+        # recovery moves it.
+        _arb_state = _cap_arb.state_of(meta)
+        _arb_parked = _cap_arb.is_arbitration_park(
+            meta, status=row["status"], assignee=assignee
+        )
+        if not _arb_parked and _arb_state.get("status") == _cap_arb.STATUS_REQUESTED:
+            # The task left its park without a verdict (operator recover,
+            # dashboard move): the open request no longer applies to anything.
+            meta[_cap_arb.STATE_KEY] = _cap_arb.voided(
+                _arb_state, "task-left-park", now
+            )
+            cursor.execute(
+                "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(meta), now, task_id),
+            )
+            cursor.execute(
+                "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration_void', ?, ?)",
+                (task_id, "Arbitration request voided (task-left-park)", now),
+            )
+        if _arb_parked:
+            _park_processed = set(meta.get("processed_review_comment_ids", []))
+            _park_all_comments = _disp.fetch_pr_review_comments(
+                repo_path=repo_path,
+                pr_url=current_pr_url,
+                task_id=task_id,
+                pr_data=pr_data,
+                additional_reviewer_usernames=_board_additional_reviewers(
+                    cursor, row, board_slug
+                ),
+            )
+            return _poll_arbitration_park(
+                cursor=cursor,
+                row=row,
+                task_meta=meta,
+                state=_arb_state,
+                pr_data=pr_data,
+                current_pr_url=current_pr_url,
+                new_pr_comments=[
+                    c
+                    for c in _park_all_comments
+                    if c["comment_id"] not in _park_processed
+                ],
+                processed_cmt_ids=_park_processed,
+                builder_author=normalize_assignee(
+                    meta.get("packaged_by") or "zf-builder"
+                ),
+                now=now,
+                workspace_path=workspace_path,
+                repo_path=repo_path,
+                tenant=tenant,
+                db_path=db_path,
+                board_slug=board_slug,
+            )
+
         if meta.get("permanently_blocked") or (
-            row["status"] in ("running", "todo") and not meta.get("awaiting_pr")
+            row["status"] in ("running", "todo")
+            and not meta.get("awaiting_pr")
+            and not reviewer_orphan_recovered
         ):
             log_step_state(
                 "pr_poll",
@@ -1277,43 +1925,14 @@ def _poll_pr_and_route_review(
             pass
 
         processed_cmt_ids = set(task_meta.get("processed_review_comment_ids", []))
-        additional_reviewer_usernames: set[str] = set()
-        if board_slug:
-            try:
-                task_repo_alias = (
-                    row["repo_alias"].strip()
-                    if ("repo_alias" in row.keys() and row["repo_alias"])
-                    else None
-                )
-                if task_repo_alias:
-                    repo_row = cursor.execute(
-                        "SELECT additional_reviewer_usernames FROM board_repositories WHERE board_slug = ? AND repo_alias = ?",
-                        (board_slug, task_repo_alias),
-                    ).fetchone()
-                    if repo_row and repo_row[0]:
-                        additional_reviewer_usernames = set(json.loads(repo_row[0]))
-                else:
-                    repo_rows = cursor.execute(
-                        "SELECT additional_reviewer_usernames FROM board_repositories WHERE board_slug = ?",
-                        (board_slug,),
-                    ).fetchall()
-                    for r in repo_rows:
-                        if r and r[0]:
-                            try:
-                                additional_reviewer_usernames.update(json.loads(r[0]))
-                            except Exception:
-                                pass
-            except (TypeError, ValueError, json.JSONDecodeError):
-                _log.warning(
-                    "Ignoring malformed additional reviewer allowlist for board %s",
-                    board_slug,
-                )
         all_pr_comments = _disp.fetch_pr_review_comments(
             repo_path=repo_path,
             pr_url=current_pr_url,
             task_id=task_id,
             pr_data=pr_data,
-            additional_reviewer_usernames=additional_reviewer_usernames,
+            additional_reviewer_usernames=_board_additional_reviewers(
+                cursor, row, board_slug
+            ),
         )
         new_pr_comments = [
             c for c in all_pr_comments if c["comment_id"] not in processed_cmt_ids
@@ -1348,7 +1967,14 @@ def _poll_pr_and_route_review(
             decision == "APPROVED" or blocked_type == "approved"
         ) and not has_actionable_feedback
 
-        if has_actionable_feedback and row["status"] in ("blocked", "todo"):
+        if has_actionable_feedback and (
+            row["status"] in ("blocked", "todo")
+            or (
+                row["status"] == "running"
+                and assignee == "zf-reviewer"
+                and reviewer_orphan_recovered
+            )
+        ):
             if (
                 bool(task_meta.get("review_cap_reached"))
                 and row["status"] == "blocked"
@@ -1421,6 +2047,7 @@ def _poll_pr_and_route_review(
                         )
 
             task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
+            task_meta.pop("reviewer_orphan_recovered", None)
 
             head_commit_sha = (pr_data.get("headRefOid") or "").strip()
             if not head_commit_sha and repo_path:
@@ -1454,6 +2081,9 @@ def _poll_pr_and_route_review(
 
             task_meta["review_round"] = review_round
             task_meta["commit_review_count"] = review_round
+            # A reviewer round on the commit an arbitration FIX round produced
+            # ends that round: its verdict is no longer the builder's brief.
+            _cap_arb.close_fix_round(task_meta, now)
 
             max_review_rounds = int(
                 os.environ.get("ZEROFACTORY_MAX_REVIEW_ROUNDS", "2")
@@ -1466,9 +2096,40 @@ def _poll_pr_and_route_review(
                 commit_tag = (
                     f" on commit {head_commit_sha[:7]}" if head_commit_sha else ""
                 )
-                task_meta["blocked_reason"] = (
-                    f"Review cap reached ({max_review_rounds} rounds{commit_tag}); escalating to human review."
+                _arb_request = _request_review_cap_arbitration(
+                    row=row,
+                    task_meta=task_meta,
+                    head_sha=head_commit_sha,
+                    rounds=max_review_rounds,
+                    now=now,
+                    pr_url=current_pr_url,
+                    repo_path=repo_path,
                 )
+                _arb_state: dict[str, Any] = {}
+                _arb_body = ""
+                if _arb_request is None:
+                    task_meta["blocked_reason"] = (
+                        f"Review cap reached ({max_review_rounds} rounds{commit_tag}); escalating to human review."
+                    )
+                    _arb_detail = (
+                        "Review cap reached "
+                        f"({max_review_rounds} review rounds on PR); escalating to human review and merge decision"
+                    )
+                else:
+                    _arb_state, _arb_body = _arb_request
+                    task_meta[_cap_arb.STATE_KEY] = _arb_state
+                    task_meta["blocked_reason"] = (
+                        f"Review cap reached ({max_review_rounds} rounds{commit_tag}); "
+                        f"merge decision delegated to {_arb_state['arbiter']} "
+                        f"(arbitration attempt {_arb_state['attempts']}/"
+                        f"{_arb_state['max_arbitrations']})."
+                    )
+                    _arb_detail = (
+                        f"Review cap reached ({max_review_rounds} review rounds on PR); "
+                        f"merge decision delegated to {_arb_state['arbiter']} "
+                        f"(arbitration attempt {_arb_state['attempts']}/"
+                        f"{_arb_state['max_arbitrations']})"
+                    )
                 task_meta["blocked_reason_type"] = "human-gate"
                 task_meta["review_cap_reached"] = True
                 cursor.execute(
@@ -1481,12 +2142,25 @@ def _poll_pr_and_route_review(
                 )
                 cursor.execute(
                     "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_reached', ?, ?)",
-                    (
-                        task_id,
-                        f"Review cap reached ({max_review_rounds} review rounds on PR); escalating to human review and merge decision",
-                        now,
-                    ),
+                    (task_id, _arb_detail, now),
                 )
+                if _arb_request is not None:
+                    cursor.execute(
+                        "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'zf-dispatcher', ?, ?)",
+                        (task_id, _arb_body, now),
+                    )
+                    cursor.execute(
+                        "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'review_cap_arbitration_requested', ?, ?)",
+                        (
+                            task_id,
+                            (
+                                f"Arbitration requested from {_arb_state['arbiter']} on PR {current_pr_url} "
+                                f"(request {_arb_state['request_key']}, comment {_arb_state.get('comment_id')}"
+                                f"{', adopted existing comment' if _arb_state.get('adopted') else ''})"
+                            ),
+                            now,
+                        ),
+                    )
                 return True
 
             task_meta.pop("blocked_reason", None)
@@ -1575,6 +2249,7 @@ def _poll_pr_and_route_review(
                 processed_cmt_ids.add(c["comment_id"])
 
             task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
+            task_meta.pop("reviewer_orphan_recovered", None)
 
             # Check if Auto-Merge is enabled for this task
             board_dict = {}

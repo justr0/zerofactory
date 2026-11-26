@@ -951,9 +951,9 @@ def setup_board_gh_issues_endpoint(slug: str, repo_alias: str | None = None):
 def sync_board_gh_issues_endpoint(
     slug: str,
     repo_alias: str | None = None,
-    label: str = "zerofactory",
+    label: str | None = None,
 ):
-    """Scan and import open GitHub issues requested for AI investigation into human-gated Triage tasks."""
+    """Import open GitHub issues carrying supported AI-request labels into Triage."""
     init_db()
     with get_db_conn() as conn:
         board = conn.execute("SELECT * FROM boards WHERE slug = ?", (slug,)).fetchone()

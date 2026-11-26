@@ -22,23 +22,6 @@ if str(PLUGIN_ROOT) not in sys.path:
 # imports inside test modules (order-dependent ModuleNotFoundError).
 import tests  # noqa: E402
 
-# Upstream tests ``import fcntl`` directly (POSIX-only). The Windows port ships
-# ``zf_wincompat`` as the flock shim for production code; register it as
-# ``fcntl`` here too so the same suite collects on Windows.
-if sys.platform == "win32":
-    try:
-        import fcntl  # noqa: F401
-    except ImportError:
-        import types
-
-        import zf_wincompat as _wincompat
-
-        _shim = types.ModuleType("fcntl")
-        for _name, _value in vars(_wincompat).items():
-            if not _name.startswith("__"):
-                setattr(_shim, _name, _value)
-        sys.modules["fcntl"] = _shim
-
 # Ensure hermetic defaults before any tests run
 os.environ.setdefault("ZEROFACTORY_SKIP_GIT", "1")
 os.environ.setdefault("ZEROFACTORY_SKIP_CRON_SYNC", "1")
@@ -71,6 +54,20 @@ def _hermetic_dispatcher_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "ZEROFACTORY_LOCK_PATH", str(tmp_path / "zerofactory_dispatcher.lock")
     )
     monkeypatch.setenv("OPENWIKI_CONFIG_DIR", str(tmp_path / "openwiki-config"))
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_default_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests that request no DB fixture off the operator's board database.
+
+    Worker precommit runs inherit ``ZEROFACTORY_DB`` (the live board DB). A
+    test that reaches ``init_db()`` without the ``initialized_db`` fixture would
+    otherwise migrate and seed the real database and fail intermittently with
+    ``sqlite3.OperationalError: database is locked`` whenever the running
+    dispatcher holds a write transaction. Tests about DB path resolution
+    override this with ``monkeypatch.delenv``/``setenv`` of their own.
+    """
+    monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zerofactory_default.db"))
 
 
 @pytest.fixture
