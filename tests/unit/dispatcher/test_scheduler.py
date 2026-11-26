@@ -1252,8 +1252,9 @@ def test_run_dispatch_cycle_skips_idle_scan_at_positive_todo_cap(tmp_path: Path)
             "INSERT INTO boards (slug, name) VALUES ('at-cap-board', 'At cap')"
         )
         conn.execute(
-            "INSERT INTO tasks (id, title, status, assignee, board_slug) "
-            "VALUES ('todo-at-cap', 'Todo at cap', 'todo', 'human', 'at-cap-board')"
+            "INSERT INTO tasks (id, title, status, assignee, metadata, board_slug) "
+            "VALUES ('todo-at-cap', 'Todo at cap', 'todo', 'zf-reviewer', ?, 'at-cap-board')",
+            (json.dumps({"reviewer_orphan_recovered": True}),),
         )
         conn.commit()
 
@@ -1261,6 +1262,7 @@ def test_run_dispatch_cycle_skips_idle_scan_at_positive_todo_cap(tmp_path: Path)
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.object(dispatcher, "reap_active_scanners"),
         patch.object(dispatcher, "spawn_board_scanner") as mock_spawn,
+        patch.object(dispatcher, "spawn_agent_worker") as mock_spawn_worker,
         patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
         patch.object(dispatcher, "clean_stale_git_locks"),
         patch.object(
@@ -1279,6 +1281,13 @@ def test_run_dispatch_cycle_skips_idle_scan_at_positive_todo_cap(tmp_path: Path)
     assert result["ok"] is True
     assert result["scans_triggered"] == 0
     mock_spawn.assert_not_called()
+    mock_spawn_worker.assert_not_called()
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, assignee, metadata FROM tasks WHERE id = 'todo-at-cap'"
+        ).fetchone()
+    assert row[0:2] == ("todo", "zf-reviewer")
+    assert json.loads(row[2])["reviewer_orphan_recovered"] is True
 
 
 def test_run_dispatch_cycle_relates_to_does_not_block_task(tmp_path: Path):
