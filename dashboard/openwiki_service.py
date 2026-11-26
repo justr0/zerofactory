@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +62,7 @@ def get_board_linked_repos(
     linked_repos: list[dict[str, Any]] = []
 
     try:
-        with sqlite3.connect(str(eff_db), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(eff_db), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(

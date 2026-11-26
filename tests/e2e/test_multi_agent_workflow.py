@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,13 +29,14 @@ from dashboard.plugin_api import (
     init_db,
     move_task,
 )
+from tests.conftest import HOME_ENV_KEYS, fake_home_env
 
 
 class TestMultiAgentLifecycleE2E(unittest.TestCase):
     """End-to-End validation of the autonomous multi-agent pipeline and Git worktrees."""
 
     def setUp(self):
-        self.td = tempfile.mkdtemp(prefix="zf-lifecycle-e2e-")
+        self.td = tempfile.mkdtemp(prefix="zf-e2e-")
         self.db_path = Path(self.td) / "lifecycle.db"
         self.lock_path = Path(self.td) / "lifecycle_lock.lock"
         self.fake_home = Path(self.td) / "home"
@@ -50,13 +52,13 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
             "ZEROFACTORY_DISABLE_DISPATCHER": os.environ.get(
                 "ZEROFACTORY_DISABLE_DISPATCHER"
             ),
-            "HOME": os.environ.get("HOME"),
+            **{key: os.environ.get(key) for key in HOME_ENV_KEYS},
         }
 
         os.environ["ZEROFACTORY_DB"] = str(self.db_path)
         os.environ["ZEROFACTORY_LOCK_PATH"] = str(self.lock_path)
         os.environ["ZEROFACTORY_DISABLE_DISPATCHER"] = "1"
-        os.environ["HOME"] = str(self.fake_home)
+        os.environ.update(fake_home_env(self.fake_home))
         os.environ.pop("ZEROFACTORY_SKIP_GIT", None)  # Enable real git operations
         os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = (
             "1"  # Workers driven deterministically
@@ -82,6 +84,25 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         )
         self.board_slug = b_res["slug"]
 
+        # Git for Windows refuses ``git worktree add`` once ``<dest>/.git`` reaches
+        # 220 characters ("'$GIT_DIR' too big") and ``core.longpaths`` does not
+        # lift it, so a deep temporary home makes every worktree uncreatable.
+        longest_dest = (
+            self.fake_home
+            / ".zerofactory"
+            / "workspaces"
+            / self.board_slug
+            / "worktrees"
+            / ("t" * 16)
+            / ("r" * len(self.board_slug))
+        )
+        if sys.platform == "win32" and len(str(longest_dest)) > 215:
+            self.tearDown()
+            self.skipTest(
+                f"git worktree destination would be {len(str(longest_dest))} "
+                "characters; Git for Windows caps it at 215"
+            )
+
     def tearDown(self):
         for k, v in self.orig_env.items():
             if v is not None:
@@ -95,6 +116,17 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
             ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
         )
         return res.stdout.strip()
+
+    def _complete_worker_task(self, task_id: str, actor: str = "zf-builder") -> None:
+        metadata = get_task(task_id)["task"].get("metadata") or {}
+        move_task(
+            task_id,
+            TaskMove(
+                status="done",
+                actor=actor,
+                worker_execution_id=metadata.get("worker_execution_id"),
+            ),
+        )
 
     def test_01_full_delivery_cycle_builder_review_rounds_approval_and_merge(self):
         """Complete E2E autonomous delivery flow:
@@ -142,7 +174,7 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         )
 
         # Builder completes implementation and marks done for packaging
-        move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+        self._complete_worker_task(task_id)
 
         # Step 4: Dispatcher packages work and opens PR
         pr_url = "https://github.com/example/repo/pull/101"
@@ -274,11 +306,11 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         self._git(worktree_path, "commit", "-m", "feat: initial cache")
 
         # Builder finishes initial implementation
-        move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+        self._complete_worker_task(task_id)
 
         # Open PR -> moves to reviewer
         pr_url = "https://github.com/example/repo/pull/102"
-        gh_state = {
+        gh_state: dict[str, str | None] = {
             "state": "OPEN",
             "reviewDecision": "CHANGES_REQUESTED",
             "mergeable": "MERGEABLE",
@@ -317,16 +349,21 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         self.assertEqual(t_after_changes["status"], "todo")
         self.assertEqual(t_after_changes["assignee"], "zf-builder")
 
+        # Dispatch the replacement builder execution before it reports completion.
+        gh_state["reviewDecision"] = None
+        with patch("subprocess.run", side_effect=mock_gh):
+            dispatcher.run_dispatch_cycle(self.db_path)
+        worktree_path = Path(get_task(task_id)["task"]["workspace_path"])
+
         # Builder pushes update
         (worktree_path / "cache.py").write_text(
             "class Cache:\n    def get(self): return None\n"
         )
         self._git(worktree_path, "add", ".")
         self._git(worktree_path, "commit", "-m", "fix: implement get method")
-        move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+        self._complete_worker_task(task_id)
 
         # Next cycle routes back to reviewer
-        gh_state["reviewDecision"] = None
         with patch("subprocess.run", side_effect=mock_gh):
             dispatcher.run_dispatch_cycle(self.db_path)
 
@@ -336,16 +373,6 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
     def test_03_merge_conflict_detection_and_builder_reroute(self):
         """PR merge conflict routes task back to zf-builder for resolution
         (conflict state tracked in metadata.conflict_retries, not the title)."""
-        # Create a worktree for reviewer task
-        rev_ws = self.fake_home / "git" / "main_repo-worktrees" / "ws_conf"
-        rev_ws.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "worktree", "add", str(rev_ws), "-b", "task/conf"],
-            cwd=str(self.repo_dir),
-            check=True,
-            capture_output=True,
-        )
-
         pr_url = "https://github.com/example/repo/pull/103"
         t_res = create_task(
             TaskCreate(
@@ -356,11 +383,29 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
             )
         )
         task_id = t_res["id"]
+        repo_alias = get_task(task_id)["task"]["repo_alias"]
+        rev_ws = (
+            self.fake_home
+            / ".zerofactory"
+            / "workspaces"
+            / self.board_slug
+            / "worktrees"
+            / task_id
+            / repo_alias
+        )
+        rev_ws.parent.mkdir(parents=True, exist_ok=True)
+        branch_name = f"task/{task_id}"
+        subprocess.run(
+            ["git", "worktree", "add", str(rev_ws), "-b", branch_name],
+            cwd=str(self.repo_dir),
+            check=True,
+            capture_output=True,
+        )
 
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.execute(
-                "UPDATE tasks SET pr_url = ?, branch_name = 'task/conf', workspace_path = ? WHERE id = ?",
-                (pr_url, str(rev_ws), task_id),
+                "UPDATE tasks SET pr_url = ?, branch_name = ?, workspace_path = ? WHERE id = ?",
+                (pr_url, branch_name, str(rev_ws), task_id),
             )
             conn.commit()
 

@@ -69,6 +69,7 @@ try:
         TaskSplitRequest,
         TaskTriageRequest,
         TaskUpdate,
+        _validate_path_component,
         normalize_blocked_reason_type,
         resolve_status_assignee,
     )
@@ -104,6 +105,7 @@ except (ImportError, ValueError):
         TaskSplitRequest,
         TaskTriageRequest,
         TaskUpdate,
+        _validate_path_component,
         normalize_blocked_reason_type,
         resolve_status_assignee,
     )
@@ -148,6 +150,48 @@ def _session_counter(value: Any) -> int:
         return int(value)
     except ValueError:
         return 0
+
+
+def _validate_linked_repo_aliases(
+    cursor: Any, board_slug: str | None, aliases: Any
+) -> list[str]:
+    """Require each requested repository alias to be a linked safe path component."""
+    if not isinstance(aliases, list):
+        raise HTTPException(status_code=400, detail="Repository aliases must be a list")
+
+    if any(not isinstance(alias, str) for alias in aliases):
+        raise HTTPException(
+            status_code=400, detail="Repository aliases must be strings"
+        )
+    try:
+        cleaned = [_validate_path_component(alias) or "" for alias in aliases]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if any(not alias for alias in cleaned):
+        raise HTTPException(
+            status_code=400, detail="Repository aliases must not be empty"
+        )
+
+    if not cleaned:
+        return cleaned
+    if not board_slug:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository aliases must belong to a configured board",
+        )
+
+    cursor.execute(
+        "SELECT repo_alias FROM board_repositories WHERE board_slug = ?",
+        (board_slug,),
+    )
+    linked_aliases = {str(row[0]) for row in cursor.fetchall() if row[0]}
+    unknown = sorted(set(cleaned) - linked_aliases)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Repository alias(es) not linked to board '{board_slug}': {', '.join(unknown)}",
+        )
+    return cleaned
 
 
 @router.get("/tasks")
@@ -438,16 +482,18 @@ def create_task(req: TaskCreate):
                 tags.append(t)
 
         if req.target_repos:
-            cleaned_target_repos = [
-                str(r).strip() for r in req.target_repos if str(r).strip()
-            ]
-            if cleaned_target_repos:
-                meta["target_repos"] = cleaned_target_repos
+            meta["target_repos"] = req.target_repos
 
-        tags_json = json.dumps(tags)
-        metadata_json = json.dumps(meta)
+        if "target_repos" in meta:
+            meta["target_repos"] = _validate_linked_repo_aliases(
+                cursor, board_slug, meta["target_repos"]
+            )
 
         repo_alias_val = (req.repo_alias or "").strip() or None
+        if repo_alias_val:
+            repo_alias_val = _validate_linked_repo_aliases(
+                cursor, board_slug, [repo_alias_val]
+            )[0]
         if not repo_alias_val and meta.get("target_repos"):
             repo_alias_val = meta["target_repos"][0]
         if not repo_alias_val and board_slug:
@@ -458,6 +504,9 @@ def create_task(req: TaskCreate):
             r_row = cursor.fetchone()
             if r_row:
                 repo_alias_val = r_row[0]
+
+        tags_json = json.dumps(tags)
+        metadata_json = json.dumps(meta)
 
         cursor.execute(
             """
@@ -761,10 +810,6 @@ def update_task(task_id: str, req: TaskUpdate):
         updates.append("board_slug = ?")
         params.append(req.board_slug)
         changes.append(f"moved to board {req.board_slug}")
-    if req.repo_alias is not None:
-        updates.append("repo_alias = ?")
-        params.append(req.repo_alias.strip() or None)
-        changes.append(f"repo_alias set to {req.repo_alias}")
     if req.status is not None:
         # Status is a lifecycle TRANSITION with side effects (worker stop, flags,
         # marker cleanup, dispatch trigger) — always applied by /move so exactly
@@ -804,16 +849,30 @@ def update_task(task_id: str, req: TaskUpdate):
         updates.append("tags = ?")
         params.append(json.dumps(req.tags))
 
-    meta_changes = False
     with get_db_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT status, assignee, metadata FROM tasks WHERE id = ?",
+            "SELECT status, assignee, metadata, board_slug, repo_alias FROM tasks WHERE id = ?",
             (task_id,),
         )
         m_row = cursor.fetchone()
-        existing_meta = {}
-        if m_row and m_row["metadata"]:
+        if not m_row:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+        effective_board = (
+            req.board_slug if req.board_slug is not None else m_row["board_slug"]
+        )
+        if req.board_slug is not None:
+            cursor.execute("SELECT 1 FROM boards WHERE slug = ?", (effective_board,))
+            if not cursor.fetchone():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown board '{effective_board}'. Select a configured board.",
+                )
+
+        existing_meta: dict[str, Any] = {}
+        if m_row["metadata"]:
             try:
                 existing_meta = (
                     json.loads(m_row["metadata"])
@@ -823,50 +882,81 @@ def update_task(task_id: str, req: TaskUpdate):
             except Exception:
                 existing_meta = {}
 
-    if req.assignee is not None:
-        curr_status = m_row["status"] if m_row else "triage"
-        curr_assignee = m_row["assignee"] if m_row else "human"
-        asgn = resolve_status_assignee(
-            curr_status,
-            current_assignee=curr_assignee,
-            target_assignee=req.assignee,
-            metadata=existing_meta,
+        effective_alias = (
+            req.repo_alias if req.repo_alias is not None else m_row["repo_alias"]
         )
-        updates.append("assignee = ?")
-        params.append(asgn)
-        changes.append(f"assignee changed to {asgn}")
+        board_changed = (
+            req.board_slug is not None and req.board_slug != m_row["board_slug"]
+        )
+        cleaned_repo_alias = req.repo_alias
+        if effective_alias and (req.repo_alias is not None or board_changed):
+            cleaned_repo_alias = _validate_linked_repo_aliases(
+                cursor, effective_board, [effective_alias]
+            )[0]
 
-    if req.target_repos is not None:
-        cleaned_target_repos = [
-            str(r).strip() for r in req.target_repos if str(r).strip()
-        ]
-        existing_meta["target_repos"] = cleaned_target_repos
-        changes.append(f"target_repos updated ({len(cleaned_target_repos)} repos)")
-        meta_changes = True
+        cleaned_target_repos: list[str] | None = None
+        if req.target_repos is not None:
+            cleaned_target_repos = _validate_linked_repo_aliases(
+                cursor, effective_board, req.target_repos
+            )
+        cleaned_metadata = dict(req.metadata) if req.metadata is not None else None
+        if cleaned_metadata and "target_repos" in cleaned_metadata:
+            cleaned_metadata["target_repos"] = _validate_linked_repo_aliases(
+                cursor, effective_board, cleaned_metadata["target_repos"]
+            )
+        elif (
+            board_changed
+            and req.target_repos is None
+            and existing_meta.get("target_repos") is not None
+        ):
+            _validate_linked_repo_aliases(
+                cursor, effective_board, existing_meta["target_repos"]
+            )
 
-    if req.specification is not None:
-        existing_meta["specification"] = req.specification
-        changes.append("specification updated")
-        meta_changes = True
+        if req.repo_alias is not None:
+            updates.append("repo_alias = ?")
+            params.append(cleaned_repo_alias or None)
+            changes.append(f"repo_alias set to {req.repo_alias}")
 
-    if req.metadata is not None:
-        existing_meta.update(req.metadata)
-        changes.append("metadata updated")
-        meta_changes = True
+        if req.assignee is not None:
+            asgn = resolve_status_assignee(
+                m_row["status"],
+                current_assignee=m_row["assignee"],
+                target_assignee=req.assignee,
+                metadata=existing_meta,
+            )
+            updates.append("assignee = ?")
+            params.append(asgn)
+            changes.append(f"assignee changed to {asgn}")
 
-    if meta_changes:
-        updates.append("metadata = ?")
-        params.append(json.dumps(existing_meta))
+        meta_changes = False
+        if req.target_repos is not None:
+            existing_meta["target_repos"] = cleaned_target_repos or []
+            changes.append(
+                f"target_repos updated ({len(cleaned_target_repos or [])} repos)"
+            )
+            meta_changes = True
 
-    if not updates:
-        return {"ok": True, "message": "No changes requested"}
+        if req.specification is not None:
+            existing_meta["specification"] = req.specification
+            changes.append("specification updated")
+            meta_changes = True
 
-    updates.append("updated_at = ?")
-    params.append(now)
-    params.append(task_id)
+        if cleaned_metadata is not None:
+            existing_meta.update(cleaned_metadata)
+            changes.append("metadata updated")
+            meta_changes = True
 
-    with get_db_conn() as conn:
-        cursor = conn.cursor()
+        if meta_changes:
+            updates.append("metadata = ?")
+            params.append(json.dumps(existing_meta))
+
+        if not updates:
+            return {"ok": True, "message": "No changes requested"}
+
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(task_id)
         cursor.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params)
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
@@ -907,6 +997,15 @@ def move_task(task_id: str, req: TaskMove):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
+        if (
+            req.actor
+            and req.actor.startswith("zf-")
+            and req.status in ("running", "done")
+            and not conn.in_transaction
+        ):
+            # Serialize the ownership check with dispatcher claims/recovery so
+            # a stale report cannot pass on a snapshot from before reassignment.
+            conn.execute("BEGIN IMMEDIATE")
         cursor.execute(
             "SELECT status, assignee, metadata, board_slug, title, pr_url FROM tasks WHERE id = ?",
             (task_id,),
@@ -1005,13 +1104,28 @@ def move_task(task_id: str, req: TaskMove):
                 "reason": f"Report ignored: {stale_reason}",
             }
 
+        current_worker_report = (
+            req.worker_execution_id is not None
+            and req.worker_execution_id == meta.get("worker_execution_id")
+            and prev_status == "running"
+            and (curr["assignee"] or "") == (req.actor or "")
+        )
+        worker_report_rejected = (
+            wants_packaging
+            and req.status in ("done", "running")
+            and not current_worker_report
+        )
+
         # A completion report from a stale/zombie worker must never clobber a
         # parked state: 'done' is strictly terminal and 'blocked' is a
         # human/reviewer gate. The sole builder-bound exception is
         # 'changes-requested', where finishing the fix is the desired outcome
         # (zf-hdz-4dc03cee: a zombie builder's `move done` flipped an
         # approved-for-merge task back to running and wiped its blocked_reason).
-        if (
+        park_reason = None
+        if worker_report_rejected:
+            park_reason = "no matching dispatcher-tracked worker execution"
+        elif (
             wants_packaging
             and req.status == "done"
             and (
@@ -1021,13 +1135,26 @@ def move_task(task_id: str, req: TaskMove):
                     and str(meta.get("blocked_reason_type") or "human-gate")
                     != "changes-requested"
                 )
+                or (curr["assignee"] or "") != (req.actor or "")
+                or bool(meta.get("awaiting_pr"))
             )
         ):
             park_reason = (
                 "task is already done (terminal)"
                 if prev_status == "done"
-                else f"task is blocked for {str(meta.get('blocked_reason_type') or 'human-gate')}"
+                else (
+                    f"task is blocked for {str(meta.get('blocked_reason_type') or 'human-gate')}"
+                    if prev_status == "blocked"
+                    and str(meta.get("blocked_reason_type") or "human-gate")
+                    != "changes-requested"
+                    else (
+                        "task is already awaiting PR packaging"
+                        if meta.get("awaiting_pr")
+                        else f"task is assigned to {curr['assignee'] or 'another agent'}"
+                    )
+                )
             )
+        if park_reason:
             log_step_state(
                 "move",
                 task_id,
@@ -1060,6 +1187,9 @@ def move_task(task_id: str, req: TaskMove):
             if wants_packaging:
                 if not meta.get("awaiting_pr"):
                     meta["awaiting_pr"] = True
+                    meta_updated = True
+                if "worker_execution_id" in meta:
+                    meta.pop("worker_execution_id", None)
                     meta_updated = True
                 if "close_pr" in meta:
                     meta.pop("close_pr", None)
@@ -1128,6 +1258,11 @@ def move_task(task_id: str, req: TaskMove):
             target_assignee=getattr(req, "assignee", None),
             metadata=meta,
         )
+        if meta.get("reviewer_orphan_recovered") and (
+            new_status != "todo" or resolved_assignee != "zf-reviewer"
+        ):
+            meta.pop("reviewer_orphan_recovered", None)
+            meta_updated = True
         if new_status == "todo" and resolved_assignee == "zf-builder":
             if "awaiting_approval" in meta:
                 meta.pop("awaiting_approval", None)

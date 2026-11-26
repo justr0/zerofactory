@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 import urllib.request
@@ -300,6 +301,14 @@ def ensure_zf_profiles(
     return res
 
 
+def _is_junction(path: Path) -> bool:
+    """Windows directory junction: a reparse point ``Path.is_symlink()`` reports as False."""
+    try:
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (AttributeError, OSError):
+        return False
+
+
 def ensure_plugin_symlinks() -> dict[str, Any]:
     """Ensure plugin symlink (zerofactory) and config entries exist in:
     1. Root ~/.hermes/plugins/ and ~/.hermes/config.yaml
@@ -331,30 +340,38 @@ def ensure_plugin_symlinks() -> dict[str, Any]:
         target_plugins_dir.mkdir(parents=True, exist_ok=True)
         link_path = target_plugins_dir / "zerofactory"
         try:
-            if link_path.is_symlink() or link_path.exists():
-                if link_path.is_symlink():
-                    try:
-                        cur_target = link_path.resolve()
-                        # If existing symlink points to a transient worktree or is broken, unlink it
-                        if "-worktrees" in str(cur_target) or not cur_target.exists():
-                            link_path.unlink()
-                            _link_to(link_path, plugin_root)
-                        elif cur_target == plugin_root.resolve():
-                            pass
-                        else:
-                            link_path.unlink()
-                            _link_to(link_path, plugin_root)
-                    except Exception:
+            is_link = link_path.is_symlink() or _is_junction(link_path)
+            if is_link or link_path.exists():
+                # Relink when the link is transient (git worktree), broken, or
+                # points at another install; a plain directory is an old copy.
+                cur_target = link_path.resolve() if is_link else None
+                stale = cur_target is None or (
+                    "-worktrees" in str(cur_target)
+                    or not cur_target.exists()
+                    or cur_target != plugin_root.resolve()
+                )
+                if not stale:
+                    linked.append(str(link_path))
+                    return
+                if _is_junction(link_path):
+                    # Removing a junction with rmdir never traverses its target.
+                    os.rmdir(link_path)
+                elif link_path.is_symlink():
+                    # Windows directory symlinks are not junctions. rmtree
+                    # refuses them, so remove the reparse point itself.
+                    attrs = getattr(os.lstat(link_path), "st_file_attributes", 0)
+                    is_directory = attrs & getattr(
+                        stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10
+                    )
+                    if os.name == "nt" and is_directory:
+                        os.rmdir(link_path)
+                    else:
                         link_path.unlink()
-                        _link_to(link_path, plugin_root)
                 elif link_path.is_dir():
                     shutil.rmtree(link_path)
-                    _link_to(link_path, plugin_root)
                 else:
                     link_path.unlink()
-                    _link_to(link_path, plugin_root)
-            else:
-                _link_to(link_path, plugin_root)
+            _link_to(link_path, plugin_root)
             linked.append(str(link_path))
         except Exception as e:
             _log.warning("Could not link plugin in %s: %s", target_plugins_dir, e)
@@ -437,13 +454,21 @@ def ensure_script_files() -> dict[str, Any]:
 
 def update_env_file(
     env_path: Path, updates: dict[str, str], remove_keys: set[str] | None = None
-) -> None:
-    """Update or insert key=value pairs in an environment file while preserving comments and other keys."""
+) -> bool:
+    """Update or insert key=value pairs in an environment file while preserving comments and other keys.
+
+    Returns True when the file content changed. An unchanged result is NOT rewritten:
+    the gateway reconciles served profiles on config/.env changes, so every
+    redundant rewrite of a live zf-* profile .env risks a rescan that tears down the
+    profile's running workers. Callers that sync on every provisioning rely on this
+    being a no-op when the desired state is already on disk."""
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
+    existing_raw: str | None = None
     if env_path.exists():
         try:
-            existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+            existing_raw = env_path.read_text(encoding="utf-8")
+            existing_lines = existing_raw.splitlines()
         except Exception as e:
             _log.warning("Could not read %s: %s", env_path, e)
 
@@ -467,11 +492,14 @@ def update_env_file(
         new_lines.append(f"{key}={val}")
 
     content = "\n".join(new_lines).strip() + "\n"
+    if content == existing_raw:
+        return False
     env_path.write_text(content, encoding="utf-8")
     try:
         os.chmod(str(env_path), 0o600)
     except OSError:
         pass
+    return True
 
 
 def update_config_yaml_plugins(
@@ -744,7 +772,8 @@ def check_gh_auth_status(*, use_cache: bool = True) -> bool:
     ok = False
     try:
         proc = subprocess.run(
-            ["gh", "auth", "status"],
+            # Resolved through PATH so Windows also finds gh.cmd wrappers (PATHEXT).
+            [shutil.which("gh") or "gh", "auth", "status"],
             capture_output=True,
             text=True,
             timeout=3,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -22,6 +23,7 @@ from .config import (
     resolve_profile_state_db,
 )
 from .process_manager import build_shell_wrapper, cleanup_process_artifacts
+from . import review_cap_arbitration as _cap_arb
 
 try:
     from zf_wincompat import detached_popen_kwargs, resolve_hermes_bin
@@ -44,10 +46,20 @@ def build_worker_command(
         raise ValueError("ZEROFACTORY_WORKER_ARGS must be valid JSON") from exc
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         raise ValueError("ZEROFACTORY_WORKER_ARGS must be a JSON array of strings")
+    placeholders = {
+        "prompt": prompt,
+        "task_id": task_id,
+        "workspace": workspace,
+        "role": role,
+    }
     return [
         executable,
         *(
-            arg.format(prompt=prompt, task_id=task_id, workspace=workspace, role=role)
+            re.sub(
+                r"\{(prompt|task_id|workspace|role)\}",
+                lambda match: placeholders[match.group(1)],
+                arg,
+            )
             for arg in args
         ),
     ]
@@ -100,7 +112,7 @@ def is_unattended_approvals_enabled() -> bool:
     try:
         db_path = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if db_path.exists():
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 return bool(
                     load_settings(conn).get("allow_unattended_approvals", False)
@@ -201,7 +213,7 @@ def spawn_agent_worker(
         try:
             _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
             if _db.exists():
-                with sqlite3.connect(str(_db), timeout=2.0) as _c:
+                with closing(sqlite3.connect(str(_db), timeout=2.0)) as _c, _c:
                     _c.row_factory = sqlite3.Row
                     _r = _c.execute(
                         "SELECT repo_alias FROM tasks WHERE id = ?", (task_id,)
@@ -230,7 +242,7 @@ def spawn_agent_worker(
     try:
         _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if _db.exists():
-            with sqlite3.connect(str(_db), timeout=2.0) as _c:
+            with closing(sqlite3.connect(str(_db), timeout=2.0)) as _c, _c:
                 _c.row_factory = sqlite3.Row
                 _task_r = _c.execute(
                     "SELECT tags, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -364,7 +376,7 @@ def spawn_agent_worker(
         try:
             _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
             if _db.exists():
-                with sqlite3.connect(str(_db)) as _c:
+                with closing(sqlite3.connect(str(_db))) as _c, _c:
                     _c.row_factory = sqlite3.Row
                     _cur = _c.cursor()
                     _cur.execute(
@@ -533,7 +545,7 @@ def spawn_agent_worker(
         try:
             _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
             if _db.exists():
-                with sqlite3.connect(str(_db)) as _c:
+                with closing(sqlite3.connect(str(_db))) as _c, _c:
                     _c.row_factory = sqlite3.Row
                     _cur = _c.cursor()
                     _cur.execute(
@@ -670,10 +682,11 @@ def spawn_agent_worker(
             # Check if there are review comments for this task in task_comments
             review_comments_prompt = ""
             is_precommit_fail = False
+            _rev_rows: list = []
             try:
                 _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
                 if _db.exists():
-                    with sqlite3.connect(str(_db)) as _c:
+                    with closing(sqlite3.connect(str(_db))) as _c, _c:
                         _c.row_factory = sqlite3.Row
                         _cur = _c.cursor()
                         _cur.execute(
@@ -718,7 +731,41 @@ def spawn_agent_worker(
             except Exception as e:
                 _log.debug("Could not inspect task_comments for worker prompt: %s", e)
 
-            if review_comments_prompt and is_precommit_fail:
+            # Arbitration fix round: the accepted FIX verdict is the whole brief
+            # for this one pass. Prior review comments the arbiter did not
+            # repeat were deferred and must not be re-addressed here.
+            arb_brief = _cap_arb.fix_round_brief(task_meta)
+            if arb_brief:
+                _gate_blocks = [
+                    f"### Precommit failure output (by @{r['author']}):\n{r['body']}"
+                    for r in _rev_rows
+                    if "deterministic precommit failed" in r["body"].lower()
+                ]
+                review_comments_prompt = (
+                    "🚨 CRITICAL: ARBITRATION FIX ROUND - THE VERDICT BELOW IS YOUR ENTIRE SCOPE\n"
+                    "The review loop hit its cap and an arbiter reviewed this PR. Their verdict is the "
+                    "authoritative brief for exactly ONE bounded fix pass.\n"
+                    "- Fix ONLY the defects the verdict lists, with a test or repro for each. Change nothing else.\n"
+                    "- Earlier review comments the verdict does not repeat were DEFERRED by the arbiter: "
+                    "do NOT address them and do NOT reply to them on GitHub.\n\n"
+                    "=== ARBITRATION VERDICT (authoritative brief) ===\n"
+                    f"{arb_brief}\n\n"
+                    + ("\n".join(_gate_blocks) + "\n\n" if _gate_blocks else "")
+                )
+
+            if arb_brief:
+                goal_instructions = (
+                    "Your goal as Builder (Arbitration Fix Round):\n"
+                    f"1. Address exactly the defects listed in the verdict above - nothing more - in your workspace ({workdir}).\n"
+                    f"2. Apply targeted, concise code edits rather than rewriting or bloating files.\n"
+                    f"3. Run automated tests and linters in your workspace to verify correctness.\n"
+                    f"4. When finished, hand off for re-review (marks work finished; the dispatcher re-commits, pushes, and syncs the PR):\n"
+                    f"   hermes zerofactory move {task_id} done\n"
+                    f"5. Provide a summary of how each verdict item was resolved.\n"
+                    f"   - AI ATTRIBUTION: Any GitHub PR comment you post (e.g. `gh pr comment`) MUST begin with `[AI:zf-builder]` so humans can distinguish agent output.\n\n"
+                    f"NOTE: Do NOT run git commands (git add/commit/push/checkout). The factory dispatcher automatically stages, commits, and pushes your fixes to the PR upon handoff.\n"
+                )
+            elif review_comments_prompt and is_precommit_fail:
                 goal_instructions = (
                     f"Your goal as Builder (Fix Precommit Failures):\n"
                     f"1. Inspect the precommit failure output above.\n"
@@ -809,6 +856,13 @@ def spawn_agent_worker(
             **({} if worker_command else {"HERMES_PROFILE": assignee}),
         }
     )
+    try:
+        execution_id = json.loads(metadata or "{}").get("worker_execution_id")
+    except (AttributeError, TypeError, ValueError):
+        execution_id = None
+    env.pop("ZEROFACTORY_WORKER_EXECUTION_ID", None)
+    if execution_id:
+        env["ZEROFACTORY_WORKER_EXECUTION_ID"] = str(execution_id)
 
     proc = None
     try:

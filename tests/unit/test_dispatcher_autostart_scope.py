@@ -13,6 +13,7 @@ dispatcher never started at all: nothing polled PRs, closed merged tasks or ran 
 review.
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -22,7 +23,31 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import zerofactory as zf
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_plugin_root():
+    """The repository root ``__init__.py``, loaded as the ``zerofactory`` package.
+
+    Only an installed plugin sits in a directory named ``zerofactory``. A plain
+    checkout does not, so ``import zerofactory`` raises there and takes the whole
+    suite down at collection. The module is loaded by location instead, as a
+    package, so its relative imports (``.dashboard.db``, ``.settings``) resolve
+    to the same modules this file patches.
+    """
+    if "zerofactory" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "zerofactory",
+            PLUGIN_ROOT / "__init__.py",
+            submodule_search_locations=[str(PLUGIN_ROOT)],
+        )
+        assert spec is not None and spec.loader is not None
+        sys.modules["zerofactory"] = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sys.modules["zerofactory"])
+    return sys.modules["zerofactory"]
+
+
+zf = _load_plugin_root()
 
 ONE_OFF_ARGV = (
     ["hermes", "zerofactory", "move", "zf-1", "todo"],

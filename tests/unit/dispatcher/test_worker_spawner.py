@@ -1,16 +1,25 @@
 """Unit tests for dispatcher/worker_spawner.py: agent worker spawning, session isolation, and environment injection."""
 
+import contextlib
+import json
 import os
 import sqlite3
+import sys
 import tempfile
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import dispatcher.process_manager as process_manager
+import dispatcher.worker_spawner as worker_spawner
 from dispatcher.worker_spawner import (
     _inject_langfuse_env,
     spawn_agent_worker,
 )
+import zf_wincompat
+from zf_wincompat import detached_popen_kwargs
 
 
 def test_inject_langfuse_env():
@@ -38,6 +47,21 @@ def test_inject_langfuse_env():
     assert "HERMES_LANGFUSE_SECRET_KEY" not in env
 
 
+def test_detached_popen_kwargs_platform_contract():
+    """Verify both native detached-process options without requiring Windows."""
+    with patch.object(zf_wincompat, "IS_WINDOWS", False):
+        assert detached_popen_kwargs() == {"start_new_session": True}
+
+    with (
+        patch.object(zf_wincompat, "IS_WINDOWS", True),
+        patch.object(zf_wincompat.subprocess, "CREATE_NO_WINDOW", 0x01, create=True),
+        patch.object(
+            zf_wincompat.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x02, create=True
+        ),
+    ):
+        assert detached_popen_kwargs() == {"creationflags": 0x03}
+
+
 def test_spawn_agent_worker_skip_env():
     """When ZEROFACTORY_SKIP_WORKER_SPAWN is set, spawn returns None immediately."""
     with patch.dict(os.environ, {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1"}):
@@ -48,13 +72,15 @@ def test_spawn_agent_worker_skip_env():
         assert sess is None
 
 
-def test_spawn_agent_worker_cmd_and_session_isolation():
-    """Verify hermes command structure, start_new_session=True, and session matching."""
-    with (
-        tempfile.NamedTemporaryFile(suffix=".db") as tmp_db,
-        tempfile.TemporaryDirectory() as tmp_ws,
-    ):
-        conn = sqlite3.connect(tmp_db.name)
+def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
+    """Verify platform-specific argv, detach options, and session matching."""
+    tmp_ws = tmp_path / "workspace"
+    tmp_ws.mkdir()
+    hermes_home = tmp_path / "hermes"
+
+    for windows in (False, True):
+        db_path = tmp_path / f"profile-state-{windows}.db"
+        conn = sqlite3.connect(db_path)
         conn.execute(
             """
             CREATE TABLE sessions (
@@ -74,7 +100,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
         # Session for target task
         conn.execute(
             "INSERT INTO sessions VALUES ('sess-mine', 'Task ID: zf-mine', ?, ?)",
-            (tmp_ws, now),
+            (str(tmp_ws), now),
         )
         conn.commit()
         conn.close()
@@ -82,9 +108,28 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
         import dispatcher
 
         with (
+            patch.object(zf_wincompat, "IS_WINDOWS", windows),
+            patch.object(process_manager, "IS_WINDOWS", windows),
             patch.object(
-                dispatcher, "resolve_profile_state_db", return_value=Path(tmp_db.name)
+                zf_wincompat.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True
             ),
+            patch.object(
+                zf_wincompat.subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0x00000200,
+                create=True,
+            ),
+            patch.object(dispatcher, "resolve_profile_state_db", return_value=db_path),
+            patch(
+                "dispatcher.worker_spawner.build_worker_command", return_value=None
+            ) as mock_build_command,
+            patch.object(
+                worker_spawner, "resolve_hermes_bin", return_value="hermes-test"
+            ),
+            patch.object(
+                worker_spawner, "is_unattended_approvals_enabled", return_value=False
+            ),
+            patch("paths.get_hermes_home", return_value=hermes_home),
             patch("subprocess.Popen") as mock_popen,
             patch.dict(os.environ, {}, clear=False),
         ):
@@ -100,24 +145,56 @@ def test_spawn_agent_worker_cmd_and_session_isolation():
                 assignee="zf-reviewer",
                 priority="P0",
                 description="Test isolation",
-                workspace_path=tmp_ws,
+                workspace_path=str(tmp_ws),
                 branch_name="task/zf-mine",
+                metadata=json.dumps({"worker_execution_id": "exec-current"}),
             )
 
             assert pid == 99999
             assert sess == "sess-mine"
             assert mock_popen.called
             args, kwargs = mock_popen.call_args
+            prompt = mock_build_command.call_args.args[0]
+            native_cmd = [
+                "hermes-test",
+                "-p",
+                "zf-reviewer",
+                "--cli",
+                "chat",
+                "-q",
+                prompt,
+            ]
+            exit_prefix = hermes_home / "logs" / "worker_zf-mine"
             cmd = args[0]
+            if windows:
+                assert cmd == [
+                    sys.executable,
+                    str(Path(worker_spawner.__file__).with_name("_worker_wrapper.py")),
+                    str(exit_prefix),
+                    *native_cmd,
+                ]
+                expected_isolation = {"creationflags": 0x08000200}
+            else:
+                expected_wrapper = process_manager.build_shell_wrapper(
+                    native_cmd, exit_prefix
+                )
+                assert cmd == expected_wrapper
+                assert cmd[:2] == ["sh", "-c"]
+                assert cmd[3:5] == ["zf-runner", str(exit_prefix)]
+                assert cmd[5:] == native_cmd
+                expected_isolation = {"start_new_session": True}
+
             env = kwargs.get("env", {})
 
-            assert "--yolo" not in cmd
-            assert "--accept-hooks" not in cmd
-            assert cmd[0] == "sh"
-            assert cmd[1] == "-c"
-            assert "zf-runner" in cmd
-            assert kwargs.get("start_new_session") is True
+            isolation_kwargs = {
+                key: kwargs[key]
+                for key in ("start_new_session", "creationflags")
+                if key in kwargs
+            }
+            assert isolation_kwargs == expected_isolation
+            assert isolation_kwargs == detached_popen_kwargs()
             assert env.get("HERMES_PROFILE") == "zf-reviewer"
+            assert env.get("ZEROFACTORY_WORKER_EXECUTION_ID") == "exec-current"
 
 
 def test_spawn_agent_worker_cleans_artifacts():
@@ -227,6 +304,178 @@ def test_spawn_builder_review_comments_goal():
     )
     assert "Your goal as Builder (Fix Review Comments)" in prompt
     assert "Your goal as Builder (Fix Precommit Failures)" not in prompt
+
+
+def _spawn_builder_with_comments(
+    comments: list[tuple[str, str]], task_id: str, metadata: dict | None = None
+) -> str:
+    """Spawn zf-builder against a temp DB holding ``comments`` rows; return the prompt."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "kanban.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE task_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT,
+                author TEXT,
+                body TEXT,
+                created_at INTEGER
+            )
+            """
+        )
+        for n, (author, body) in enumerate(comments, 1):
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, author, body, n),
+            )
+        conn.commit()
+        conn.close()
+
+        import dispatcher
+
+        with (
+            patch.object(
+                dispatcher,
+                "check_unresolved_conflicts_safe",
+                return_value=(True, [], ""),
+            ),
+            patch("subprocess.Popen") as mock_popen,
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}),
+        ):
+            os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+            mock_proc = MagicMock()
+            mock_proc.pid = 42424
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            spawn_agent_worker(
+                task_id=task_id,
+                title="Fix Task",
+                description="desc",
+                priority="P1",
+                assignee="zf-builder",
+                workspace_path=os.getcwd(),
+                branch_name=f"task/{task_id}",
+                metadata=json.dumps(metadata or {}),
+            )
+
+        return mock_popen.call_args[0][0][-1]
+
+
+PRIOR_FINDINGS = [
+    (
+        "zf-reviewer",
+        "[github review] Round 1: rename `refresh()` to `reload()` and split the "
+        "helper module; DEFERRED-FINDING-ONE.",
+    ),
+    (
+        "zf-reviewer",
+        "[github review] Round 2: add a retry wrapper around the network call; "
+        "DEFERRED-FINDING-TWO.",
+    ),
+]
+
+
+def _fix_round_metadata(verdict_body: str) -> dict:
+    from dispatcher import review_cap_arbitration as arb
+
+    return {
+        arb.STATE_KEY: {
+            "status": arb.STATUS_FIX_REQUESTED,
+            "decision": "FIX",
+            "attempts": 1,
+            "decision_body": verdict_body,
+        }
+    }
+
+
+def test_spawn_builder_arbitration_fix_round_prompt_is_the_verdict_only():
+    """A FIX verdict is the builder's whole brief: prior findings it did not
+    repeat are deferred and must not be presented as work to do."""
+    from dispatcher import review_cap_arbitration as arb
+
+    verdict = (
+        "[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: arbitration|HEAD: x\n"
+        "1. Race in `refresh()` when two cycles overlap - repro: run two dispatch "
+    )
+    prompt = _spawn_builder_with_comments(
+        PRIOR_FINDINGS, "zf-arb-fix", _fix_round_metadata(verdict.rstrip() + " cycles.")
+    )
+
+    assert "Your goal as Builder (Arbitration Fix Round)" in prompt
+    assert "ARBITRATION FIX ROUND - THE VERDICT BELOW IS YOUR ENTIRE SCOPE" in prompt
+    # The verdict's own instructions are the brief, verbatim.
+    assert "Race in `refresh()` when two cycles overlap" in prompt
+    # Not the "address EVERY review comment" instruction, and none of the
+    # findings the arbiter left out.
+    assert "PULL REQUEST REVIEW COMMENTS TO ADDRESS" not in prompt
+    assert "address every review comment" not in prompt
+    assert "DEFERRED-FINDING-ONE" not in prompt
+    assert "DEFERRED-FINDING-TWO" not in prompt
+    assert "were DEFERRED by the arbiter" in prompt
+    assert "Your goal as Builder (Fix Review Comments)" not in prompt
+    assert "Your goal as Builder (Fix Precommit Failures)" not in prompt
+
+    # Outside a live fix round (reviewer already answered the fix commit, or
+    # a MERGE/ESCALATE outcome) the ordinary review-comment prompt is untouched.
+    settled = _fix_round_metadata(verdict)
+    settled[arb.STATE_KEY]["status"] = arb.STATUS_MERGE_APPROVED
+    plain = _spawn_builder_with_comments(PRIOR_FINDINGS, "zf-arb-settled", settled)
+    assert "Your goal as Builder (Fix Review Comments)" in plain
+    assert "DEFERRED-FINDING-ONE" in plain
+    assert "Arbitration Fix Round" not in plain
+
+    answered = _fix_round_metadata(verdict)
+    answered["review_round"] = 1
+    re_reviewed = _spawn_builder_with_comments(
+        PRIOR_FINDINGS, "zf-arb-answered", answered
+    )
+    assert "Your goal as Builder (Fix Review Comments)" in re_reviewed
+    assert "Arbitration Fix Round" not in re_reviewed
+
+
+def test_spawn_builder_closes_the_board_connections_it_opens():
+    """Every board connection the spawn path opens is closed by the time the
+    spawn returns. `with sqlite3.connect(...)` commits but never closes, and an
+    open handle keeps the board file from being deleted or replaced on Windows."""
+    opened = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    with patch.object(sqlite3, "connect", recording_connect):
+        # While connections leak, Windows refuses to delete the board file, so
+        # the helper's cleanup raises first; let the assertions name the cause.
+        with contextlib.suppress(PermissionError):
+            _spawn_builder_with_comments(PRIOR_FINDINGS, "zf-close-probe", None)
+
+    # The helper's own writer, plus at least one reader on the spawn path.
+    assert len(opened) >= 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def test_spawn_builder_arbitration_fix_round_keeps_deterministic_gate_failures():
+    """A failing deterministic gate is not a deferred opinion: it stays in the prompt."""
+    verdict = "[AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: k | HEAD: x\nFix the lock leak."
+    gate = (
+        "zf-dispatcher",
+        "[github pr] Deterministic precommit failed: ruff E501 in dispatcher/x.py",
+    )
+    prompt = _spawn_builder_with_comments(
+        PRIOR_FINDINGS + [gate], "zf-arb-gate", _fix_round_metadata(verdict)
+    )
+
+    assert "Your goal as Builder (Arbitration Fix Round)" in prompt
+    assert "Precommit failure output" in prompt
+    assert "ruff E501 in dispatcher/x.py" in prompt
+    assert "Fix the lock leak." in prompt
+    assert "DEFERRED-FINDING-ONE" not in prompt
 
 
 def test_spawn_agent_worker_orchestrator_grill_with_docs():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,17 +36,115 @@ class TestProfileManagerUnit(unittest.TestCase):
         """Creates symlink to zerofactory only in zf-* profiles (never root)."""
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td)
-            with patch("profile_manager.get_hermes_home", return_value=fake_home):
+            # A plain directory as the plugin source: the real one sits in a git
+            # worktree when these tests run from one, which the guardrail refuses.
+            plugin_root = fake_home / "plugin-src"
+            plugin_root.mkdir()
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+            ):
                 PM.ensure_zf_profiles()
                 res = PM.ensure_plugin_symlinks()
                 self.assertIsInstance(res, dict)
                 self.assertFalse((fake_home / "plugins").exists())
                 for role in PM.ZF_PROFILES:
-                    self.assertTrue(
-                        (
-                            fake_home / "profiles" / role / "plugins" / "zerofactory"
-                        ).is_symlink()
-                    )
+                    link = fake_home / "profiles" / role / "plugins" / "zerofactory"
+                    # A junction on Windows, a symlink elsewhere: either way it
+                    # must lead back to the plugin's own root.
+                    self.assertTrue(link.exists())
+                    self.assertEqual(link.resolve(), plugin_root.resolve())
+
+    def test_ensure_plugin_symlinks_relinks_existing_link(self):
+        """A repeated setup keeps a correct link and replaces a foreign or broken one.
+
+        On Windows the link is a junction, which ``Path.is_symlink()`` reports as
+        False; it must be swapped with ``os.rmdir`` and never recursed into.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            plugin_root = fake_home / "plugin-src"
+            plugin_root.mkdir()
+            foreign = fake_home / "old-plugin"
+            foreign.mkdir()
+            (foreign / "keep.txt").write_text("old install\n", encoding="utf-8")
+            gone = fake_home / "vanished-plugin"
+            gone.mkdir()
+            links = [
+                fake_home / "profiles" / role / "plugins" / "zerofactory"
+                for role in PM.ZF_PROFILES
+            ]
+
+            def link_all(source: Path) -> dict:
+                with (
+                    patch("profile_manager.get_hermes_home", return_value=fake_home),
+                    patch("profile_manager.get_plugin_root", return_value=source),
+                ):
+                    PM.ensure_zf_profiles()
+                    return PM.ensure_plugin_symlinks()
+
+            link_all(foreign)
+            self.assertTrue(all(link.resolve() == foreign.resolve() for link in links))
+            # Relink away from the previous install: its files must survive.
+            res = link_all(plugin_root)
+            self.assertTrue(
+                all(link.resolve() == plugin_root.resolve() for link in links)
+            )
+            self.assertTrue((foreign / "keep.txt").exists())
+            self.assertEqual(sorted(res["linked"]), sorted(str(link) for link in links))
+            created = [os.lstat(link).st_ctime_ns for link in links]
+            # A correct link is left alone: nothing re-created, no warning.
+            with self.assertNoLogs("zerofactory.profiles", level="WARNING"):
+                link_all(plugin_root)
+            self.assertEqual([os.lstat(link).st_ctime_ns for link in links], created)
+            # A link whose target vanished is replaced as well.
+            link_all(gone)
+            shutil.rmtree(gone)
+            link_all(plugin_root)
+            self.assertTrue(
+                all(link.resolve() == plugin_root.resolve() for link in links)
+            )
+
+    def test_ensure_plugin_symlinks_removes_directory_symlink_without_rmtree(self):
+        """Windows directory symlinks must be unlinked without recursive deletion."""
+        if os.name != "nt":
+            self.skipTest("Windows directory-symlink attributes")
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            plugin_root = fake_home / "plugin-src"
+            plugin_root.mkdir()
+            link = (
+                fake_home / "profiles" / PM.ZF_PROFILES[0] / "plugins" / "zerofactory"
+            )
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+            ):
+                PM.ensure_zf_profiles()
+                os.rmdir(link)  # Remove the junction created by setup.
+                link.mkdir()  # Simulate an existing directory symlink without privileges.
+
+                original_is_symlink = Path.is_symlink
+                original_is_junction = PM._is_junction
+
+                def is_directory_symlink(path: Path) -> bool:
+                    return path == link or original_is_symlink(path)
+
+                def is_junction(path: Path) -> bool:
+                    return False if path == link else original_is_junction(path)
+
+                with (
+                    patch.object(Path, "is_symlink", is_directory_symlink),
+                    patch("profile_manager._is_junction", is_junction),
+                    patch(
+                        "profile_manager.shutil.rmtree", wraps=shutil.rmtree
+                    ) as rmtree,
+                ):
+                    PM.ensure_plugin_symlinks()
+
+                rmtree.assert_not_called()
+                self.assertEqual(link.resolve(), plugin_root.resolve())
 
     def test_ensure_script_files(self):
         """Copies background scripts as real files only into zf-* profile scripts/."""
@@ -95,6 +195,41 @@ class TestProfileManagerUnit(unittest.TestCase):
             self.assertIn("HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-modified", lines2)
             self.assertNotIn("HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-sample", lines2)
             self.assertIn("OPENROUTER_API_KEY=existing-key", lines2)
+
+    def test_update_env_file_is_noop_when_unchanged(self):
+        """Re-applying the same desired state must not rewrite the file.
+
+        The gateway rescans a served profile whenever its .env changes, which tears
+        down that profile's running workers; a sync that rewrites identical content on
+        every provisioning must therefore be a no-op (returns False, mtime untouched)."""
+        with tempfile.TemporaryDirectory() as td:
+            env_p = Path(td) / ".env"
+            updates = {"HERMES_LANGFUSE_ENV": "zerofactory"}
+
+            self.assertTrue(PM.update_env_file(env_p, updates), "first apply writes")
+            changed = {"HERMES_LANGFUSE_ENV": "e2e-test"}
+            self.assertTrue(PM.update_env_file(env_p, changed), "changed value writes")
+            self.assertIn("HERMES_LANGFUSE_ENV=e2e-test", env_p.read_text("utf-8"))
+
+            stable_mtime = env_p.stat().st_mtime_ns
+            self.assertFalse(
+                PM.update_env_file(env_p, changed), "identical state is not rewritten"
+            )
+            self.assertEqual(env_p.stat().st_mtime_ns, stable_mtime)
+
+            # Removing keys that are absent is likewise a no-op.
+            self.assertFalse(
+                PM.update_env_file(
+                    env_p, {}, remove_keys={"HERMES_LANGFUSE_SECRET_KEY"}
+                )
+            )
+            self.assertEqual(env_p.stat().st_mtime_ns, stable_mtime)
+
+            # A real change (removing a present key) writes again.
+            self.assertTrue(
+                PM.update_env_file(env_p, {}, remove_keys={"HERMES_LANGFUSE_ENV"})
+            )
+            self.assertNotIn("HERMES_LANGFUSE_ENV", env_p.read_text(encoding="utf-8"))
 
     def test_check_setup_status_detects_outdated_profiles(self):
         """check_setup_status flags zf-* profiles whose SOUL.md differs from templates."""

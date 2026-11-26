@@ -1,6 +1,7 @@
 """Integration tests for Task API endpoints (/api/plugins/zerofactory/tasks)."""
 
 import json
+from collections.abc import Mapping
 
 from fastapi.testclient import TestClient
 import pytest
@@ -72,6 +73,106 @@ def test_task_lifecycle_crud(api_client: TestClient, default_board: str):
     assert list_res.status_code == 200
     filtered_tasks = list_res.json()["tasks"]
     assert any(t["id"] == task_id for t in filtered_tasks)
+
+
+@pytest.mark.parametrize("unsafe", ["/tmp/outside", "../outside"])
+def test_task_api_rejects_unsafe_path_components(
+    api_client: TestClient, default_board: str, unsafe: str
+):
+    endpoint = "/api/plugins/zerofactory/tasks"
+    for field, value in (
+        ("task_id", unsafe),
+        ("repo_alias", unsafe),
+        ("target_repos", [unsafe]),
+    ):
+        body = {"title": "Unsafe", "board_slug": default_board, field: value}
+        assert api_client.post(endpoint, json=body).status_code == 422
+
+    task_id = api_client.post(
+        endpoint, json={"title": "Safe", "board_slug": default_board}
+    ).json()["id"]
+    for field, value, status in (
+        ("repo_alias", unsafe, 422),
+        ("target_repos", [unsafe], 422),
+        ("metadata", {"target_repos": [unsafe]}, 400),
+    ):
+        assert (
+            api_client.patch(f"{endpoint}/{task_id}", json={field: value}).status_code
+            == status
+        )
+
+
+def test_task_api_validates_linked_aliases_on_create_update_and_board_move(
+    api_client: TestClient, default_board: str
+):
+    with get_db_conn() as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, created_at, updated_at) VALUES ('other-board', 1, 1)"
+        )
+        conn.executemany(
+            "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+            [
+                (default_board, "frontend", "https://example.com/frontend.git"),
+                (default_board, "web", "https://example.com/web.git"),
+                ("other-board", "backend", "https://example.com/backend.git"),
+            ],
+        )
+        conn.commit()
+
+    endpoint = "/api/plugins/zerofactory/tasks"
+
+    def request_status(
+        method: str, body: Mapping[str, object], task_id: str | None = None
+    ) -> int:
+        url = f"{endpoint}/{task_id}" if task_id else endpoint
+        return api_client.request(method, url, json=body).status_code
+
+    for field, value in (("repo_alias", "unlinked"), ("target_repos", ["unlinked"])):
+        body = {"title": "Unlinked", "board_slug": default_board, field: value}
+        assert request_status("POST", body) == 400
+
+    created = api_client.post(
+        endpoint,
+        json={
+            "title": "Linked repository task",
+            "board_slug": default_board,
+            "repo_alias": "frontend",
+            "metadata": {"target_repos": ["frontend"]},
+        },
+    )
+    task_id = created.json()["id"]
+
+    for changes in (
+        {"repo_alias": "unlinked"},
+        {"metadata": {"target_repos": ["unlinked"]}},
+        {"board_slug": "other-board"},
+        {"board_slug": ""},
+    ):
+        assert request_status("PATCH", changes, task_id) == 400
+
+    unchanged = api_client.get(f"{endpoint}/{task_id}").json()["task"]
+    assert (unchanged["board_slug"], unchanged["repo_alias"]) == (
+        default_board,
+        "frontend",
+    )
+    assert unchanged["metadata"]["target_repos"] == ["frontend"]
+
+    assert (
+        request_status(
+            "PATCH",
+            {
+                "board_slug": "other-board",
+                "repo_alias": "backend",
+                "target_repos": ["backend"],
+                "metadata": {"target_repos": ["backend"]},
+            },
+            task_id,
+        )
+        == 200
+    )
+    task = api_client.get(f"{endpoint}/{task_id}").json()["task"]
+    assert (task["board_slug"], task["repo_alias"]) == ("other-board", "backend")
+    assert task["metadata"]["target_repos"] == ["backend"]
 
 
 @pytest.mark.parametrize(
@@ -191,6 +292,14 @@ def test_task_session_routes_share_response_and_not_found_behavior(
 
 def test_task_dependencies(api_client: TestClient, default_board: str):
     """Verify linking and unlinking task dependencies with repo_alias and link_type."""
+    with get_db_conn() as conn:
+        for alias in ("common-lib", "order-service", "api-gateway"):
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, repo_alias, git_url, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+                (default_board, alias, f"https://example.com/{alias}.git"),
+            )
+        conn.commit()
+
     t1_id = api_client.post(
         "/api/plugins/zerofactory/tasks",
         json={
@@ -427,11 +536,24 @@ def test_move_done_semantics_human_terminal_vs_agent_awaiting_pr(
     )
     assert _metadata(task_id).get("awaiting_pr") is None
 
-    api_client.post(
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'running', metadata = ? WHERE id = ?",
+            (json.dumps({"worker_execution_id": "execution-current"}), task_id),
+        )
+        conn.commit()
+    completion = api_client.post(
         f"/api/plugins/zerofactory/tasks/{task_id}/move",
-        json={"status": "done", "actor": "zf-builder"},
+        json={
+            "status": "done",
+            "actor": "zf-builder",
+            "worker_execution_id": "execution-current",
+        },
     )
+    assert completion.status_code == 200
+    assert completion.json().get("ignored") is not True
     assert _metadata(task_id).get("awaiting_pr") is True
+    assert _metadata(task_id).get("worker_execution_id") is None
 
     # Reviving clears the flag again so the task dispatches normally
     api_client.post(
@@ -607,7 +729,7 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
         assert check["status"] == "blocked"
         assert check["metadata"]["blocked_reason_type"] == parked_reason
 
-    # Builder-bound exception: 'changes-requested' accepts the fix's completion.
+    # Changes-requested remains builder-bound, but an untracked report is rejected.
     api_client.post(
         f"/api/plugins/zerofactory/tasks/{task_id}/move",
         json={
@@ -616,9 +738,34 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
             "reason": "changes-requested",
         },
     )
-    fix_res = api_client.post(
+    stale_fix = api_client.post(
         f"/api/plugins/zerofactory/tasks/{task_id}/move",
         json={"status": "done", "actor": "zf-builder"},
+    )
+    assert stale_fix.json()["ignored"] is True
+
+    # The next dispatcher-tracked builder execution can complete the fix.
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'running', assignee = 'zf-builder', metadata = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "blocked_reason_type": "changes-requested",
+                        "worker_execution_id": "execution-fix",
+                    }
+                ),
+                task_id,
+            ),
+        )
+        conn.commit()
+    fix_res = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={
+            "status": "done",
+            "actor": "zf-builder",
+            "worker_execution_id": "execution-fix",
+        },
     )
     assert fix_res.status_code == 200
     assert "ignored" not in fix_res.json()
@@ -641,6 +788,139 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
         ]
         == "done"
     )
+
+
+def test_late_builder_completion_rejected_after_reviewer_handoff(
+    api_client: TestClient, default_board: str
+):
+    """A builder report from an untracked worker cannot reclaim reviewer work."""
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Reviewer handoff late completion",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-reviewer",
+            "metadata": {"review_round": 1},
+        },
+    ).json()["id"]
+
+    before = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    response = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    after = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert after["status"] == before["status"] == "running"
+    assert after["assignee"] == before["assignee"] == "zf-reviewer"
+    assert after["metadata"] == before["metadata"]
+    assert any(item["action"] == "move_rejected" for item in after["activity"])
+
+
+def test_agent_running_or_done_report_requires_current_worker_execution(
+    api_client: TestClient, default_board: str
+):
+    """Only the execution currently tracked for a running assignee can report completion."""
+    endpoint = "/api/plugins/zerofactory/tasks"
+
+    # No tracked execution: a workerless todo task cannot be claimed by an agent report.
+    no_worker = api_client.post(
+        endpoint,
+        json={
+            "title": "Workerless completion report",
+            "board_slug": default_board,
+            "status": "todo",
+            "assignee": "zf-builder",
+        },
+    ).json()["id"]
+    response = api_client.post(
+        f"{endpoint}/{no_worker}/move",
+        json={"status": "running", "actor": "zf-builder"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{no_worker}").json()["task"]
+    assert task["status"] == "todo"
+    assert task["metadata"].get("worker_execution_id") is None
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+    # Matching assignee is not enough when a running row has no tracked execution.
+    workerless_running = api_client.post(
+        endpoint,
+        json={
+            "title": "Workerless running completion report",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-builder",
+            "metadata": {"review_round": 1},
+        },
+    ).json()["id"]
+    original_metadata = api_client.get(f"{endpoint}/{workerless_running}").json()[
+        "task"
+    ]["metadata"]
+    response = api_client.post(
+        f"{endpoint}/{workerless_running}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{workerless_running}").json()["task"]
+    assert task["status"] == "running"
+    assert task["metadata"] == original_metadata
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+    # A replacement builder has the same role but a different dispatcher execution id.
+    replaced = api_client.post(
+        endpoint,
+        json={
+            "title": "Replaced worker completion report",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-builder",
+            "metadata": {"worker_execution_id": "execution-new"},
+        },
+    ).json()["id"]
+    response = api_client.post(
+        f"{endpoint}/{replaced}/move",
+        json={
+            "status": "done",
+            "actor": "zf-builder",
+            "worker_execution_id": "execution-old",
+        },
+    )
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{replaced}").json()["task"]
+    assert task["status"] == "running"
+    assert task["metadata"]["worker_execution_id"] == "execution-new"
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+
+def test_recovered_reviewer_marker_clears_when_task_ownership_changes(
+    api_client: TestClient, default_board: str
+):
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Recovered reviewer ownership change",
+            "board_slug": default_board,
+            "status": "todo",
+            "assignee": "zf-reviewer",
+            "metadata": {"reviewer_orphan_recovered": True},
+        },
+    ).json()["id"]
+
+    response = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "todo", "assignee": "zf-builder", "actor": "user"},
+    )
+
+    assert response.status_code == 200
+    task = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert task["assignee"] == "zf-builder"
+    assert "reviewer_orphan_recovered" not in task["metadata"]
 
 
 def test_triage_task_split_multi_repo(api_client: TestClient):

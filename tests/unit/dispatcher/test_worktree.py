@@ -4,8 +4,11 @@ import json
 import os
 import sqlite3
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from dispatcher.worktree import (
     _delete_remote_branch,
@@ -69,6 +72,34 @@ def _init_tasks_db(conn: sqlite3.Connection):
         """
     )
     conn.commit()
+
+
+def _setup_worktree_for_test(
+    cursor: sqlite3.Cursor,
+    root: Path,
+    task_id: str,
+    repo_path: Path,
+    board_slug: str | None = None,
+    repo_alias: str | None = None,
+) -> str | None:
+    return setup_worktree(
+        cursor,
+        task_id,
+        "Test",
+        "zf-builder",
+        None,
+        root / "tasks.db",
+        board_slug,
+        repo_path,
+        repo_alias,
+    )
+
+
+def _add_repo_rows(conn: sqlite3.Connection, rows: list[tuple[str, str, str]]) -> None:
+    conn.execute(
+        "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, git_url TEXT, target_branch TEXT)"
+    )
+    conn.executemany("INSERT INTO board_repositories VALUES (?, ?, ?, 'main')", rows)
 
 
 # --- 1. resolve_task_repo_path ---
@@ -301,6 +332,46 @@ def test_resolve_task_repo_path_multi_repo(tmp_path: Path):
     assert res_prim == repo_primary.resolve()
 
 
+def test_worktree_rejects_stale_and_unavailable_repo_aliases(tmp_path: Path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _init_tasks_db(conn)
+    conn.execute("ALTER TABLE tasks ADD COLUMN repo_alias TEXT")
+    _add_repo_rows(
+        conn,
+        [
+            ("board", "requested", "https://example.com/org/other.git"),
+            ("board", "other", "https://example.com/org/other.git"),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, repo_alias) VALUES ('stale-task', 'Stale alias', 'todo', 'zf-builder', 'removed')"
+    )
+    conn.commit()
+    tenant_repo = tmp_path / "tenant"
+    (tenant_repo / ".git").mkdir(parents=True)
+    repos_dir = tmp_path / "board-repos"
+    other_repo = repos_dir / "other"
+    (other_repo / ".git").mkdir(parents=True)
+
+    with (
+        patch("dispatcher.worktree.resolve_local_git_checkout", return_value=None),
+        patch("dispatcher.worktree._get_board_repos_dir", return_value=repos_dir),
+        patch("dispatcher.worktree.subprocess.run") as run,
+    ):
+        with pytest.raises(ValueError, match="no usable checkout"):
+            resolve_task_repo_path(
+                conn.cursor(), "board", str(tenant_repo), repo_alias="requested"
+            )
+        assert (
+            _setup_worktree_for_test(
+                conn.cursor(), tmp_path, "stale-task", tenant_repo, "board"
+            )
+            is None
+        )
+        run.assert_not_called()
+
+
 def test_setup_worktree_multi_repo_side_by_side(tmp_path: Path):
     """setup_worktree provisions primary writable worktree and sibling read-only detached worktree side-by-side."""
     primary_repo = tmp_path / "prim_repo"
@@ -519,6 +590,12 @@ def test_setup_worktree_reuses_existing_checked_out_worktree(tmp_path: Path):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     _init_tasks_db(conn)
+    conn.execute(
+        "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, target_branch TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO board_repositories VALUES ('test-board', 'different_alias', 'main')"
+    )
 
     repo = tmp_path / "my_repo"
     repo.mkdir()
@@ -569,3 +646,91 @@ def test_setup_worktree_reuses_existing_checked_out_worktree(tmp_path: Path):
             repo_alias="different_alias",
         )
         assert ws_path == str(existing_dir)
+
+
+@pytest.mark.parametrize(
+    "target", ["alternate", "same-board-task", "target-link", "sibling"]
+)
+def test_setup_worktree_rejects_resolved_destinations_outside_task_root(
+    tmp_path: Path, target: str, dir_link: Callable[[Path, Path], None]
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _init_tasks_db(conn)
+    is_sibling = target == "sibling"
+    aliases = (
+        [("test-board", "primary", "unused"), ("test-board", "sibling", "unused")]
+        if is_sibling
+        else [("test-board", "frontend", "unused")]
+    )
+    _add_repo_rows(conn, aliases)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    workspace_root = tmp_path / "workspace-root"
+    base = workspace_root / "test-board" / "worktrees"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    task_root = base / "safe-task"
+    primary_dir = task_root / "primary"
+    if is_sibling:
+        primary_dir.mkdir(parents=True)
+        (primary_dir / ".git").write_text("gitdir: placeholder\n")
+        dir_link(outside, task_root / "sibling")
+    elif target == "target-link":
+        base.mkdir(parents=True)
+        task_root.mkdir()
+        dir_link(outside, task_root / "frontend")
+    elif target == "same-board-task":
+        base.mkdir(parents=True)
+        same_board_task = base / "another-task"
+        same_board_task.mkdir()
+        dir_link(same_board_task, task_root)
+    else:
+        base.mkdir(parents=True)
+
+    def fake_run(cmd, *args, **kwargs):
+        successful = cmd[:3] == ["git", "rev-parse", "--git-dir"]
+        return subprocess.CompletedProcess(cmd, 0 if successful else 1, "", "")
+
+    env = {
+        "ZEROFACTORY_WORKSPACES_DIR": str(workspace_root),
+        "ZEROFACTORY_SKIP_GIT": "",
+    }
+    if is_sibling:
+        with (
+            patch.dict(os.environ, env),
+            patch("dispatcher.worktree._d") as dispatcher_module,
+            patch("dispatcher.worktree.subprocess.run", side_effect=fake_run) as run,
+        ):
+            dispatcher_module.return_value.VALID_PROFILES = ("zf-builder",)
+            dispatcher_module.return_value.sync_repo_main.return_value = "main"
+            dispatcher_module.return_value.pull_and_merge_main.return_value = (
+                True,
+                [],
+                "",
+            )
+            workspace = _setup_worktree_for_test(
+                conn.cursor(), tmp_path, "safe-task", repo, "test-board", "primary"
+            )
+        assert workspace == str(primary_dir.resolve())
+        assert all(
+            kwargs.get("cwd") != str(outside)
+            and str(outside) not in " ".join(map(str, cmd))
+            for cmd, kwargs in run.call_args_list
+        )
+    else:
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "dispatcher.worktree._find_checked_out_worktree",
+                return_value=outside if target == "alternate" else None,
+            ),
+            patch("dispatcher.worktree.subprocess.run") as run,
+        ):
+            assert (
+                _setup_worktree_for_test(
+                    conn.cursor(), tmp_path, "safe-task", repo, "test-board", "frontend"
+                )
+                is None
+            )
+            run.assert_not_called()

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -98,7 +99,7 @@ def create_openwiki_task(
                 task_id = f"zf-{uuid.uuid4().hex[:8]}"
             now_ts = int(time.time())
             try:
-                with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                     cursor = conn.cursor()
                     cursor.execute("PRAGMA table_info(tasks)")
                     cols = {row[1] for row in cursor.fetchall()}
@@ -205,7 +206,7 @@ def resolve_board_slug(repo_dir: Path) -> str:
     db_path = paths.get_zerofactory_db_path()
     if db_path.exists():
         try:
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT b.slug, br.git_url FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug"
@@ -273,7 +274,7 @@ def has_active_openwiki_task(
     if not db_path.exists():
         return False, ""
     try:
-        with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             query = """
@@ -471,7 +472,7 @@ def check_openwiki_gate(
     board_repos: list[dict[str, Any]] = []
     if db_path.exists():
         try:
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(

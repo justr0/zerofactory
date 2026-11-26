@@ -193,9 +193,14 @@ except ImportError:
     )
 
 try:
-    from .dispatcher import run_dispatch_cycle, start_background_dispatcher
+    from .dispatcher import (
+        dispatcher_owned_elsewhere,
+        run_dispatch_cycle,
+        start_background_dispatcher,
+    )
 except ImportError:
     from dispatcher import (  # type: ignore
+        dispatcher_owned_elsewhere,
         run_dispatch_cycle,
         start_background_dispatcher,
     )
@@ -395,6 +400,15 @@ def register(ctx: Any):
                         "ok": True,
                         "skipped": True,
                         "reason": "dispatcher_disabled",
+                    }
+                if dispatcher_owned_elsewhere():
+                    # The background loop - here or in another process such as the
+                    # gateway - already cycles. A second scheduler would dispatch
+                    # duplicate workers for the same tasks.
+                    return {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "dispatcher_owned_elsewhere",
                     }
                 return run_dispatch_cycle()
 
@@ -1055,6 +1069,9 @@ def register(ctx: Any):
 
             signal.signal(signal.SIGINT, _handle_stop)
             signal.signal(signal.SIGTERM, _handle_stop)
+            if hasattr(signal, "SIGBREAK"):
+                # Windows delivers no SIGTERM: Ctrl+Break is the graceful stop there.
+                signal.signal(signal.SIGBREAK, _handle_stop)
             print("Zero Factory dispatcher started (foreground). Press Ctrl+C to stop.")
             while not stop_requested:
                 time.sleep(1.0)
@@ -1339,7 +1356,11 @@ def register(ctx: Any):
             reason = getattr(args, "reason", None)
             assignee = getattr(args, "assignee", None)
             req = TaskMove(
-                status=args.status, actor=actor, reason=reason, assignee=assignee
+                status=args.status,
+                actor=actor,
+                reason=reason,
+                assignee=assignee,
+                worker_execution_id=os.environ.get("ZEROFACTORY_WORKER_EXECUTION_ID"),
             )
             res = _move_task(args.task_id, req)
             if res.get("ignored"):

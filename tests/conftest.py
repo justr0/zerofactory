@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -21,23 +21,6 @@ if str(PLUGIN_ROOT) not in sys.path:
 # package would otherwise win `import tests` and break `from tests.unit...`
 # imports inside test modules (order-dependent ModuleNotFoundError).
 import tests  # noqa: E402
-
-# Upstream tests ``import fcntl`` directly (POSIX-only). The Windows port ships
-# ``zf_wincompat`` as the flock shim for production code; register it as
-# ``fcntl`` here too so the same suite collects on Windows.
-if sys.platform == "win32":
-    try:
-        import fcntl  # noqa: F401
-    except ImportError:
-        import types
-
-        import zf_wincompat as _wincompat
-
-        _shim = types.ModuleType("fcntl")
-        for _name, _value in vars(_wincompat).items():
-            if not _name.startswith("__"):
-                setattr(_shim, _name, _value)
-        sys.modules["fcntl"] = _shim
 
 # Ensure hermetic defaults before any tests run
 os.environ.setdefault("ZEROFACTORY_SKIP_GIT", "1")
@@ -56,6 +39,66 @@ def isolated_env() -> Iterator[dict]:
     finally:
         os.environ.clear()
         os.environ.update(orig)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_dispatcher_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep dispatcher lock state out of the real ``~/.hermes``.
+
+    The dispatcher lock file lives at ``ZEROFACTORY_LOCK_PATH`` (default: the
+    Hermes home) and stop markers are written beside it.  Tests that reach
+    those code paths must not touch - or leave files in - the operator's real
+    home.  Tests about the lock itself override this with their own path.
+    """
+    monkeypatch.setenv(
+        "ZEROFACTORY_LOCK_PATH", str(tmp_path / "zerofactory_dispatcher.lock")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_default_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests that request no DB fixture off the operator's board database.
+
+    Worker precommit runs inherit ``ZEROFACTORY_DB`` (the live board DB). A
+    test that reaches ``init_db()`` without the ``initialized_db`` fixture would
+    otherwise migrate and seed the real database and fail intermittently with
+    ``sqlite3.OperationalError: database is locked`` whenever the running
+    dispatcher holds a write transaction. Tests about DB path resolution
+    override this with ``monkeypatch.delenv``/``setenv`` of their own.
+    """
+    monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zerofactory_default.db"))
+
+
+# ``Path.home()`` and ``expanduser("~")`` read ``HOME`` on POSIX but ``USERPROFILE``
+# (or ``HOMEDRIVE`` + ``HOMEPATH``) on Windows, where ``HOME`` is ignored: a fake
+# home that only overrides ``HOME`` resolves to the operator's real profile there.
+HOME_ENV_KEYS = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")
+
+
+def fake_home_env(home: Path) -> dict[str, str]:
+    """Env overrides that point ``Path.home()`` at ``home`` on every platform."""
+    drive, tail = os.path.splitdrive(str(home))
+    env = {"HOME": str(home), "USERPROFILE": str(home)}
+    if drive:
+        env["HOMEDRIVE"] = drive
+        env["HOMEPATH"] = tail
+    return env
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_user_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``Path.home()``-relative state out of the operator's real home.
+
+    Windows only: the suite's fake homes override ``HOME``, which ``Path.home()``
+    ignores there, and an inherited ``HERMES_HOME`` (factory worker sessions)
+    points tests at the live home. Tests that set their own fake home with
+    ``fake_home_env`` override this for their duration.
+    """
+    if os.name != "nt":
+        return
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    for key, value in fake_home_env(tmp_path).items():
+        monkeypatch.setenv(key, value)
 
 
 @pytest.fixture
@@ -129,3 +172,24 @@ def default_board(api_client) -> str:
         },
     )
     return res.json()["slug"]
+
+
+@pytest.fixture
+def dir_link() -> Iterator[Callable[[Path, Path], None]]:
+    """Link a directory the way an unprivileged user can on this host.
+
+    POSIX: a symbolic link.  Windows: a junction — ``symlink_to`` needs a
+    privilege most accounts lack (``WinError 1314``), while a junction is the
+    link an unprivileged process can actually create.  Both resolve to their
+    target, which is what the path-containment checks must see through.
+    """
+
+    def _link(target: Path, link: Path) -> None:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    yield _link
