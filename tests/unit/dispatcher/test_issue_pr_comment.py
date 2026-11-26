@@ -7,6 +7,7 @@ are mocked (no real GitHub or network access).
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -88,6 +89,7 @@ def _run_cycle(db_path: Path, fake_run):
                 "ZEROFACTORY_SKIP_GIT": "",
                 "ZEROFACTORY_SKIP_WORKER_SPAWN": "1",
                 "ZEROFACTORY_SKIP_PRECOMMIT": "1",
+                "ZEROFACTORY_WORKSPACES_DIR": str(db_path.parent / "workspaces"),
             },
         ),
         patch.object(dispatcher, "resolve_task_repo_path", return_value=db_path.parent),
@@ -114,7 +116,11 @@ def _seed_task(db_path: Path, metadata: dict, workspace_dir: Path):
     # dispatcher packaging (PR sync); 'done' is strictly terminal and would be
     # finalized instead of packaged.
     metadata.setdefault("awaiting_pr", True)
-    now = 1000
+    now = int(time.time())
+    managed_workspace = (
+        workspace_dir / "workspaces" / "b1" / "worktrees" / TASK_ID / "main"
+    )
+    managed_workspace.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute("INSERT INTO boards (slug, name) VALUES ('b1', 'Board')")
         conn.execute(
@@ -125,7 +131,7 @@ def _seed_task(db_path: Path, metadata: dict, workspace_dir: Path):
             "INSERT INTO tasks (id, title, description, status, assignee, priority, metadata, skills, workspace_kind, workspace_path, branch_name, board_slug, tenant, pr_url, updated_at, created_at) "
             "VALUES (?, 'Work Item', '', 'running', 'zf-builder', "
             "'P1', ?, '[]', '', ?, '', 'b1', '', '', ?, ?)",
-            (TASK_ID, json.dumps(metadata), str(workspace_dir), now, now),
+            (TASK_ID, json.dumps(metadata), str(managed_workspace), now, now),
         )
         conn.commit()
 
