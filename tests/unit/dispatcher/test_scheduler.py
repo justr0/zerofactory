@@ -565,7 +565,7 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
 
-    now = 1000
+    now = int(time.time())
     workspace_root = tmp_path / "workspaces"
     workspace = _task_workspace(workspace_root, "t-conf-res")
     with sqlite3.connect(str(db_path)) as conn:
@@ -718,7 +718,7 @@ def test_run_dispatch_cycle_awaiting_pr_handles_conflicting_pr(tmp_path: Path):
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
 
-    now = 1000
+    now = int(time.time())
     workspace_root = tmp_path / "workspaces"
     workspace = _task_workspace(workspace_root, "t-rev-conf")
     with sqlite3.connect(str(db_path)) as conn:
@@ -793,10 +793,12 @@ def test_run_dispatch_cycle_awaiting_pr_handles_conflicting_pr(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("review_decision", "expected_state", "expected_activity"),
+    ("review_decision", "expected_state", "expected_activity", "delayed"),
     [
-        ("CHANGES_REQUESTED", ("todo", "zf-builder"), "changes_requested"),
-        ("APPROVED", ("blocked", "human"), "approved"),
+        ("CHANGES_REQUESTED", ("todo", "zf-builder"), "changes_requested", False),
+        ("APPROVED", ("blocked", "human"), "approved", False),
+        ("CHANGES_REQUESTED", ("todo", "zf-builder"), "changes_requested", True),
+        ("APPROVED", ("blocked", "human"), "approved", True),
     ],
 )
 def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
@@ -804,13 +806,16 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
     review_decision: str,
     expected_state: tuple[str, str],
     expected_activity: str,
+    delayed: bool,
 ):
-    """Orphan recovery polls a reviewer PR and routes its verdict in the same cycle."""
+    """Recovered reviewers stay pollable through delayed verdicts, without respawn."""
     import dispatcher
+    from dispatcher.config import _active_workers
 
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
     now = int(time.time()) - 600
+    current_time = now + 600
     workspace_root = tmp_path / "workspaces"
     workspace = _task_workspace(workspace_root, "t-reviewer-orphan")
     repo_path = tmp_path / "repo"
@@ -826,15 +831,36 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
             + _TASK_COLS
             + " VALUES ('t-reviewer-orphan', 'Review feedback task', '', 'running', 'zf-reviewer', 'P1', ?, '[]', '', ?, '', 'b1', '', 'https://github.com/foo/bar/pull/50', ?, ?)",
             (
-                json.dumps({"awaiting_pr": True, "sessions": []}),
+                json.dumps({"sessions": []}),
                 str(workspace),
                 now - 600,
                 now - 600,
             ),
         )
+        conn.execute(
+            "INSERT INTO tasks "
+            + _TASK_COLS
+            + " VALUES ('t-capacity-holder', 'Capacity holder', '', 'running', 'zf-builder', 'P1', ?, '[]', '', '', '', 'b1', '', '', ?, ?)",
+            (
+                json.dumps(
+                    {
+                        "worker_pid": 5555,
+                        "started_at": current_time - 5,
+                        "sessions": [{"status": "ongoing"}],
+                    }
+                ),
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('max_concurrent_llm_workers', '1')"
+        )
         conn.commit()
 
     lock_file = tmp_path / "dispatcher.lock"
+
+    decision_state = {"decision": None if delayed else review_decision}
 
     def fake_subprocess_run(cmd, *args, **kwargs):
         if cmd and cmd[0] == "gh":
@@ -843,7 +869,7 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
                 stdout=json.dumps(
                     {
                         "state": "OPEN",
-                        "reviewDecision": review_decision,
+                        "reviewDecision": decision_state["decision"],
                         "url": "https://github.com/foo/bar/pull/50",
                         "mergeable": "MERGEABLE",
                         "headRefOid": "abc1234",
@@ -864,15 +890,34 @@ def test_run_dispatch_cycle_routes_feedback_from_workerless_reviewer(
             },
         ),
         patch.object(dispatcher, "resolve_task_repo_path", return_value=repo_path),
-        patch.object(dispatcher, "spawn_agent_worker", return_value=(None, None)),
+        patch.object(
+            dispatcher, "spawn_agent_worker", return_value=(None, None)
+        ) as mock_spawn,
         patch.object(dispatcher, "setup_worktree", return_value=str(workspace)),
         patch.object(dispatcher, "stop_task_worker"),
         patch.object(dispatcher, "_remove_worktree"),
         patch.object(dispatcher, "fetch_pr_review_comments", return_value=[]),
         patch("dispatcher.scheduler.subprocess.run", side_effect=fake_subprocess_run),
     ):
-        result = run_dispatch_cycle(db_path)
-        assert result["ok"] is True
+        capacity_proc = MagicMock()
+        capacity_proc.pid = 5555
+        capacity_proc.poll.return_value = None
+        _active_workers["t-capacity-holder"] = capacity_proc
+        try:
+            result = run_dispatch_cycle(db_path)
+            assert result["ok"] is True
+            if delayed:
+                with sqlite3.connect(str(db_path)) as conn:
+                    first = conn.execute(
+                        "SELECT status, assignee, metadata FROM tasks WHERE id = 't-reviewer-orphan'"
+                    ).fetchone()
+                    assert first[0:2] == ("todo", "zf-reviewer")
+                    assert json.loads(first[2])["reviewer_orphan_recovered"] is True
+                decision_state["decision"] = review_decision
+                assert run_dispatch_cycle(db_path)["ok"] is True
+        finally:
+            _active_workers.pop("t-capacity-holder", None)
+        mock_spawn.assert_not_called()
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -1223,12 +1268,13 @@ def test_packaging_reprovisions_worktree_when_pr_url_is_none(tmp_path: Path):
 
     ws_mock_dir = tmp_path / "ws_mock"
     ws_mock_dir.mkdir()
+    now = int(time.time())
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
-            "INSERT INTO tasks (id, title, status, assignee, priority, metadata, workspace_path, pr_url, tenant) "
-            "VALUES ('t-pkg-no-pr', 'Task Packaging', 'running', 'zf-builder', 'P0', '{\"awaiting_pr\": true}', NULL, NULL, ?)",
-            (str(repo_dir),),
+            "INSERT INTO tasks (id, title, status, assignee, priority, metadata, workspace_path, pr_url, tenant, updated_at, created_at) "
+            "VALUES ('t-pkg-no-pr', 'Task Packaging', 'running', 'zf-builder', 'P0', '{\"awaiting_pr\": true}', NULL, NULL, ?, ?, ?)",
+            (str(repo_dir), now, now),
         )
         conn.commit()
 
@@ -1244,11 +1290,17 @@ def test_packaging_reprovisions_worktree_when_pr_url_is_none(tmp_path: Path):
         patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": ""}),
         patch.object(dispatcher, "setup_worktree", side_effect=mock_setup_wt),
         patch("dispatcher.scheduler._package_and_open_pr", return_value=True),
-        patch.object(dispatcher, "reap_active_workers", return_value=0),
     ):
         res = run_dispatch_cycle(db_path)
         assert res["ok"] is True
         assert len(called_setup) == 1
+    with sqlite3.connect(str(db_path)) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM task_activity WHERE task_id = 't-pkg-no-pr' AND action = 'worker_recovered'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_run_dispatch_cycle_repairs_todo_human_and_dispatches_recovery(tmp_path: Path):

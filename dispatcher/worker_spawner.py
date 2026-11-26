@@ -854,6 +854,13 @@ def spawn_agent_worker(
             **({} if worker_command else {"HERMES_PROFILE": assignee}),
         }
     )
+    try:
+        execution_id = json.loads(metadata or "{}").get("worker_execution_id")
+    except (AttributeError, TypeError, ValueError):
+        execution_id = None
+    env.pop("ZEROFACTORY_WORKER_EXECUTION_ID", None)
+    if execution_id:
+        env["ZEROFACTORY_WORKER_EXECUTION_ID"] = str(execution_id)
 
     proc = None
     try:

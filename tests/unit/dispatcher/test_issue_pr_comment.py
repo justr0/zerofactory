@@ -7,6 +7,7 @@ are mocked (no real GitHub or network access).
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -115,7 +116,7 @@ def _seed_task(db_path: Path, metadata: dict, workspace_dir: Path):
     # dispatcher packaging (PR sync); 'done' is strictly terminal and would be
     # finalized instead of packaged.
     metadata.setdefault("awaiting_pr", True)
-    now = 1000
+    now = int(time.time())
     managed_workspace = (
         workspace_dir / "workspaces" / "b1" / "worktrees" / TASK_ID / "main"
     )

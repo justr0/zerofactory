@@ -1051,13 +1051,28 @@ def move_task(task_id: str, req: TaskMove):
         # 'close_pr' so GitHub matches the board.
         wants_packaging = is_agent_actor and not is_orchestrator_actor
 
+        current_worker_report = (
+            req.worker_execution_id is not None
+            and req.worker_execution_id == meta.get("worker_execution_id")
+            and prev_status == "running"
+            and (curr["assignee"] or "") == (req.actor or "")
+        )
+        worker_report_rejected = (
+            wants_packaging
+            and req.status in ("done", "running")
+            and not current_worker_report
+        )
+
         # A completion report from a stale/zombie worker must never clobber a
         # parked state: 'done' is strictly terminal and 'blocked' is a
         # human/reviewer gate. The sole builder-bound exception is
         # 'changes-requested', where finishing the fix is the desired outcome
         # (zf-hdz-4dc03cee: a zombie builder's `move done` flipped an
         # approved-for-merge task back to running and wiped its blocked_reason).
-        if (
+        park_reason = None
+        if worker_report_rejected:
+            park_reason = "no matching dispatcher-tracked worker execution"
+        elif (
             wants_packaging
             and req.status == "done"
             and (
@@ -1086,6 +1101,7 @@ def move_task(task_id: str, req: TaskMove):
                     )
                 )
             )
+        if park_reason:
             log_step_state(
                 "move",
                 task_id,
@@ -1118,6 +1134,9 @@ def move_task(task_id: str, req: TaskMove):
             if wants_packaging:
                 if not meta.get("awaiting_pr"):
                     meta["awaiting_pr"] = True
+                    meta_updated = True
+                if "worker_execution_id" in meta:
+                    meta.pop("worker_execution_id", None)
                     meta_updated = True
                 if "close_pr" in meta:
                     meta.pop("close_pr", None)

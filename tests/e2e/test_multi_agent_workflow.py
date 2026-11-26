@@ -96,6 +96,17 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         )
         return res.stdout.strip()
 
+    def _complete_worker_task(self, task_id: str, actor: str = "zf-builder") -> None:
+        metadata = get_task(task_id)["task"].get("metadata") or {}
+        move_task(
+            task_id,
+            TaskMove(
+                status="done",
+                actor=actor,
+                worker_execution_id=metadata.get("worker_execution_id"),
+            ),
+        )
+
     def test_01_full_delivery_cycle_builder_review_rounds_approval_and_merge(self):
         """Complete E2E autonomous delivery flow:
         Triage -> Todo -> Running (Builder) -> PR -> 3 Review Rounds -> Approved -> Merged -> Done.
@@ -142,7 +153,7 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         )
 
         # Builder completes implementation and marks done for packaging
-        move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+        self._complete_worker_task(task_id)
 
         # Step 4: Dispatcher packages work and opens PR
         pr_url = "https://github.com/example/repo/pull/101"
@@ -274,11 +285,11 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         self._git(worktree_path, "commit", "-m", "feat: initial cache")
 
         # Builder finishes initial implementation
-        move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+        self._complete_worker_task(task_id)
 
         # Open PR -> moves to reviewer
         pr_url = "https://github.com/example/repo/pull/102"
-        gh_state = {
+        gh_state: dict[str, str | None] = {
             "state": "OPEN",
             "reviewDecision": "CHANGES_REQUESTED",
             "mergeable": "MERGEABLE",
@@ -317,16 +328,21 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         self.assertEqual(t_after_changes["status"], "todo")
         self.assertEqual(t_after_changes["assignee"], "zf-builder")
 
+        # Dispatch the replacement builder execution before it reports completion.
+        gh_state["reviewDecision"] = None
+        with patch("subprocess.run", side_effect=mock_gh):
+            dispatcher.run_dispatch_cycle(self.db_path)
+        worktree_path = Path(get_task(task_id)["task"]["workspace_path"])
+
         # Builder pushes update
         (worktree_path / "cache.py").write_text(
             "class Cache:\n    def get(self): return None\n"
         )
         self._git(worktree_path, "add", ".")
         self._git(worktree_path, "commit", "-m", "fix: implement get method")
-        move_task(task_id, TaskMove(status="done", actor="zf-builder"))
+        self._complete_worker_task(task_id)
 
         # Next cycle routes back to reviewer
-        gh_state["reviewDecision"] = None
         with patch("subprocess.run", side_effect=mock_gh):
             dispatcher.run_dispatch_cycle(self.db_path)
 

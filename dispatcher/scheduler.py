@@ -16,6 +16,7 @@ else:
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +281,19 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         if assignee == "human":
                             continue
 
+                        if (
+                            row["status"] == "todo"
+                            and assignee == "zf-reviewer"
+                            and cand_meta.get("reviewer_orphan_recovered")
+                        ):
+                            log_step_state(
+                                "dispatch",
+                                task_id,
+                                "deferred",
+                                "recovered reviewer remains available for PR verdict polling",
+                            )
+                            continue
+
                         is_triage_worker = assignee in (
                             "zf-orchestrator",
                             "zf-goldfish",
@@ -470,6 +484,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 meta.pop("triage_phase", None)
                         elif assignee == "zf-goldfish":
                             meta["triage_phase"] = "goldfish_auditing"
+                        meta["worker_execution_id"] = uuid.uuid4().hex
 
                         cursor.execute(
                             "UPDATE tasks SET status = ?, updated_at = ?, metadata = ? WHERE id = ? AND (status = 'todo' OR (status = 'triage' AND assignee = 'zf-orchestrator'))",
@@ -494,7 +509,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                                 workspace_path,
                                 branch_name,
                                 board_slug=row["board_slug"],
-                                metadata=row["metadata"],
+                                metadata=json.dumps(meta),
                                 repo_alias=repo_alias,
                             )
                         except Exception as e:
@@ -1620,7 +1635,11 @@ def _poll_pr_and_route_review(
     task_id = str(row["id"])
     title = row["title"]
     assignee = row["assignee"]
-    reviewer_orphan_recovered = bool(meta.get("reviewer_orphan_recovered"))
+    reviewer_orphan_recovered = (
+        bool(meta.get("reviewer_orphan_recovered"))
+        and row["status"] == "todo"
+        and assignee == "zf-reviewer"
+    )
     try:
         res = subprocess.run(
             [
@@ -1664,13 +1683,6 @@ def _poll_pr_and_route_review(
         decision = pr_data.get("reviewDecision")
         mergeable = pr_data.get("mergeable")
         current_pr_url = pr_data.get("url") or row["pr_url"] or ""
-        if reviewer_orphan_recovered:
-            meta.pop("reviewer_orphan_recovered", None)
-            cursor.execute(
-                "UPDATE tasks SET metadata = ? WHERE id = ?",
-                (json.dumps(meta), task_id),
-            )
-
         if pr_state == "MERGED":
             log_step_state(
                 "pr_poll", task_id, "merged", f"{current_pr_url} merged; completing"
@@ -2029,6 +2041,7 @@ def _poll_pr_and_route_review(
                         )
 
             task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
+            task_meta.pop("reviewer_orphan_recovered", None)
 
             head_commit_sha = (pr_data.get("headRefOid") or "").strip()
             if not head_commit_sha and repo_path:
@@ -2230,6 +2243,7 @@ def _poll_pr_and_route_review(
                 processed_cmt_ids.add(c["comment_id"])
 
             task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
+            task_meta.pop("reviewer_orphan_recovered", None)
 
             # Check if Auto-Merge is enabled for this task
             board_dict = {}

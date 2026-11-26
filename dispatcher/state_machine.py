@@ -148,6 +148,8 @@ def transition_task(
         meta.pop("close_pr", None)
         meta.pop("awaiting_interview", None)
         meta.pop("reply_interview", None)
+    if target_status != "running" or worker_pid is None:
+        meta.pop("worker_execution_id", None)
 
     if current_status == "blocked" and target_status != "blocked":
         new_blocked_reason = None

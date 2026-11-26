@@ -312,6 +312,7 @@ class TaskMove(BaseModel):
     actor: str | None = "user"
     reason: str | None = None
     assignee: str | None = None
+    worker_execution_id: str | None = None
 
 
 class TaskTriageRequest(BaseModel):

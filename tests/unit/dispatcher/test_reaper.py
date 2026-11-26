@@ -815,6 +815,32 @@ def test_reaper_keeps_live_awaiting_pr_reviewer_worker():
     assert row["status"] == "running"
 
 
+def test_reaper_recovers_stalled_workerless_packaging_after_spawn_grace():
+    """A builder packaging handoff with no worker is bounded by the spawn grace."""
+    now = 5000
+    conn = _spawn_grace_conn(
+        "t-stalled-packaging",
+        {"awaiting_pr": True, "spawning_at": now - 400, "sessions": []},
+        now,
+    )
+
+    assert reap_active_workers(conn.cursor(), now=now) == 1
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT status, metadata FROM tasks WHERE id = 't-stalled-packaging'"
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert "awaiting_pr" not in json.loads(row["metadata"])
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM task_activity "
+            "WHERE task_id = 't-stalled-packaging' AND action = 'worker_recovered'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def _reaper_db_file(tmp_path: Path) -> Path:
     """Minimal on-disk DB for reap_stuck_tasks (no stuck tasks)."""
     db_file = tmp_path / "reaper.db"
