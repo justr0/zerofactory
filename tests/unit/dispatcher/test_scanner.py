@@ -514,17 +514,23 @@ def test_reap_active_scanners_keeps_running_scanner(tmp_path):
 
 
 def test_reap_active_scanners_reaps_completed_scanner(tmp_path):
-    """Completed scanner processes are popped and their artifacts cleaned up."""
+    """Reaping a completed scanner preserves live scanners and their PID files."""
     _active_scanners.clear()
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(parents=True)
-    pid_file = logs_dir / "scanner_board-b.pid"
-    pid_file.write_text("515151")
+    live_pid_file = logs_dir / "scanner_board-a.pid"
+    live_pid_file.write_text("414141")
+    completed_pid_file = logs_dir / "scanner_board-b.pid"
+    completed_pid_file.write_text("515151")
 
-    proc = MagicMock()
-    proc.pid = 515151
-    proc.poll.return_value = 0
-    _active_scanners["board-b"] = proc
+    live_proc = MagicMock()
+    live_proc.pid = 414141
+    live_proc.poll.return_value = None
+    completed_proc = MagicMock()
+    completed_proc.pid = 515151
+    completed_proc.poll.return_value = 0
+    _active_scanners["board-a"] = live_proc
+    _active_scanners["board-b"] = completed_proc
 
     try:
         with (
@@ -532,16 +538,25 @@ def test_reap_active_scanners_reaps_completed_scanner(tmp_path):
             patch.object(
                 scanner,
                 "get_process_exit_code",
-                return_value=(ProcessState.COMPLETED, 0),
+                side_effect=[
+                    (ProcessState.RUNNING, None),
+                    (ProcessState.COMPLETED, 0),
+                ],
             ) as mock_exit,
             patch.object(scanner, "cleanup_process_artifacts") as mock_cleanup,
         ):
             reaped = scanner.reap_active_scanners()
 
         assert reaped == 1
+        assert _active_scanners["board-a"] is live_proc
         assert "board-b" not in _active_scanners
-        assert not pid_file.exists()
-        mock_exit.assert_called_once_with("scanner_board-b", 515151)
+        assert live_pid_file.exists()
+        assert live_pid_file.read_text() == "414141"
+        assert not completed_pid_file.exists()
+        assert [call.args for call in mock_exit.call_args_list] == [
+            ("scanner_board-a", 414141),
+            ("scanner_board-b", 515151),
+        ]
         mock_cleanup.assert_called_once_with("scanner_board-b")
     finally:
         _active_scanners.clear()

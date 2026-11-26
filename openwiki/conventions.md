@@ -32,7 +32,7 @@ sources:
     resource: repo://tests/conftest.py
   - id: openwiki-source-b4194cdb1aee8e18787b21d6
     resource: repo://tests/unit/dashboard/test_dashboard_css.py
-generated: { by: "hermes", at: "2026-11-23T15:15:28.452Z" }
+generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
 verified:
   - by: openwiki/0.6.0
     at: 2026-11-22T15:24:22.005Z
@@ -189,5 +189,7 @@ review id.
 - Never hand-write `openwiki/` Markdown or the `AGENTS.md` OpenWiki block; the
   OpenWiki MCP lifecycle owns both.
 
+<!-- openwiki: broken internal link [/openwiki/quickstart.md] link "/openwiki/quickstart.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 See [Quickstart](/openwiki/quickstart.md) for running the gates and
+<!-- openwiki: broken internal link [/openwiki/architecture.md] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Architecture](/openwiki/architecture.md) for the subsystem context.

@@ -26,10 +26,12 @@ sources:
     resource: repo://dispatcher/worker_spawner.py
   - id: openwiki-source-bd2c9dd479aa89010adee0f5
     resource: repo://dispatcher/worktree.py
-generated: { by: "hermes", at: "2026-11-23T15:15:28.452Z" }
+  - id: openwiki-source-57b14ecc6ef51ae6212b15f0
+    resource: repo://settings.py
+generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
 verified:
-  - by: openwiki/0.6.0
-    at: 2026-11-23T15:15:28.452Z
+  - by: openwiki/0.9.0
+    at: 2026-11-22T19:54:57.790Z
 ---
 
 # Dispatch Engine
@@ -108,22 +110,18 @@ start/stop/status controls for that loop via
 ## The in-dispatcher improvement scanner
 
 The per-board improvement scanner runs **inside the dispatcher process**
-rather than as an external cron daemon (`repo://dispatcher/scanner.py#L86-L310`).
-Each dispatch cycle reaps dead scanner PIDs with `reap_active_scanners`
-(`repo://dispatcher/scheduler.py#L123`), and when a board's active task count
-is below its cap, its `todo` count is below `idle_scan_max_todo`, no scanner is
-active for that board, and the `get_scanner_cron_config`
-(`repo://dispatcher/scanner.py#L130-L187`) cooldown has elapsed, the cycle
-launches a background `zf-orchestrator` scan of the board's repositories via
-`spawn_board_scanner` (`repo://dispatcher/scanner.py#L188-L296`,
-`repo://dispatcher/scheduler.py#L808-L834`). The scanner prompt instructs
+rather than as an external cron daemon (`repo://dispatcher/scanner.py#L334-L451`).
+Each dispatch cycle reaps completed scanner processes and stale PID records with
+`reap_active_scanners` (`repo://dispatcher/scanner.py#L221-L262`). The scheduler
+starts a scan only when global LLM capacity, the board's running-task cap and
+Todo backlog, the scanner setting, existing scanner state, and cooldown allow it
+(`repo://dispatcher/scheduler.py#L964-L1054`). The scanner prompt instructs
 `zf-orchestrator` to file findings directly in `todo` assigned to
 `zf-builder` (`--status todo --assignee zf-builder`, respecting
 `idle_scan_max_todo`) so the dispatcher picks them up without a human
-triage step (`repo://dispatcher/scanner.py#L225-L227`). Lifecycle helpers —
-`get_active_scanner_pids`, `kill_board_scanner`, `reset_idle_scanner_state` —
-sit alongside in the same module (`repo://dispatcher/scanner.py#L33-L85`,
-`repo://dispatcher/scanner.py#L299-L310`).
+triage step (`repo://dispatcher/scanner.py#L375-L384`). The scanner lifecycle
+helpers are `get_active_scanner_pids` and `kill_board_scanner`
+(`repo://dispatcher/scanner.py#L59-L72`, `repo://dispatcher/scanner.py#L152-L218`).
 
 ## Isolated-worktree invariant
 
@@ -326,6 +324,7 @@ ops).
   human-recovered task a fresh round budget
   (`repo://dashboard/routes/tasks.py#L1724-L1726`).
 - **External-issue PR linkage** — when a task carries `external_issue` metadata
+<!-- openwiki: broken internal link [/openwiki/components/issues-importer.md] link "/openwiki/components/issues-importer.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
   (see [External Issue Import](/openwiki/components/issues-importer.md)), the
   PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
   `Resolves: <KEY>` branch still exists for pre-Jira-removal `jira`-source
@@ -415,9 +414,12 @@ step that died; the full grep playbook lives in
 ## Relationships
 
 Upstream: claims work off the durable Kanban SQLite substrate described in
+<!-- openwiki: broken internal link [/openwiki/architecture.md] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Architecture](/openwiki/architecture.md). Downstream: the deterministic
 precommit and PR ops hand off to the reviewer, and the dashboard layer
+<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 ([Dashboard & Automation](/openwiki/components/dashboard-cron.md)) triggers
 `run_dispatch_cycle` and inspects worker liveness. Coding rules for touching
 this code live in
+<!-- openwiki: broken internal link [/openwiki/conventions.md] link "/openwiki/conventions.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Conventions](/openwiki/conventions.md).
