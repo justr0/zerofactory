@@ -246,9 +246,63 @@ def ensure_zf_profiles(
                         try:
                             dest_skill.symlink_to(skill_dir, target_is_directory=True)
                         except Exception:
-                            shutil.copytree(skill_dir, dest_skill, dirs_exist_ok=True)
-                    elif dest_skill.is_dir() and not dest_skill.is_symlink():
-                        shutil.copytree(skill_dir, dest_skill, dirs_exist_ok=True)
+                            dest_skill.mkdir(parents=True, exist_ok=True)
+                    if dest_skill.is_dir() and not dest_skill.is_symlink():
+                        manifest = dest_skill / ".zerofactory-managed-files"
+                        managed_files: set[str] = set()
+                        if manifest.is_file():
+                            try:
+                                entries = json.loads(
+                                    manifest.read_text(encoding="utf-8")
+                                )
+                                if isinstance(entries, list):
+                                    managed_files = {
+                                        entry
+                                        for entry in entries
+                                        if isinstance(entry, str)
+                                        and entry
+                                        and not Path(entry).is_absolute()
+                                        and ".." not in Path(entry).parts
+                                        and entry != manifest.name
+                                    }
+                            except (OSError, ValueError):
+                                pass
+
+                        source_files = {
+                            source_file.relative_to(skill_dir).as_posix(): source_file
+                            for source_file in skill_dir.rglob("*")
+                            if source_file.is_file()
+                        }
+                        for relative_path, source_file in source_files.items():
+                            destination_file = dest_skill / relative_path
+                            if (
+                                not destination_file.is_file()
+                                or destination_file.is_symlink()
+                                or source_file.read_bytes()
+                                != destination_file.read_bytes()
+                            ):
+                                destination_file.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )
+                                if destination_file.is_symlink():
+                                    destination_file.unlink()
+                                shutil.copy2(source_file, destination_file)
+
+                        for relative_path in managed_files - source_files.keys():
+                            removed_file = dest_skill / relative_path
+                            if removed_file.is_file() or removed_file.is_symlink():
+                                removed_file.unlink()
+
+                        manifest_content = (
+                            json.dumps(sorted(source_files), indent=2) + "\n"
+                        )
+                        if (
+                            not manifest.is_file()
+                            or manifest.read_text(encoding="utf-8") != manifest_content
+                        ):
+                            if manifest.is_symlink():
+                                manifest.unlink()
+                            manifest.write_text(manifest_content, encoding="utf-8")
 
         # 5. Ensure profile's plugins/ directory and symlinks exist
         prof_plugins = target_dir / "plugins"
@@ -810,23 +864,38 @@ def check_setup_status(*, use_cache: bool = True) -> dict[str, Any]:
             skill_dst = prof_dir / "skills" / skill_src.name
             try:
                 if skill_dst.is_symlink():
-                    if skill_dst.resolve() != skill_src.resolve():
+                    if not skill_dst.exists():
                         profile_outdated = True
                 elif not skill_dst.is_dir():
                     profile_outdated = True
                 else:
-                    for source_file in skill_src.rglob("*"):
-                        if not source_file.is_file():
-                            continue
-                        destination_file = skill_dst / source_file.relative_to(
-                            skill_src
-                        )
+                    source_files = {
+                        source_file.relative_to(skill_src).as_posix(): source_file
+                        for source_file in skill_src.rglob("*")
+                        if source_file.is_file()
+                    }
+                    for relative_path, source_file in source_files.items():
+                        destination_file = skill_dst / relative_path
                         if (
                             not destination_file.is_file()
                             or source_file.read_bytes() != destination_file.read_bytes()
                         ):
                             profile_outdated = True
                             break
+                    manifest = skill_dst / ".zerofactory-managed-files"
+                    if manifest.is_file():
+                        try:
+                            entries = json.loads(manifest.read_text(encoding="utf-8"))
+                            if isinstance(entries, list) and any(
+                                isinstance(entry, str)
+                                and entry not in source_files
+                                and not Path(entry).is_absolute()
+                                and ".." not in Path(entry).parts
+                                for entry in entries
+                            ):
+                                profile_outdated = True
+                        except (OSError, ValueError):
+                            profile_outdated = True
             except OSError:
                 profile_outdated = True
         if profile_outdated:

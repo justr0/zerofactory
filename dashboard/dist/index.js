@@ -2420,7 +2420,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						desc: "Bootstrap or inspect zf-* profiles and script symlinks"
 					}, {
 						cmd: "hermes zerofactory sync-profiles",
-						desc: "Update profile system prompts from plugin templates"
+						desc: "Sync profile prompts and bundled skill copies; setup status reports stale copies and broken links"
 					}]
 				},
 				{

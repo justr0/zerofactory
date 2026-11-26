@@ -149,7 +149,7 @@ Zero Factory provides rich CLI commands under `hermes zerofactory`:
 ```bash
 # Profile management
 hermes zerofactory setup                          # Check or initialize zf-* profiles
-hermes zerofactory sync-profiles                  # Update system prompts from plugin templates
+hermes zerofactory sync-profiles                  # Sync profile prompts and bundled skills
 
 # Task management
 hermes zerofactory list                           # List all tasks
@@ -185,6 +185,12 @@ hermes zerofactory cron list                      # View active periodic health 
 hermes zerofactory cron sync                      # Sync cron jobs with Hermes scheduler
 hermes zerofactory cron run <job_id>              # Run a cron scanner immediately
 ```
+
+`sync-profiles` refreshes profile prompts and bundled skill copies; profile setup
+also synchronizes skills while initializing missing profiles. Fallback copies
+update changed files, remove previously managed files deleted upstream, and
+preserve user-added files. Setup status reports stale copies and broken skill
+links; existing live skill symlinks are left unchanged.
 
 ---
 

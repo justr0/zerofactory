@@ -22,7 +22,7 @@ Zero Factory automatically provisions and maintains the following specialist pro
 
 Profiles are managed natively by the **Zero Factory plugin** (`zerofactory`):
 - Run `hermes zerofactory setup` to inspect or create the profiles.
-- Run `hermes zerofactory sync-profiles` to synchronize system prompts from plugin templates.
+- Run `hermes zerofactory sync-profiles` to synchronize prompts and bundled skill copies from the plugin.
 - Profiles live in `~/.hermes/profiles/zf-*/` and inherit your default LLM settings.
 
 ## Pipeline Architecture
