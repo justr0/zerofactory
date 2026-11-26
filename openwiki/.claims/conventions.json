@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8e20cd0ff5245d742feb2566435a294545a4028750524aa48c823665a1bd539a",
+  "pageVersion": "sha256:6771b376b3ea0320983dc0e2a5969223f5cf05a2e723691cf1dcf686f12aa17b",
   "claims": [
     {
       "id": "claim_f5049d3391c7479baf38776d89ce8a5a",
-      "statement": "dashboard/db.py and dashboard/routes/__init__.py bootstrap the plugin paths and use relative imports with top-level fallbacks for direct module loading.",
+      "statement": "Every internal module that imports a sibling uses a try/except relative-to-absolute import fallback (try `from ..mod`, then `from mod  # type: ignore`), because code is loaded both as a plugin subpackage and as top-level modules when a script bootstraps sys.path; preserve this exact shape when adding cross-module imports.",
       "evidence": [
         {
-          "resource": "repo://dashboard/db.py#L26-L46",
-          "version": "repo-lines-v1:sha256:2ab7ce9ba582a2b4235b12ed32b660d5e93e56067b86337ca05b5bc7ae8b52fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5ODA5MjJjOTU3MjE5NjQ2YWVhNTVhMzM5MDZlMTA4MjYzY2YxZDQ0YzA4YTJkNWE0ZGM5NjEyMTdmMmFkODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNjVkOWRkNzk0Mjk5NDI2NDdkMWM2MDFkNzMwOTlkZTA3NzI2YTIzOTNlYWM3NjcxNTBiYzRlYTQxZTRiMGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjMTEzODNhYjMwMjc0MDAzNzBjOTcwMTI0YWFlZjk0ZGNhYzI3ODA4YzIyMTAxNTcwNTZkM2E4MTNjNTY2YjEifQ"
+          "resource": "repo://dashboard/db.py#L24-L37",
+          "version": "repo-lines-v1:sha256:45c0ac23f6fa885edbb116f08c62815343f2cce65f70ab6cc96c0d42d38139a5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxYzVhZWI1YmMwNjg0MDRhYTVmNGI1NTAxNzQ0YzMxYmUyMmQ4NWY2NTQ4ZGFmMGJiNzVlNjkxMDgzMjJjNjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY5ZTdjYTczNzFhMDZiMzMzZjBkOTJmYzMxOTViZTMzZWVjOThlNmJkM2QxYzcyYmI4OWU5MjY4OWMzNjc1ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjMTEzODNhYjMwMjc0MDAzNzBjOTcwMTI0YWFlZjk0ZGNhYzI3ODA4YzIyMTAxNTcwNTZkM2E4MTNjNTY2YjEifQ"
         },
         {
           "resource": "repo://dashboard/routes/__init__.py#L17-L34",
@@ -21,7 +21,7 @@
       "statement": "Modules that may be loaded directly (the No-Agent Mode pre-run scripts such as scripts/zf_daily_stats.py, and the dashboard/* modules) insert the plugin root onto sys.path before importing internal modules, then use the shared helpers in paths.py (e.g. get_zerofactory_db_path for the kanban DB); ruff.toml ignores E402 specifically so this required import-before-top ordering is legal, and the test suite does the same in conftest.py.",
       "evidence": [
         {
-          "resource": "repo://paths.py#L314-L332",
+          "resource": "repo://paths.py#L304-L322",
           "version": "repo-lines-v1:sha256:2ef754620dc592765a6ef3898f3625abbb8bfd45cef1ef50d403235b200fc101:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3N2EyYjE3ZTU1Y2E4YWRjMjUyOTk0ZGQ1ZTAxYjlhNWJmNWNmYTliNDEzOWJkOWQ0MmNlNjE3OTkxOGMxYjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkNWE0MDdhODUxNjY2ZWUzOGU3MTgzMmFhMjA4MTlmNTNmZTA3ZmM1OGQ0MWE2YjM0NWMzZDk5NjllNjdjNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5MTk0M2YyZGNkY2I1MzkyNGVjMmU0ZTdlNjllYWZmOTQxYTdiNTk3NjYxMWEzODZmNTJkOGNlZTE2ZWM5OTAifQ"
         },
         {
@@ -43,7 +43,7 @@
       "statement": "Loggers are namespaced under zerofactory.* per subsystem (e.g. zerofactory.kanban.dispatcher, zerofactory.migrations, zerofactory.issues.importer) via logging.getLogger(\\\"zerofactory.<subsystem>\\\"); use the matching namespace for new modules rather than the root logger.",
       "evidence": [
         {
-          "resource": "repo://dispatcher/config.py#L66-L66",
+          "resource": "repo://dispatcher/config.py#L70-L70",
           "version": "repo-lines-v1:sha256:00fc378b06ef05da5726c37e16ce0c492e3ee66821c8368c0be118ef8d5a998e:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDBmYzM3OGIwNmVmMDVkYTU3MjZjMzdlMTZjZTBjNDkyZTNlZTY2ODIxYzgzNjhjMGJlMTE4ZWY4ZDVhOTk4ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDBmYzM3OGIwNmVmMDVkYTU3MjZjMzdlMTZjZTBjNDkyZTNlZTY2ODIxYzgzNjhjMGJlMTE4ZWY4ZDVhOTk4ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmRkODY1ZTNjMDU2YmU5NDFjNjJlNzkxM2I4YzZiZDk2Nzg2NDZhYTYwNDFhYmRmZmU2NWU0OTUwMTEzYjMyOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTNkZDZmOWM0NjRlOWIzNmVjODBjNjQ5ODliYjBkNmViZDY4YTA1YTM1MmI3MGY4ZmNiOWExYjg1MTIxMjU4ZiJ9"
         },
         {
@@ -74,23 +74,11 @@
     },
     {
       "id": "claim_e244654233ea4553a219a0f9a7e4a1a0",
-      "statement": "The deterministic precommit gate runs Ruff format/lint, Python compileall, and pytest; failures return to the builder for up to three retries, then route to orchestrator recovery once or block for a human.",
+      "statement": "The deterministic precommit gate runs `ruff check --fix .` then `ruff format .` (format phase, auto-installing pinned ruff==0.16.9 when missing), `python3 -m compileall -q .` (build phase), and `python3 -m pytest tests/ -q` (test phase, auto-installing a pinned pytest + plugin-runtime-deps stack and never falling back to unittest discovery), and the dispatcher re-runs the gate and re-spawns the builder on any failure.",
       "evidence": [
         {
-          "resource": "repo://.zerofactory/precommit.sh#L116-L158",
-          "version": "repo-lines-v1:sha256:aef3789680cb09981cbc5607b4268e892d3a6445870c7ab0cb2b5390e6a590e3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4MjdkYjljOGQ1NTk4NmU2ODJiZDkyYmE2MzI3ZTZkOTRlMTM2ZDI3ZjFhZDBjOWM2MDY1NjVhYTJmMTk2OWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1ZmM5MGZmOGE0NDE0YzU0NDFkMGY2NzdjNWNiZmRhMzhiNDc0ZTUxYmZkNTU5YTU1NTlkZTBmODc3MDU1MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkNzJiZDkxNDQwMzA4ZTgzYjg1ZWE0MmRiMTEyYjNkNThkY2IyZjg1NGZhYTBjNDIwOGYyZDkwZWY5YjVmZGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwNTcxZGM0YWEyYzcyMTY1NDUwZmYyM2U0NjU4OWM4YzI3OTc0ZGU2OWExOTExYTk3NDM2YjliNDEzNDAyMTAifQ"
-        },
-        {
-          "resource": "repo://.zerofactory/precommit.sh#L39-L42",
-          "version": "repo-lines-v1:sha256:0fd869adebbb13e55d745e2a491191f87f09e9f6fa8e9b55cb249b5d47b117cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjMxNzkxYzY3MDA1ZjA5MzRjMjRkNTJmMGNlMzU2MGQ1ZjgxNTBmODRhNWQ5ZTRlYWE1YmYxN2Q3MmJjNzhmZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWZhMzlhYmRkYWFiZDNjY2Q3N2NiNmQ1ZWI3YTJkYTc1MzRkNThmMWFiZDUwOTE5MDIyMmU3ZjcwNDQ1NzRmNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2NlZTA2ZDNlMDZlYWMyOTQ3YWI4YTQ1OWE0YmQ2Mjc4OGVjMjE0NzllM2FhMjdjYjcyNTFlOThmM2FkMTc2MSJ9"
-        },
-        {
-          "resource": "repo://.zerofactory/precommit.sh#L52-L89",
-          "version": "repo-lines-v1:sha256:c9688e0e662f2d4062b53ffb0edbc83bea826044cfc4b1930dab05ed1e067ea5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5OWY4ZjZlMTU5NmViMzk1NTEyMzllMDMwNTQ4Mzg5YWI5NDZjZjA3MDdhYTczZWM4ZGMzODZlZDMwMjRiNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2ZGE3ZTZlYjVmODAzOTM3MGIyODYzN2ViODA1MjQ2NjQwMzZhNWUyNzg5NzA5ZGY0ZGJkNjRjMWY5OWQ3YjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2ZDUwNjZlZDU1M2U4ZDg4MzNmNzQ4OWQyOTQ1OWI5YWMwYTAzMDAyMjgyMmU4NzhiMDdiMDkxMjE2N2EwNWEifQ"
-        },
-        {
-          "resource": "repo://dispatcher/worktree.py#L1288-L1429",
-          "version": "repo-lines-v1:sha256:d38f301be5d7ca30ed6f3fbf6ddbdf5ca8cecf9beb6f10bbbf6941601eb1d9ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ODg2OWIzMjRhOTk1OGYxMGJhNTY2YTU3M2M2ZjBkMDRmMmUyYTRhYzk1ZTcxNDdjNzdkM2Y2NzIzYjA1YzBkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4Yzg3NzA4NmQ5MzQ0NGQ1NTkwZGMwNzNjYzlmNmFkNzYxYThlMjVmNmI2MDcwZWY3ZWVmNDcyNGM5Mzk4Yjg4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzNThlYjE3NDllMDIwMWFjZDhjMDU3MWM1NzVhMmNmMmIzOTljODE3MDUwZTU0YmUxMmIwZjMwY2FmMWE0ODhlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIn0"
+          "resource": "repo://.zerofactory/precommit.sh",
+          "version": "repo-file-v1:sha256:8d9eab249bc1a6ac3c0c3e9a41fd8a65282bc1c0f33fb1a847c796658a27c646"
         }
       ]
     },
@@ -106,23 +94,11 @@
     },
     {
       "id": "claim_d1007d46866044ccad499264fd65c089",
-      "statement": "The shared test conftest provides hermetic environment, database, Git repository, API-client, and board fixtures; test coverage is divided into unit, integration, and end-to-end tiers, represented by scanner unit, task API integration, and multi-agent workflow tests.",
+      "statement": "tests/conftest.py provides shared fixtures (test_db_path/initialized_db, git_repo, api_client, default_board); the suite is organized in three tiers — tests/unit (per-subsystem), tests/integration (FastAPI REST via api_client), and tests/e2e (hermetic multi-agent workflow and resilience simulations).",
       "evidence": [
         {
-          "resource": "repo://tests/conftest.py#L32-L143",
-          "version": "repo-lines-v1:sha256:9e76057ae276d2ed8310c38355ba15e9e16a1445a13ccbd3e192fce0ec7d5f82:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMGIwODc4MzI1MjA1MDZlODc5MjYyYzMwZTczNWRhNjFlNmMwYjMxODQ1ZjVhYzI2ZGMwNTYxYWVkZGMwNDkwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzNjEzYTc4MWI4MTdhMmI4MzkyZGE3NmI3YjFmYmExYzYzOWYzOGNjNzJmMmFmODllYzFlOWY1NjAxMWZlZWI3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
-        },
-        {
-          "resource": "repo://tests/e2e/test_multi_agent_workflow.py",
-          "version": "repo-file-v1:sha256:47089991f833dea7c40e4b7e57d4cb4adfa9a3d5d9c9286a339c03c69e186bbc"
-        },
-        {
-          "resource": "repo://tests/integration/test_tasks_api.py",
-          "version": "repo-file-v1:sha256:9c0ff6294fe172593dc52e04c49b90f405c85466943de47f930aff33af38dc50"
-        },
-        {
-          "resource": "repo://tests/unit/dispatcher/test_scanner.py",
-          "version": "repo-file-v1:sha256:fc3df04a12bd08494e6a1fd8dc11e3d3446991ed8cdbf19decb3ca4a018de377"
+          "resource": "repo://tests/conftest.py#L32-L113",
+          "version": "repo-lines-v1:sha256:837c467b9566755d9bcf4082e27e8148ddfb71d859df15ebe63d8e9130470165:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZjM2NmI5YmQ5YThkMGYzNDBhMmJjMGJlMWUyMmVlYTIwNTY4ZGQ3OGE0NTI4MWI3MjFiMzBmMjJkMDg3ZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYjA4NzgzMjUyMDUwNmU4NzkyNjJjMzBlNzM1ZGE2MWU2YzBiMzE4NDVmNWFjMjZkYzA1NjFhZWRkYzA0OTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4NThlYmY5YzYxZWZhYzVlNWIwODhiYWQzOTE1M2ZkMGRmNzA3OWY0NmZjZTM2YjE2YjJmNzQwNDY3Nzk2OWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
     },
@@ -145,15 +121,15 @@
       "statement": "Any agent-authored GitHub text (PR titles/bodies, review comments) must begin with a role-tagged [AI:<role>] marker such as [AI:zf-builder] or [AI:zf-reviewer] (enforced by the role-aware ai_prefix, whose AI_PREFIX_RE matches only role-tagged markers so it never emits a bare [AI] and is idempotent for already-tagged text) so humans can distinguish agent output from human output.",
       "evidence": [
         {
-          "resource": "repo://dispatcher/github_pr.py#L372-L384",
+          "resource": "repo://dispatcher/github_pr.py#L321-L333",
           "version": "repo-lines-v1:sha256:9d1ea06ddeeec714305cee68cefa9716439bc2bd79eec892201aafa96aa61128:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4MDRkYTUzOGNlNDA4OGI0MTg3NGI1MDFjMjE3Yjg1YjRiNDkxMjBlMjQyOWZkOTA2ZTkxOTFkNjUwNmI2OTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxN2NlZGUzNjU0ZTY5NzUxNDM1OTA1NWRhNzU4NzUyMjc0NmFhOTM3YWQxZjQxNWY2NzEwODEzMGYzMDkyNTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyZDZkMjU2YmNmYWE1NWJiNTRiY2M3ZjMzMWEyN2YzNWI4N2ZhMmU5NzU2YTY5ZTk2NWNlZWJjNGY2MTdkOTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjOTdmN2IxZGM5NDQ4NjBkM2IxZTExNzA5ZDU5MDk4Y2I3MjI3NDk1MzM0YjJhY2UzNGJkYzFhYWVjNmFmMWYifQ"
         },
         {
-          "resource": "repo://dispatcher/worker_spawner.py#L317-L318",
+          "resource": "repo://dispatcher/worker_spawner.py#L322-L323",
           "version": "repo-lines-v1:sha256:e130652318ca8c271617e39e16f9cfb76c84784a7ead8105e69a790836c905af:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTY5OTBmOGVlMDIxZWIwM2NmZDE2NmEzYzUyYTkwZWIwYzhmYmU5NGIzN2Q2NjBkYWE4MDVlZWY3MmNiMGJiNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODYxNDU4ZTUwOGQzYjE1NzY4ZDZiOGEwYmE5Y2I4YzczNTg2ZGZmNTNlYjdkMWEwOGE5ZDJiZTE0Y2IwYmQxZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDQwM2M2MjU2YmEwNTRjMDRiOGMwMDg5Y2MwMDkxMmU3OTZjODA1MGVhZTRkMTQwNzdjMTY2NjljZjQyYTNhOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzgxYzQ4N2ZmZDliM2RiYjgxNzRkOTA0NzE2N2E4YzA2NDU2MTYxMTBlYmVlYTI2YzE1ZWI1MzFlZTVmNzdmNCJ9"
         },
         {
-          "resource": "repo://dispatcher/worker_spawner.py#L742-L743",
+          "resource": "repo://dispatcher/worker_spawner.py#L712-L713",
           "version": "repo-lines-v1:sha256:f702b4dbedeac077740b5725f555fbf630e136868f47c1e2f36c31cbee7bef7b:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmQ1OGRjOTk0OTNlMDg1ODIzZTY4ZDczMjIwZTdiZGUzMmFmZWNhNTkyNjAzZDYxNTU2Y2E4MzFlZDhmMDIzNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2VmMjk1NThkZjQ0NzE1NmJiMTRiMWRlYzI0YzkzYTM2M2ZlMmU0N2NlODFhZWE1OTIxNzk1YzQ1NTRhZGJkZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODczNDJjODIyYzUxNWJiMWFlZmI5Nzk5YTYyZDYwOTgxMjAxYjRmOGJjMzNjNzNhNWM1YjVhMTRmZDNiMWFhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjY2OGZlODRmMzNiMThjY2MzN2FiZjkzNjkwODliN2VkMzM3NTIzZGRlY2VlNDkzM2E0ZDk1N2U4ZWVjYWQyOCJ9"
         }
       ]
@@ -180,7 +156,7 @@
     }
   ],
   "verification": {
-    "by": "openwiki/0.9.0",
-    "at": "2026-11-26T14:39:36.019Z"
+    "by": "openwiki/0.6.0",
+    "at": "2026-11-22T15:24:22.005Z"
   }
 }

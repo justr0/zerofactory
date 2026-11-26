@@ -1,44 +1,28 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5ae6acca9a96edca3bf99f78d2d3b12468d504d40337152bafef019e17459002",
+  "pageVersion": "sha256:ccbdb78f8e74ecd184f1e876aef6ac14020eff67033e70a8a03d50a0df093a0f",
   "claims": [
     {
       "id": "claim_390ae1a0b32941e4b5bf337f7061ffa7",
       "statement": "Zero Factory is a self-contained Hermes Agent plugin (no external Node.js daemon or profile-manager) that runs a 24/7 multi-agent software factory of four specialist profiles — zf-orchestrator, zf-goldfish, zf-builder, zf-reviewer — on a durable Kanban board, installed via `hermes plugins install hotcode-dev/zerofactory` and operated via the dashboard at http://localhost:9119/zerofactory.",
       "evidence": [
         {
-          "resource": "repo://README.md#L52-L76",
-          "version": "repo-lines-v1:sha256:b32206aa87384b4399ce2bcd65e16cae497e553026a04428725cb850e46d325a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMjA2NDExNzNkZDJmODc0YjZmNzgwNDJjMDcwYjJmYzJkOGI2YzZjNzg0ZDlkNjY2ZDRkZWU5ODhkOWFmMjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5MGJjYzVlNWZiMDIzOTc5NWIwNzljOGIzNTBhNDhhN2U0ZTdlOGY3MTViN2U4YTdiNTRhMzViMzdlY2RlMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5MDlmMWU3NGQwMDcwZDlkOTMzOTAzYjRhZjgyMWZmNTM5YzEzMjNhMzc1OWYxNzFhYmFkMjNkMjZlOTdhMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEifQ"
+          "resource": "repo://README.md#L55-L76",
+          "version": "repo-lines-v1:sha256:b3e1832b026c24bd0d74307a68a3df6ab8ff1f023b467b46d0dc4272acfd4c04:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1NjU5NmQ5ZWYyNTBhZTI5ZDA5MjY2ZDRmYjU0YjIxMDk1ZTkzOTNlMzNmZDYyOTE0YTUwNzI5Yjk4Njc1ZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5MGJjYzVlNWZiMDIzOTc5NWIwNzljOGIzNTBhNDhhN2U0ZTdlOGY3MTViN2U4YTdiNTRhMzViMzdlY2RlMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM0NmZjMmY2N2UyNmJjMmVjNzE4MzM3YmJmMmM5OTk2NTNjYTk4Njk1ZWYxZGFiMWQ5NGYxOTNlZjU2Mjc3YTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEifQ"
         },
         {
-          "resource": "repo://README.md#L80-L115",
-          "version": "repo-lines-v1:sha256:d39b3eecf3373dee64fe5a56a652da94b1b26966f7cf1f5a9f3c71bf56eeffaf:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzMmQzMjE5ZmVjMmQ0MDViYWU1MmYyZTk0MDRhOWUwNmE0ZGMxMzNlY2RiNzAxZmI3YmE1N2QzYmNjOGQ3MTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwNTcxOGQ4NjQ3Mjc0NDlmODIyZjQ3MThjYzIwZDhkODFlZGE2ZDFkMWJhZTM2YmQ0Y2I3OTgwNGQ0ODcxZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwMWYyZWMxNzU5M2MxMDU0ZWI0NjM2N2Q4NDUzZWYyNGExNzNjZTk2YjcxMTdkOTFmOWE2OGQ0NGZlZjhiMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlZTg0ZmE5NDRhZGU4ZThiNzgyMjUxNzFkZmUxMjdlODgxMjE1NjIxMThjYzg2OGRjZTdiNjM0NzMxNmVjYTEifQ"
-        },
-        {
-          "resource": "repo://plugin.yaml#L1-L12",
-          "version": "repo-lines-v1:sha256:fa907340b774a01a528a5f870ce5a62e387a93adab41af84ed73c64d52e48763:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2MmI3N2UxZDY0MzllOGU4ZmJjNDI3MWNmYWY0OWNlYTc3MTA3OTkwYjQ1MGU1OWFjZGRmYmRkNWQzYTI5MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYTg2ZWJkMzFjMzQ4NTM4ODgzYzk2ZDQzNjlkYzI3NzgxNzZmYjFhNWNiZTUyODFiYTUxOTAxYmU0ZDFhOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://plugin.yaml#L1-L8",
+          "version": "repo-lines-v1:sha256:424ed067b3ab94a638e787a832879380436b130efcb17a94b35d0ea5b912d5e2:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjYyYjc3ZTFkNjQzOWU4ZThmYmM0MjcxY2ZhZjQ5Y2VhNzcxMDc5OTBiNDUwZTU5YWNkZGZiZGQ1ZDNhMjkzOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWNkNDk0ZDVjMDU1MjdhNDhjZWY1NWJhOTg5NjI3ZGNiZjUyYWRlODk3YjQyN2MyN2YzZjU2NDlmN2JhOTNkZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDcwYzdjZWE5YmIxMjE2MWZjZWMwOWExZTE0ZjYyYjI4YjM0YWJhYzdlOGY5YTljZGE5ZTAzZjkxYTY2YTUzYiJ9"
         }
       ]
     },
     {
       "id": "claim_55cba743db45461c90c48d4dcd76975a",
-      "statement": "Every task's output is gated by .zerofactory/precommit.sh before a commit or PR: three phases in order (format: `ruff check --fix .` + `ruff format .` with pinned ruff auto-installed when missing; build: `python3 -m compileall -q .`; test: `python3 -m pytest tests/ -q` with a pinned pytest + plugin-runtime-deps stack auto-installed and no unittest fallback), exiting non-zero on first failure, and the dispatcher retries zf-builder with exact error output (up to 3 precommit retries) before work may become a PR.",
+      "statement": "Every task's output is gated by .zerofactory/precommit.sh before a commit or PR: three phases in order (format: `ruff check --fix .` + `ruff format .` with pinned ruff auto-installed when missing; build: `python3 -m compileall -q .`; test: `python3 -m pytest tests/ -q` with a pinned pytest + plugin-runtime-deps stack auto-installed and no unittest fallback), exiting non-zero on first failure, and the dispatcher re-spawns zf-builder with the exact error output (up to 3 precommit retries) before work may become a PR.",
       "evidence": [
         {
-          "resource": "repo://.zerofactory/precommit.sh#L116-L158",
-          "version": "repo-lines-v1:sha256:aef3789680cb09981cbc5607b4268e892d3a6445870c7ab0cb2b5390e6a590e3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4MjdkYjljOGQ1NTk4NmU2ODJiZDkyYmE2MzI3ZTZkOTRlMTM2ZDI3ZjFhZDBjOWM2MDY1NjVhYTJmMTk2OWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1ZmM5MGZmOGE0NDE0YzU0NDFkMGY2NzdjNWNiZmRhMzhiNDc0ZTUxYmZkNTU5YTU1NTlkZTBmODc3MDU1MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkNzJiZDkxNDQwMzA4ZTgzYjg1ZWE0MmRiMTEyYjNkNThkY2IyZjg1NGZhYTBjNDIwOGYyZDkwZWY5YjVmZGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwNTcxZGM0YWEyYzcyMTY1NDUwZmYyM2U0NjU4OWM4YzI3OTc0ZGU2OWExOTExYTk3NDM2YjliNDEzNDAyMTAifQ"
-        },
-        {
-          "resource": "repo://.zerofactory/precommit.sh#L174-L188",
-          "version": "repo-lines-v1:sha256:f1b6e85f13c2420c74eb653829cfff7cb85b550160807d606417c7ab1914125b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2ZTU2OGNmYWEyMGNjMjk0YzU1MmY1M2VhYTNiM2U3OTM1NjVmNzI4MzE3NDdiMjQ0ZmQzNTRiMGE2Zjg0NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0YTJiZWNmZjhhZmIzNGRiMjYwZGFiYzk2OTE1ZmZlY2ZkZTg0ODkyOTU0MWM2MTkzZGU2ZDE2NGMyMWU4ZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MjdhZWRmOThkZmEyZjc1Y2RjZTdlNmNiOTVkYzdjZTNkNjhmMjE5NmMzYzRjMDJjYTFiNzFlMGE3MTBiMTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExNzU1MGY2ODE3ODAwNGExNmE0MjBmODgwNmRlYzQ0MWMzZjdlMTM3ZjJiODQ4Y2Q1ZTlmYTRkNDVmYmVlOGYifQ"
-        },
-        {
-          "resource": "repo://.zerofactory/precommit.sh#L52-L89",
-          "version": "repo-lines-v1:sha256:c9688e0e662f2d4062b53ffb0edbc83bea826044cfc4b1930dab05ed1e067ea5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5OWY4ZjZlMTU5NmViMzk1NTEyMzllMDMwNTQ4Mzg5YWI5NDZjZjA3MDdhYTczZWM4ZGMzODZlZDMwMjRiNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2ZGE3ZTZlYjVmODAzOTM3MGIyODYzN2ViODA1MjQ2NjQwMzZhNWUyNzg5NzA5ZGY0ZGJkNjRjMWY5OWQ3YjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2ZDUwNjZlZDU1M2U4ZDg4MzNmNzQ4OWQyOTQ1OWI5YWMwYTAzMDAyMjgyMmU4NzhiMDdiMDkxMjE2N2EwNWEifQ"
-        },
-        {
-          "resource": "repo://dispatcher/worktree.py#L1288-L1429",
-          "version": "repo-lines-v1:sha256:d38f301be5d7ca30ed6f3fbf6ddbdf5ca8cecf9beb6f10bbbf6941601eb1d9ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ODg2OWIzMjRhOTk1OGYxMGJhNTY2YTU3M2M2ZjBkMDRmMmUyYTRhYzk1ZTcxNDdjNzdkM2Y2NzIzYjA1YzBkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4Yzg3NzA4NmQ5MzQ0NGQ1NTkwZGMwNzNjYzlmNmFkNzYxYThlMjVmNmI2MDcwZWY3ZWVmNDcyNGM5Mzk4Yjg4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzNThlYjE3NDllMDIwMWFjZDhjMDU3MWM1NzVhMmNmMmIzOTljODE3MDUwZTU0YmUxMmIwZjMwY2FmMWE0ODhlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIn0"
+          "resource": "repo://.zerofactory/precommit.sh",
+          "version": "repo-file-v1:sha256:8d9eab249bc1a6ac3c0c3e9a41fd8a65282bc1c0f33fb1a847c796658a27c646"
         }
       ]
     },
@@ -57,8 +41,8 @@
       "statement": "The core CLI surface is registered under `hermes zerofactory`: setup / start / sync-profiles for profiles and the dispatcher; list / create / import-gh-issue / approve (triage release gate) / reject / triage (dispatch a grill or egm triage) / update / move (with --reason and --assignee) / block / comment / stats / migrate / split (triage decomposition across target repos) / recover (route a stuck task back to todo with guidance) / report-bug (internal defect to GitHub, optional auto-created issue) for tasks; board list / create (with --slug / --target-branch / --architecture) / update / delete plus setup-repo, setup-openwiki, and setup-gh-issues for boards; memory list / add / delete for the per-board knowledge substrate; and dispatch / check-stuck / cron list / cron sync / cron run for automation.",
       "evidence": [
         {
-          "resource": "repo://__init__.py",
-          "version": "repo-file-v1:sha256:041ac36663cda8a422deb7e3fed246a966c5f7194000542a22afe7b1a9ced4ea"
+          "resource": "repo://__init__.py#L312-L881",
+          "version": "repo-lines-v1:sha256:9fd3471512a24c4aad0521d79436e77b30284bc9c938bcdb6814acfada923a0c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YzQ5NTIwMGZiODg3MjhlZTIxN2YxMGVhOTlhOTljZjRjMGUyMjRhOWEzNjIyOWI5NTgyZTJjOWU4NmEyZWNiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2Mjg4Njk5YjM5YmMzNzdkZjkyMzdjZDE3ZjE4NDAzNzhjY2U3Yjc4N2IwZWZlNWE4NDI5N2MyYTNiM2VjZjg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMWE0MzE1ZmFiZWI2OTE5ODJkNTE5NzQ4OTkzNTkzN2Q0YTczYzk1YzZjMDJmOTI4NDk3ZDQxMDVmYTgwOWUwIn0"
         }
       ]
     },
@@ -67,30 +51,26 @@
       "statement": "A board links one or more repositories the factory works on; `hermes zerofactory board create <git_url>` adds a board (with optional --slug, --target-branch, --architecture), sibling repositories are linked side-by-side via the dashboard / POST /boards/{slug}/repositories, and the companion P0 setup commands `setup-repo` and `setup-openwiki` file zf-builder tasks that generate .zerofactory/precommit.sh and openwiki/ agent documentation respectively.",
       "evidence": [
         {
-          "resource": "repo://README.md#L172-L178",
+          "resource": "repo://README.md#L134-L140",
           "version": "repo-lines-v1:sha256:42de59bd0e796908c0fa2368aa2f7943422dbc934ebfe760fc99b72eba41f7c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGFjNWViNmFjYzZlYzk1NDg3YzI1Y2UwMTJjYTIxOTA3MGRmYTVhNTg3NDY5NTFmMmI3M2RkMmIwYjM2OTkwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDIyYzI3NzM2NzhiYmIzMGE1NTIwOTM0MDBlZjJhZDA3YTk2MGE3ZGE0NTZmNzcyNDFiNzA2MWI5YTY5MWExZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjdhMzk2NWJjMmUzMTVlMjg5ODEyMmUwMjRhYWUyNzk4MDU2Y2Q2ZGUyZjYwODgzNmQyN2UyYWJiM2VlNmJlMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzFjNzJjZDQyOTgwYmZmZDk0ZWE5ZTc4YTE1M2UxZmRjMGIxNzZkZjk2ZGQwYmNkZjYxY2E2NWE1NTNmOTdlYSJ9"
         },
         {
-          "resource": "repo://__init__.py#L777-L903",
+          "resource": "repo://__init__.py#L755-L881",
           "version": "repo-lines-v1:sha256:ffb7a489ca989568eab87ed174782dfbfd2face022a84e8797678ae86fdf7eb3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2MjkyOTJjZDRlNWVlYmY3YjRmNzEyMTg2NzYzOGIzNTU4MzE4ODRjMDZhZjNiYmFlMjM2Y2M5NzlkY2I0MjkyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiMDlmNDczZjMxOTg5ZjI1NGI3ZDdhNGQ5ODgwMjExOTU1NGRlNWNkMDEyYjg4NDUwM2NkYjk1YzE2NjhmNDVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMWE0MzE1ZmFiZWI2OTE5ODJkNTE5NzQ4OTkzNTkzN2Q0YTczYzk1YzZjMDJmOTI4NDk3ZDQxMDVmYTgwOWUwIn0"
         }
       ]
     },
     {
       "id": "claim_72736700047b41b8a2a2259f2fd9a1f0",
-      "statement": "The CLI `update --status` command routes status transitions through `move_task`; the HTTP PATCH endpoint rejects direct status changes and directs callers to POST `/tasks/{id}/move`, so lifecycle transitions use one shared path.",
+      "statement": "The `update` CLI command's --status option routes through the move_task code path in the CLI handler (the API PATCH /tasks/{id} refuses status changes with a 400, pointing at POST /tasks/{id}/move) so lifecycle side effects — worker stop, flag cleanup, dispatch trigger — always apply when a task transitions status via update.",
       "evidence": [
         {
-          "resource": "repo://__init__.py#L1350-L1355",
-          "version": "repo-lines-v1:sha256:206f5b5503488cb7b2aec637966e55b7e4ea236053979867a02c9b4f704702c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNThhY2VhZjYxOTA3N2U1ZjkwNzY4MGQ1ZjYwZjg0NGM2NjI3MWM5MDYxOGM4ZWRhYTAwZDY1ODAzYzkzNWM2ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGQzNDUxM2RlNzEwNTEyZjlmMGJmN2I2NWRhZmRjNTA2MTc4MDRhNTQyMzdkMjViMmNiMWQzZWYzNDQ4NDVkYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2YyY2NhNWQ2YmYxZjBjZjdjNTk3NjYyNGZmZGI3OTRmZDBlNDZlYjg2NjVlNmE1MzU4ODA1ZTM2NjhkYTFjNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDYzMzk2ZTIzMWIzYWMxNTA4Zjc2ZGFlZWU4OWJiOGI0NmYwYjk2NDU1ODk3NGMzZTg1NmY2ZGI4M2RhNjNjMSJ9"
+          "resource": "repo://__init__.py#L1288-L1311",
+          "version": "repo-lines-v1:sha256:1709746df3f3e0c048fb33e7fd9da1ac5a60cea6c38ab62a02fc212166864b8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwZTI4YWQ4NDVjYWY0ZDZkYjU4Y2RlZTYyYWM1YTI4ODcxYTA5NTA2YmUxNmEzZGQ4NzYwYjFmOGEzMTM3YTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiZTY5NzlkYmJlM2ZhMDhkNTY0MDU4OGNiNDhjOGZiMDJmNGUwYTVjNWU1YTI4OWIxZGUwZDhjNTk5NDcwODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4ZTU4YTZjODEyOWRhMjY1MjA5N2YxNjQzYjVmNGRhZTE5ZmJhNTAyODc1ODRiNjRiZGM0YjM2ZjZjOGY1ZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3ZTk5NjYxZDQzZWY5OWQxMDFhMGQyZjY2MWJhYzc5OTczNDY4MzQ2MDMxNmM3MjIwZTNhMzc2YmJkYTIwNWQifQ"
         },
         {
-          "resource": "repo://dashboard/routes/tasks.py#L813-L824",
-          "version": "repo-lines-v1:sha256:e0b16fc3c22b94368f836449cd9e7cc6d7617a54d0b34e6a596084e3fb9c1629:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyMTZjMGU2MzgzOWVjMDgzMGMyNTdlZDZlNGE2Y2YyOWUwMzBhMzdlOTkwZmJlYzZiZTRjMjhjMGVjMDA0MzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjNTNlZWFkYTQ3OTZmZjFiZTI0NTk3MTJjYTUwYzE5YWQ1ZGIyZDcyMDY1M2VjOWNkMzAxNTczYjIwMjdmNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmY2Y3NmYyN2FjZTY1MTc1NzFjNjk5Y2M0MDQ0YjQ4ZDY0NGU4ZmZmYjI5Y2Q4ZmRmYzliMTM2YTJmNTZmYTkifQ"
-        },
-        {
-          "resource": "repo://dashboard/routes/tasks.py#L970-L975",
-          "version": "repo-lines-v1:sha256:37440f8fb8860a140f4acf6f03adbe626a93d887579876b9a2073a1ef8bb9912:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmIxODI2NzllYTBkMjAwYzA4MjQ4MWU4MjkwNDBkYjJmMGZiYjRhNjdjYTFlZDgyODdjOGQ0ODQwMjc0MjgwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTdlMjM5NDgzZWJhZGQxMzY3OGRiMjk5NWY3ZGNhODljMjJjYWJlMTQ3MmE2ZDg2MjNhOWE3M2QyNGU4OGE0ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg2NGI4Y2JhMWU1MmY3NTM0M2M0ZmNkNjVlYzE3NmUzNTJlOGUxNzdhODM5MGI3MTkwYTRhNjAyMjNlZTY4NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQxNTEzMGI3NTA3Njk4ZGRhOWE2NTMyNmJhMzRhMTc1NmQ0MDVhZTNmZTkxZjI5MmRhYTI4MDY5NDQzNjY5NiJ9"
+          "resource": "repo://dashboard/routes/tasks.py#L707-L743",
+          "version": "repo-lines-v1:sha256:f4983e1d8e3f9e46e19b1611c7a6fd7662983540dd53e4898f92d8f45cf5625d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3MjhhNWIzNzM1NzlkNDIwZDBiZGYzZjY4ODEzOGE1NDY4ZWJiODU2ZWU1YWY5YjkxYjBmMWQxM2U3Yjc2NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmOGNmNmU2MjBjMDg2ZDAzMTIyYzIxNThkMTY2ODZkMmIzYzBkZGE3YjY1ZDdkMjc4YjVkNWFlOGE2MDMxMmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmY2Y3NmYyN2FjZTY1MTc1NzFjNjk5Y2M0MDQ0YjQ4ZDY0NGU4ZmZmYjI5Y2Q4ZmRmYzliMTM2YTJmNTZmYTkifQ"
         }
       ]
     },
@@ -99,11 +79,11 @@
       "statement": "Tasks that exhaust their retry budget (worker crash/timeout, repeated precommit failures, merge conflicts) are routed to the recovery stage owned by zf-orchestrator, which gets exactly one autonomous diagnosis attempt; hermes zerofactory recover <task_id> [--guidance ...] sends the task back to todo for zf-builder, and a second exhaustion escalates to blocked for a human.",
       "evidence": [
         {
-          "resource": "repo://__init__.py#L700-L713",
+          "resource": "repo://__init__.py#L678-L691",
           "version": "repo-lines-v1:sha256:89724d97b156fa3cc4eeec906258560ef2267e0c1d957831d9f9ebb09f56a936:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViZTEyNDhkZTBhOWRiYWVlYjI3YjZmYzFkZDNiZTFlY2IyYTM0YmE2NDIxNzE3MWVhODAyOGYzMjA2Zjg2NjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMGQwMDA3MDA3YjlhMmRjOTVhYzE4YjNiNGQ3NzUwYTUzYTVmZWU5ODE4YjkwYTIyNmNiMDY1NTBmZTgwYzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyNDkyMTRjODdiODU2OGZhMmVhNTRmYzM2MzkyNzUwMDA1NmQxZTE3OTY1ODZmYjAyZTQ4MTY0M2FmYjk1YjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmYTgzY2Q0MWNkYTQ1ZWY0ZjYyMjgyNWQxZTRiNTNkY2FkYjNkNTlmYjhjYzI2Y2Q0YmQwN2E3NmMxOTVmMTUifQ"
         },
         {
-          "resource": "repo://dispatcher/reaper.py#L445-L493",
+          "resource": "repo://dispatcher/reaper.py#L378-L426",
           "version": "repo-lines-v1:sha256:09da719cf32e99a623a6ff71c8a00c29a5ed08951b278c5d487e74be17ee94d0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NTAyMDliZWUyNGM0ZTMzYjA2NTJkOWM4ZTU4ZDQyZmEzOWI2NmJlMWQxMzMwNzdiMWU1YWQ3M2JmZTk3YWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMDEwNWUwYTY4NTIxYzNkMzMyNjE1MzkwZTg1OWUzOWNmMjQxMjc0YTdkNzgxZDE5NmEzYWRhMDdiMTBmZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzM2U4Yjg4MTI4MTA2NmYxYmY5NDYxMjNkN2I0ZGU4MjdiYmU2YjMxM2M3ZWFlMmIwZmIzMDFlNGI0NGZmZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjMDhkYTNkMmRkYjZhOTJlMWM0YzllMDAyYWE1MjE3M2Y1NzEyNmIxMTNlYmI5NTM0MDY0ZTA5YzhlY2YwZTIifQ"
         }
       ]
@@ -113,19 +93,19 @@
       "statement": "After the three precommit phases pass, the packaging phase runs the zero-token deterministic anti-slop gate (run_deterministic_slop_gate in dispatcher/slop_gate.py, wired into _package_and_open_pr with the resolved board target branch, the task's spec/description text, and a skip_untested_check flag, before commit): it errors on leftover debugger statements (breakpoint(), pdb.set_trace(), import pdb, debugger;), unresolved TODO/FIXME/XXX/HACK placeholder comments, skipped tests, assertion-free newly added test functions (assertion_free_test), production code adding more than 20 net lines without any test lines (untested_production_diff, DEFAULT_UNTESTED_PROD_LINE_THRESHOLD, skippable via ZEROFACTORY_SKIP_UNTESTED_CHECK or per-task skip_untested_check), and modifications of files named in the spec's Do Not Touch / Non-Goals section (do_not_touch_violation); the net-line budget (diff_budget_exceeded) defaults to DEFAULT_MAX_DIFF_LINES=800 and is overridden by ZEROFACTORY_MAX_DIFF_LINES (<=0 disables); large diffs, net test-line deletions, dependency-manifest changes, new lint/type suppressors, and mock-heavy test additions (mock_heavy_test) are warnings; its compact diff-hygiene scorecard (build_diff_hygiene_scorecard) is pre-digested into the zf-reviewer prompt; violations re-spawn zf-builder within the same 3-retry budget before any commit or PR is authored.",
       "evidence": [
         {
-          "resource": "repo://dispatcher/scheduler.py#L2692-L2723",
+          "resource": "repo://dispatcher/scheduler.py#L1962-L1993",
           "version": "repo-lines-v1:sha256:6d24107b2ddda5a7a229b47cd6ec6381798a268f797128833b2c14967c653db8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5MTkwYWQ5NjQ2OTQ1YTM5NjI4M2ZiZTQyYmViZmViNjEyYWEzYTAwOWExZmI0YzhmMDg5M2U4OWUxNWM3MTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMTFlYTExZWYwMWUyZTk2OWU1ZjRjNjI3MmYzZGI2NmRlNWY4ZTU0ZDFjYWFhNGFmZWYyZDIwYmJhMmVmMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlNGQwNWU1ZmU0NzdiMGZlYWNlZmJkNTIwMTAxMTNhZTA5M2U5ZjZiZjlkMzE1NjBjODhlNzBlNTQ2YzViNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxN2E5NWM3NjRjOGJhYTA2NWNiYzE5MWM2MDMwMWJjZDI0NGU5NjFmODhhZDUwMjM0NmRmZTlhNTQxZWNlZTQifQ"
         },
         {
-          "resource": "repo://dispatcher/slop_gate.py#L108-L111",
+          "resource": "repo://dispatcher/slop_gate.py#L111-L114",
           "version": "repo-lines-v1:sha256:18ac8725abc4fb9e2308cf830e9553c284a060fc392ec4a522f2d032ec9510db:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODBkZTU2YzdmM2JlNmUxYjhlYzhmNzIzMDJkYzMwMzhmMGMzZDdmYWYwNWIwYzkyZjdjOGRiOTQ5ZDZhM2NmOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWFjNTE3ZDZhYmMyMWU2OGEyNTllNGZlY2Q4NmQ2YzhhMjZkZGE1ZWFlNWUwMWNkZGNkMTI3NjFhODIxNTZjMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzVkM2ZkNWRmYzA3N2JhMjY1NWQzNmI2ZTQ2YTM2OTc1NDJmOTQ0MjVmNjRhODk0NGMwZjkxMWVkMDM5MWJhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmMxZjAyZmQ3ZWMxZDQ2MmMwY2I4MThiOTQ4ZmZlNGY3MTViMmMyYzQzMjYzMGMyMzJkZmUzNGQ0Mjc0M2ZhOSJ9"
         },
         {
-          "resource": "repo://dispatcher/slop_gate.py#L764-L804",
+          "resource": "repo://dispatcher/slop_gate.py#L736-L776",
           "version": "repo-lines-v1:sha256:fe1c635b2c055bb40d061303347805a24d7e0da637830fe821b89e968e988a69:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmY2M0NmUwYmQ0ZWYzZWRmNjVjY2NjNTA5Mjc4ZDZkYWM5YTE3N2M1ZjBhZDE4MWVmZTA4ODNhNGI3ZjI1MjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0OWQ5NTBlYWZiMDYxYzQxYjcyZjQ5ZDg1MzcyM2Q3ODQ2NTI2N2ZmNzA1NThlZTJlODlhMmI4Mjc4YmZkMzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxZmY1OGM4NWVjMTdkN2Q2YTNhMmFkMDNhOTZiZmUyOWM1Y2M1ZWFhNWM4MjQxMTc3YjkxYmFiMDRkM2ZiYjIifQ"
         },
         {
-          "resource": "repo://dispatcher/slop_gate.py#L806-L873",
+          "resource": "repo://dispatcher/slop_gate.py#L778-L845",
           "version": "repo-lines-v1:sha256:b0a63fe5b414b4fef6bfb2df186de68bac2c710b28a6b8ffbafac8af48e9b148:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2NWU5YzI5Nzc1YTE5OTRkZDIyMWVkMDdhODU2NTZjYmNmM2U2ZTMzMzU3MjgyMWM3N2U2NWZkM2I0OTU1ODMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZTdiYjMxNTZkZjFmNzcyOGY0NTMxOTM0NDlhYTc0NmQ3MWE1NDEzYTQ0M2FjZGVkMTZkYzcwNTI2Nzg0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkNjZkMmI2ODUzOWFlNjMzMWFmNDc1NjA2MzE2ZWFiMWYzOWI1MjY0Y2I2MTM0NTJlNDdiMjk2ZTVkYjZjNmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
@@ -135,18 +115,18 @@
       "statement": "POST /tasks/{id}/reject (and the hermes zerofactory reject CLI) records the spec revision request as a task comment and auto-records the human feedback as a rejected_path board memory via memory_service.record_rejection_memory so future triage runs on the board avoid the rejected approach.",
       "evidence": [
         {
-          "resource": "repo://dashboard/memory_service.py#L533-L554",
+          "resource": "repo://dashboard/memory_service.py#L619-L640",
           "version": "repo-lines-v1:sha256:1bd717ebb98820f899ef6c336be13944694c54b060bf10bfc071a5d94ce75fa2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwOTNhODc5YmU5MjYzZTVmMTQyZmRiODc5NzczNTUwNzNhNjY0NWRiN2ZjYjM2NmVmYzc5OGU1MWJlNjZlMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxYjYxZTVhMDQ2ZGU0MWRmZDQ4NmQyMDk1N2VhYzMwM2QyYzVjMTYzZDJiMzZmM2NjZmJhODc4NjFkNDNlMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlMjY0OTE4OWU1NzFlZTVkYjExMDQ5NTAzY2EzMWU5ZTU2NTE5YjhhM2QwYmMyODRmMGY5M2QxZTYzZDE1NDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYTdiYTNiOWRkYTdjZjcwMDAzZWIwYjA1ZWI3ZjQwMjYzZjY2NTg5NzRhZTcxMzZlNDI1OGE1NjhjMDRmZDcifQ"
         },
         {
-          "resource": "repo://dashboard/routes/tasks.py#L2369-L2409",
+          "resource": "repo://dashboard/routes/tasks.py#L2190-L2230",
           "version": "repo-lines-v1:sha256:da4f61c2e8864dae2ca9e233f35f8349adee6126460bc42f8ec491610ad03ede:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkM2YyNmIwZmYxNTFhMTJlNWYyODkzOTM0OGFhMDg5NjM1NmNkY2RlOGFlMzFmMGM2NDNmYWE4YzBhZWQ1YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhMDdiNGFlZjYxYmI3OTVkZWI3MmIyOGQ3NDI2MzRkMDE2MjkyNWJmY2NiMDhhMzVmNzY3MzQzZTg4YTY0MzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlNDAzOTA1ZjZiOGNjNDdmODcwMmE0ZWE1MzcyODU5MGI2MjU3ZWM4MWMyZjAzNGQ4YTBjYjI2N2U3MTMwY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3ODhkOTA1N2UxMzAzZWM0YTkwMjAwYmFlOThiMmVhYjY4MmYzODlmMjFjMWU2NzU5OWZkMTI0NmUzM2IyZDAifQ"
         }
       ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.9.0",
-    "at": "2026-11-26T14:39:36.019Z"
+    "by": "openwiki/0.6.0",
+    "at": "2026-11-22T15:24:22.005Z"
   }
 }

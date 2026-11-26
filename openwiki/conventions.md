@@ -18,8 +18,6 @@ sources:
     resource: repo://dispatcher/github_pr.py
   - id: openwiki-source-b73a2eae57b810a3ad15196e
     resource: repo://dispatcher/worker_spawner.py
-  - id: openwiki-source-bd2c9dd479aa89010adee0f5
-    resource: repo://dispatcher/worktree.py
   - id: openwiki-source-2feae2067f9a49cc4d8f2150
     resource: repo://migrations/runner.py
   - id: openwiki-source-0d153fd68e7210eb5d3be49d
@@ -32,18 +30,12 @@ sources:
     resource: repo://skills/zf-reviewer-ponytail/SKILL.md
   - id: openwiki-source-f0a6e7dc03522b2682f88655
     resource: repo://tests/conftest.py
-  - id: openwiki-source-4d4b583415a71ca6d5e64589
-    resource: repo://tests/e2e/test_multi_agent_workflow.py
-  - id: openwiki-source-41ca9a9f734f08d3ca4b6457
-    resource: repo://tests/integration/test_tasks_api.py
   - id: openwiki-source-b4194cdb1aee8e18787b21d6
     resource: repo://tests/unit/dashboard/test_dashboard_css.py
-  - id: openwiki-source-e06a9686c31922a42e06fb20
-    resource: repo://tests/unit/dispatcher/test_scanner.py
-generated: { by: "hermes", at: "2026-11-26T14:39:36.019Z" }
+generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
 verified:
-  - by: openwiki/0.9.0
-    at: 2026-11-26T14:39:36.019Z
+  - by: openwiki/0.6.0
+    at: 2026-11-22T15:24:22.005Z
 ---
 
 # Conventions
@@ -52,10 +44,11 @@ Rules for writing code in this repository. These are the patterns every
 `zf-builder` edit and `zf-reviewer` check relies on; following them keeps diffs
 surgical and the deterministic precommit gate green.
 
-## The dashboard relative-import fallback
+## The relative-import fallback (mandatory pattern)
 
-Dashboard modules that support both plugin-package and direct top-level imports
-bootstrap the plugin root, then use a **try/except relative→absolute fallback**:
+Every internal module that imports a sibling module uses a
+**try/except relative→absolute fallback**, because the code is loaded both as a
+plugin subpackage and as top-level modules when a script bootstraps `sys.path`:
 
 ```python
 try:
@@ -64,7 +57,7 @@ except (ImportError, ValueError):
     from settings import load_settings  # type: ignore   # direct module load
 ```
 
-See `repo://dashboard/db.py#L26-L46` and the route aggregator
+See `repo://dashboard/db.py#L24-L37` and the route aggregator
 `repo://dashboard/routes/__init__.py#L17-L34`. Preserve this exact shape when
 adding cross-module imports.
 
@@ -118,9 +111,8 @@ non-zero on a missing tool) rather than silently skipping.
   missing (`ruff==0.16.9` via `uv tool install` / `pip install --user`; a pinned
   pytest + plugin-runtime-deps stack for the test phase, never falling back to
   `unittest` discovery). Do not introduce a `# noqa` or a style
-  that the auto-fix would rewrite — on gate failure, the dispatcher retries builder
-  work up to three times before routing exhausted failures to orchestrator recovery
-  or human escalation, so keep output ruff-clean on the first pass.
+  that the auto-fix would rewrite — the dispatcher re-runs the gate and re-spawns
+  the builder on any diff, so keep output ruff-clean on the first pass.
 
 ## Tests: pytest, three tiers
 
@@ -130,7 +122,7 @@ real factory: it sets `ZEROFACTORY_SKIP_GIT`, `ZEROFACTORY_SKIP_CRON_SYNC`,
 `ZEROFACTORY_DISABLE_DISPATCHER`, and `ZEROFACTORY_SKIP_WORKER_SPAWN`
 (`repo://tests/conftest.py#L25-L29`) and provides the `isolated_env`,
 `test_db_path` / `initialized_db`, `git_repo`, `api_client`, and `default_board`
-fixtures (`repo://tests/conftest.py#L32-L143`).
+fixtures (`repo://tests/conftest.py#L32-L113`).
 
 Test tiers (mirrored on disk):
 
@@ -197,5 +189,7 @@ review id.
 - Never hand-write `openwiki/` Markdown or the `AGENTS.md` OpenWiki block; the
   OpenWiki MCP lifecycle owns both.
 
-See [Quickstart](quickstart.md) for running the gates and
-[Architecture](architecture/overview.md) for the subsystem context.
+<!-- openwiki: broken internal link [/openwiki/quickstart.md] link "/openwiki/quickstart.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
+See [Quickstart](/openwiki/quickstart.md) for running the gates and
+<!-- openwiki: broken internal link [/openwiki/architecture.md] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
+[Architecture](/openwiki/architecture.md) for the subsystem context.
