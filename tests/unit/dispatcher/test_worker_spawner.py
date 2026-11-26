@@ -144,6 +144,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
                 description="Test isolation",
                 workspace_path=str(tmp_ws),
                 branch_name="task/zf-mine",
+                metadata=json.dumps({"worker_execution_id": "exec-current"}),
             )
 
             assert pid == 99999
@@ -190,6 +191,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
             assert isolation_kwargs == expected_isolation
             assert isolation_kwargs == detached_popen_kwargs()
             assert env.get("HERMES_PROFILE") == "zf-reviewer"
+            assert env.get("ZEROFACTORY_WORKER_EXECUTION_ID") == "exec-current"
 
 
 def test_spawn_agent_worker_cleans_artifacts():

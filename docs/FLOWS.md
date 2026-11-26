@@ -283,11 +283,14 @@ flowchart TD
     FB -->|no| PERM["blocked + permanently_blocked<br/>human gate"]
     FB -->|yes| RETRY["todo — auto-retry on claim"]
     POLL -->|"PID gone / stuck"| STUCK["terminate, retries++, blocked<br/>timeout 3600s / inactivity 900s"]
-    RUN -.->|"no proc, no PID, no session,<br/>claim age >= 30s"| ORPH["orphaned running -> todo<br/>activity worker_recovered"]
+    RUN -.->|"no proc, no live PID, no session,<br/>spawn grace expired"| ORPH["orphaned running -> todo<br/>activity worker_recovered"]
 ```
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
-  with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`.
+  with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`.
+- Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
+- Workerless `running` rows, including `awaiting_pr` packaging rows, recover after `ZEROFACTORY_SPAWN_GRACE_SECONDS` (default **180s**) if no process, live PID, or ongoing session exists. Stalled packaging therefore releases its running slot; healthy deterministic packaging gets that grace window to proceed.
+- A recovered reviewer stays queued for PR polling instead of being respawned. Polling happens before any reviewer restart and the orphan marker persists through polls with no verdict until feedback routes the task or ownership changes.
 - Stuck detection: `running > 3600s` (`ZEROFACTORY_TASK_TIMEOUT_SECONDS`) **or**
   `running > 900s && no log activity > 900s` (`DEFAULT_INACTIVITY_TIMEOUT_SECONDS`).
 - Retry budget: `DEFAULT_MAX_WORKER_RETRIES = 3` per task, then `permanently_blocked` (human only).
@@ -455,7 +458,8 @@ stateDiagram-v2
     TERM --> TERM: step 3 guard: cleanup only<br/>stop worker, rm worktree,<br/>gh pr close + rm branch if close_pr
 ```
 
-- **Agent** `move done` (actor `zf-*`): "builder finished" → the task stays **`running`** with `awaiting_pr` → packaging pipeline → `todo` + reviewer. `done` appears only after merge/close/human close.
+- **Agent** `move done` (actor `zf-*`): only the current dispatcher-tracked execution may report completion; stale/untracked reports are rejected. A valid builder completion → the task stays **`running`** with `awaiting_pr` → packaging pipeline → `todo` + reviewer. `done` appears only after merge/close/human close.
+- **Workerless recovery**: `running` tasks with no process, live PID, or ongoing session recover to `todo` after the spawn grace even if `awaiting_pr` is set. A recovered reviewer remains eligible for PR verdict polling before any reviewer worker can be started.
 - **Human** `move done` (actor `user`, e.g. drag-and-drop): **terminal** — aborts sessions,
   stops the worker, and if a PR is open sets `close_pr` so the next cycle
   archives the PR (close + branch delete, activity `manual_done`). Never re-dispatched.

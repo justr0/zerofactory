@@ -536,11 +536,24 @@ def test_move_done_semantics_human_terminal_vs_agent_awaiting_pr(
     )
     assert _metadata(task_id).get("awaiting_pr") is None
 
-    api_client.post(
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'running', metadata = ? WHERE id = ?",
+            (json.dumps({"worker_execution_id": "execution-current"}), task_id),
+        )
+        conn.commit()
+    completion = api_client.post(
         f"/api/plugins/zerofactory/tasks/{task_id}/move",
-        json={"status": "done", "actor": "zf-builder"},
+        json={
+            "status": "done",
+            "actor": "zf-builder",
+            "worker_execution_id": "execution-current",
+        },
     )
+    assert completion.status_code == 200
+    assert completion.json().get("ignored") is not True
     assert _metadata(task_id).get("awaiting_pr") is True
+    assert _metadata(task_id).get("worker_execution_id") is None
 
     # Reviving clears the flag again so the task dispatches normally
     api_client.post(
@@ -713,7 +726,7 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
         assert check["status"] == "blocked"
         assert check["metadata"]["blocked_reason_type"] == parked_reason
 
-    # Builder-bound exception: 'changes-requested' accepts the fix's completion.
+    # Changes-requested remains builder-bound, but an untracked report is rejected.
     api_client.post(
         f"/api/plugins/zerofactory/tasks/{task_id}/move",
         json={
@@ -722,9 +735,34 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
             "reason": "changes-requested",
         },
     )
-    fix_res = api_client.post(
+    stale_fix = api_client.post(
         f"/api/plugins/zerofactory/tasks/{task_id}/move",
         json={"status": "done", "actor": "zf-builder"},
+    )
+    assert stale_fix.json()["ignored"] is True
+
+    # The next dispatcher-tracked builder execution can complete the fix.
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'running', assignee = 'zf-builder', metadata = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "blocked_reason_type": "changes-requested",
+                        "worker_execution_id": "execution-fix",
+                    }
+                ),
+                task_id,
+            ),
+        )
+        conn.commit()
+    fix_res = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={
+            "status": "done",
+            "actor": "zf-builder",
+            "worker_execution_id": "execution-fix",
+        },
     )
     assert fix_res.status_code == 200
     assert "ignored" not in fix_res.json()
@@ -747,6 +785,139 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
         ]
         == "done"
     )
+
+
+def test_late_builder_completion_rejected_after_reviewer_handoff(
+    api_client: TestClient, default_board: str
+):
+    """A builder report from an untracked worker cannot reclaim reviewer work."""
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Reviewer handoff late completion",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-reviewer",
+            "metadata": {"review_round": 1},
+        },
+    ).json()["id"]
+
+    before = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    response = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    after = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert after["status"] == before["status"] == "running"
+    assert after["assignee"] == before["assignee"] == "zf-reviewer"
+    assert after["metadata"] == before["metadata"]
+    assert any(item["action"] == "move_rejected" for item in after["activity"])
+
+
+def test_agent_running_or_done_report_requires_current_worker_execution(
+    api_client: TestClient, default_board: str
+):
+    """Only the execution currently tracked for a running assignee can report completion."""
+    endpoint = "/api/plugins/zerofactory/tasks"
+
+    # No tracked execution: a workerless todo task cannot be claimed by an agent report.
+    no_worker = api_client.post(
+        endpoint,
+        json={
+            "title": "Workerless completion report",
+            "board_slug": default_board,
+            "status": "todo",
+            "assignee": "zf-builder",
+        },
+    ).json()["id"]
+    response = api_client.post(
+        f"{endpoint}/{no_worker}/move",
+        json={"status": "running", "actor": "zf-builder"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{no_worker}").json()["task"]
+    assert task["status"] == "todo"
+    assert task["metadata"].get("worker_execution_id") is None
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+    # Matching assignee is not enough when a running row has no tracked execution.
+    workerless_running = api_client.post(
+        endpoint,
+        json={
+            "title": "Workerless running completion report",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-builder",
+            "metadata": {"review_round": 1},
+        },
+    ).json()["id"]
+    original_metadata = api_client.get(f"{endpoint}/{workerless_running}").json()[
+        "task"
+    ]["metadata"]
+    response = api_client.post(
+        f"{endpoint}/{workerless_running}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{workerless_running}").json()["task"]
+    assert task["status"] == "running"
+    assert task["metadata"] == original_metadata
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+    # A replacement builder has the same role but a different dispatcher execution id.
+    replaced = api_client.post(
+        endpoint,
+        json={
+            "title": "Replaced worker completion report",
+            "board_slug": default_board,
+            "status": "running",
+            "assignee": "zf-builder",
+            "metadata": {"worker_execution_id": "execution-new"},
+        },
+    ).json()["id"]
+    response = api_client.post(
+        f"{endpoint}/{replaced}/move",
+        json={
+            "status": "done",
+            "actor": "zf-builder",
+            "worker_execution_id": "execution-old",
+        },
+    )
+    assert response.json()["ignored"] is True
+    task = api_client.get(f"{endpoint}/{replaced}").json()["task"]
+    assert task["status"] == "running"
+    assert task["metadata"]["worker_execution_id"] == "execution-new"
+    assert any(item["action"] == "move_rejected" for item in task["activity"])
+
+
+def test_recovered_reviewer_marker_clears_when_task_ownership_changes(
+    api_client: TestClient, default_board: str
+):
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Recovered reviewer ownership change",
+            "board_slug": default_board,
+            "status": "todo",
+            "assignee": "zf-reviewer",
+            "metadata": {"reviewer_orphan_recovered": True},
+        },
+    ).json()["id"]
+
+    response = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "todo", "assignee": "zf-builder", "actor": "user"},
+    )
+
+    assert response.status_code == 200
+    task = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert task["assignee"] == "zf-builder"
+    assert "reviewer_orphan_recovered" not in task["metadata"]
 
 
 def test_triage_task_split_multi_repo(api_client: TestClient):
