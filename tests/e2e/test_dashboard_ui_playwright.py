@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
@@ -355,6 +356,7 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
                 ),
             )
             page.clock.install()
+            page.clock.pause_at(datetime.now() + timedelta(seconds=1))
 
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
 
