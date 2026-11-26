@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import os
+import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -84,6 +87,45 @@ def fake_home_env(home: Path) -> dict[str, str]:
         env["HOMEDRIVE"] = drive
         env["HOMEPATH"] = tail
     return env
+
+
+def force_rmtree(path: Path | str) -> None:
+    """Remove a tree git and sqlite have written to, even on Windows.
+
+    git stores object files read-only. POSIX lets the owner unlink them
+    anyway; Windows refuses, so ``shutil.rmtree`` stops at the first one and,
+    with ``ignore_errors=True``, quietly leaves the rest of the tree behind in
+    the temp directory: one leaked tree per test run. Windows also refuses to
+    delete a database file while a connection holds it open, and a connection
+    opened with ``with sqlite3.connect(...)`` - which commits but never
+    closes - is only closed once the garbage collector reclaims it.
+    """
+    if sys.platform != "win32":
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    gc.collect()
+    _make_writable(path)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _make_writable(path: Path | str) -> None:
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    with os.scandir(path) as entries:
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            # A junction or symlink: never touch what it points at.
+            if st.st_file_attributes & reparse:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                _make_writable(entry.path)
+            elif not st.st_mode & stat.S_IWRITE:
+                try:
+                    os.chmod(entry.path, stat.S_IWRITE)
+                except OSError:
+                    pass
 
 
 @pytest.fixture(autouse=True)

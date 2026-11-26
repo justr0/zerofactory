@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -29,7 +28,7 @@ from dashboard.plugin_api import (
     init_db,
     move_task,
 )
-from tests.conftest import HOME_ENV_KEYS, fake_home_env
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 
 class TestMultiAgentLifecycleE2E(unittest.TestCase):
@@ -109,7 +108,7 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _git(self, cwd: Path, *args: str) -> str:
         res = subprocess.run(

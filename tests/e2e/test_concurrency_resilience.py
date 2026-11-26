@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -25,6 +24,7 @@ from dashboard.plugin_api import (
     list_tasks,
     router,
 )
+from tests.conftest import force_rmtree
 
 
 class TestConcurrencyAndResilienceE2E(unittest.TestCase):
@@ -71,7 +71,7 @@ class TestConcurrencyAndResilienceE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def test_01_cross_process_flock_concurrency_guard(self):
         """fcntl.flock lock skips concurrent dispatch cycles cleanly with concurrent_cycle_active."""

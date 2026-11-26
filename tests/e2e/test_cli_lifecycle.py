@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import io
 import os
-import shutil
 import sqlite3
 import tempfile
 import time
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import __init__ as zf_cli
 from dashboard.plugin_api import init_db
-from tests.conftest import HOME_ENV_KEYS, fake_home_env
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 
 class TestZeroFactoryCLIE2E(unittest.TestCase):
@@ -75,7 +74,7 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _run_cli(self, args_list: list[str]) -> str:
         """Parse arguments and execute the CLI handler, returning captured stdout."""

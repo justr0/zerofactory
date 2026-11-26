@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -22,7 +21,7 @@ from dashboard.plugin_api import (
     get_task,
     init_db,
 )
-from tests.conftest import HOME_ENV_KEYS, fake_home_env
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -68,7 +67,7 @@ class TestAutomationScriptsE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _run_script(
         self,
