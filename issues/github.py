@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 from typing import Any
 
@@ -101,21 +100,6 @@ class GitHubIssueClient:
 
     def __init__(self, default_repo: str | None = None):
         self.default_repo = default_repo
-
-    def test_connection(self) -> bool:
-        """Verify that `gh` CLI is installed and authenticated."""
-        if not shutil.which("gh"):
-            return False
-        try:
-            res = subprocess.run(
-                ["gh", "auth", "status"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return res.returncode == 0
-        except Exception:
-            return False
 
     def fetch_issue(self, issue_ref: str, repo: str | None = None) -> ExternalIssue:
         """Fetch an issue from GitHub and normalize it to ExternalIssue."""
