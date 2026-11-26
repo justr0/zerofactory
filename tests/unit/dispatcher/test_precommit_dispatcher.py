@@ -30,11 +30,12 @@ def _bash_invocation(script: Path, *args: str) -> list[str]:
         script_arg = f"/{drive[:1].lower()}/{rest}"
         git = shutil.which("git")
         if git:
-            cand = Path(git).parent.parent / "bin" / "bash.exe"
-            if not cand.exists():
-                cand = Path(git).parent.parent / "usr" / "bin" / "bash.exe"
-            if cand.exists():
-                bash_exe = str(cand)
+            for gdir in Path(git).resolve().parents[:3]:
+                cand = gdir / "bin" / "bash.exe"
+                if not cand.exists():
+                    cand = gdir / "usr" / "bin" / "bash.exe"
+                if cand.exists():
+                    bash_exe = str(cand)
     return [bash_exe, script_arg, *args]
 
 
@@ -148,7 +149,6 @@ def test_handle_precommit_failure_retries(initialized_db: Path, tmp_path: Path):
         _handle_precommit_failure(
             cursor,
             task_id,
-            "feat: my task",
             str(tmp_path),
             "Syntax error on line 5",
             now,
@@ -164,27 +164,21 @@ def test_handle_precommit_failure_retries(initialized_db: Path, tmp_path: Path):
         assert "Syntax error on line 5" in meta["last_precommit_error"]
 
         # Attempt 2
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 2", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 2", now)
         conn.commit()
         cursor.execute("SELECT metadata FROM tasks WHERE id = ?", (task_id,))
         meta = json.loads(cursor.fetchone()["metadata"])
         assert meta["precommit_retries"] == 2
 
         # Attempt 3
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 3", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 3", now)
         conn.commit()
         cursor.execute("SELECT metadata FROM tasks WHERE id = ?", (task_id,))
         meta = json.loads(cursor.fetchone()["metadata"])
         assert meta["precommit_retries"] == 3
 
         # Attempt 4 (exceeding default 3 retries, recovery_count == 0): Should route to todo (recovery) for zf-orchestrator
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 4", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 4", now)
         conn.commit()
         cursor.execute(
             "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -205,9 +199,7 @@ def test_handle_precommit_failure_retries(initialized_db: Path, tmp_path: Path):
             (json.dumps(meta), task_id),
         )
         conn.commit()
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 5", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 5", now)
         conn.commit()
         cursor.execute(
             "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -257,7 +249,6 @@ def test_precommit_timeout_retry_clears_build(initialized_db: Path, tmp_path: Pa
         _handle_precommit_failure(
             cursor,
             task_id,
-            "feat: timeout task",
             str(workspace),
             "Precommit script timed out after 300s.",
             now,
@@ -281,7 +272,6 @@ def test_precommit_timeout_retry_clears_build(initialized_db: Path, tmp_path: Pa
         _handle_precommit_failure(
             cursor,
             task_id2,
-            "feat: nonzero task",
             str(tmp_path / "ws2"),
             "AssertionError: x != y",
             now,

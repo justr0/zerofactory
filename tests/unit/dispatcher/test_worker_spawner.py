@@ -1,4 +1,4 @@
-"""Unit tests for dispatcher/worker_spawner.py: agent worker spawning, session isolation, and environment injection."""
+"""Unit tests for dispatcher/worker_spawner.py worker spawning and session isolation."""
 
 import contextlib
 import json
@@ -7,44 +7,143 @@ import sqlite3
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 import dispatcher.process_manager as process_manager
 import dispatcher.worker_spawner as worker_spawner
-from dispatcher.worker_spawner import (
-    _inject_langfuse_env,
-    spawn_agent_worker,
-)
+from dispatcher.worker_spawner import spawn_agent_worker
 import zf_wincompat
 from zf_wincompat import detached_popen_kwargs
 
 
-def test_inject_langfuse_env():
-    """Verify Langfuse env injection when enabled vs disabled."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER)"
+TRIAGE_COMMENT_HEADINGS = [
+    ("zf-orchestrator", "### 💬 Previous Discussion & Human Responses:"),
+    ("zf-goldfish", "### 💬 Previous Discussion & Revision History:"),
+]
+
+
+def _spawn_triage_prompt(
+    tmp_path: Path,
+    role: str,
+    monkeypatch: pytest.MonkeyPatch,
+    comments: list[tuple[str, str, int]] | None = None,
+    *,
+    create_comments_table: bool = True,
+) -> tuple[str, MagicMock]:
+    """Spawn a triage worker using an isolated comment database and return its prompt/log."""
+    db_path = tmp_path / f"{role}.db"
+    monkeypatch.delenv("ZEROFACTORY_WORKER_COMMAND", raising=False)
+    monkeypatch.delenv("ZEROFACTORY_WORKER_ARGS", raising=False)
+    with sqlite3.connect(db_path) as conn:
+        if create_comments_table:
+            conn.execute(
+                "CREATE TABLE task_comments "
+                "(task_id TEXT, author TEXT, body TEXT, created_at INTEGER)"
+            )
+            conn.executemany(
+                "INSERT INTO task_comments VALUES ('task-context', ?, ?, ?)",
+                comments or [],
+            )
+            conn.execute(
+                "INSERT INTO task_comments VALUES ('other-task', 'human', ?, 5)",
+                ("Unrelated task comment",),
+            )
+
+    digest = SimpleNamespace(
+        digest_board_memories_context=lambda *args, **kwargs: "",
+        digest_board_architecture_context=lambda *args, **kwargs: "",
+        digest_parent_and_peer_tasks_context=lambda *args, **kwargs: "",
     )
-    conn.execute("INSERT INTO settings VALUES ('langfuse_enabled', 'true', 1000)")
-    conn.execute("INSERT INTO settings VALUES ('langfuse_public_key', 'pk-123', 1000)")
-    conn.execute("INSERT INTO settings VALUES ('langfuse_secret_key', 'sk-456', 1000)")
-    conn.commit()
+    with (
+        patch.object(worker_spawner, "_d", return_value=digest),
+        patch.object(worker_spawner, "resolve_profile_state_db", return_value=None),
+        patch.object(worker_spawner, "resolve_hermes_bin", return_value="hermes"),
+        patch.object(
+            worker_spawner, "is_unattended_approvals_enabled", return_value=False
+        ),
+        patch.object(worker_spawner, "build_minimal_child_env", return_value={}),
+        patch.object(
+            worker_spawner, "build_shell_wrapper", side_effect=lambda cmd, _prefix: cmd
+        ),
+        patch.object(worker_spawner, "cleanup_process_artifacts"),
+        patch.object(worker_spawner._log, "debug") as debug_log,
+        patch("paths.get_hermes_home", return_value=tmp_path / "hermes"),
+        patch("subprocess.Popen") as mock_popen,
+        patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}, clear=False),
+        patch.dict(worker_spawner._active_workers),
+    ):
+        os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        spawn_agent_worker(
+            task_id="task-context",
+            title="Context task",
+            description="Task description",
+            priority="P1",
+            assignee=role,
+            workspace_path=str(tmp_path),
+            branch_name="task/context",
+            metadata=json.dumps(
+                {"specification": "Draft specification", "revision_count": 1}
+            ),
+        )
+        prompt = mock_popen.call_args.args[0][
+            mock_popen.call_args.args[0].index("-q") + 1
+        ]
+    return prompt, debug_log
 
-    env = {}
-    _inject_langfuse_env(env, conn_or_cursor=conn)
-    assert env["HERMES_LANGFUSE_PUBLIC_KEY"] == "pk-123"
-    assert env["HERMES_LANGFUSE_SECRET_KEY"] == "sk-456"
 
-    # Now disable
-    conn.execute("UPDATE settings SET value = 'false' WHERE key = 'langfuse_enabled'")
-    conn.commit()
-    _inject_langfuse_env(env, conn_or_cursor=conn)
-    assert "HERMES_LANGFUSE_PUBLIC_KEY" not in env
-    assert "HERMES_LANGFUSE_SECRET_KEY" not in env
+@pytest.mark.parametrize(("role", "heading"), TRIAGE_COMMENT_HEADINGS)
+def test_triage_prompts_include_ordered_task_comments(
+    tmp_path, monkeypatch, role, heading
+):
+    prompt, _ = _spawn_triage_prompt(
+        tmp_path,
+        role,
+        monkeypatch,
+        [
+            ("human", "Later response", 20),
+            ("zf-orchestrator", "Earlier question", 10),
+        ],
+    )
+
+    expected = (
+        f"{heading}\n"
+        "### Comment #1 (by @zf-orchestrator):\nEarlier question\n\n"
+        "### Comment #2 (by @human):\nLater response\n\n"
+    )
+    assert expected in prompt
+    assert "Unrelated task comment" not in prompt
+
+
+@pytest.mark.parametrize(("role", "heading"), TRIAGE_COMMENT_HEADINGS)
+def test_triage_prompts_omit_context_for_empty_comment_set(
+    tmp_path, monkeypatch, role, heading
+):
+    prompt, _ = _spawn_triage_prompt(tmp_path, role, monkeypatch)
+
+    assert heading not in prompt
+
+
+@pytest.mark.parametrize(("role", "_heading"), TRIAGE_COMMENT_HEADINGS)
+def test_triage_comment_lookup_failure_is_nonfatal_and_role_logged(
+    tmp_path, monkeypatch, role, _heading
+):
+    prompt, debug_log = _spawn_triage_prompt(
+        tmp_path, role, monkeypatch, create_comments_table=False
+    )
+
+    assert f"Assigned Role: {role}" in prompt
+    debug_log.assert_any_call(
+        f"Could not inspect task_comments for {role.removeprefix('zf-')} prompt: %s",
+        ANY,
+    )
 
 
 def test_detached_popen_kwargs_platform_contract():

@@ -4,7 +4,7 @@ Covers the four public helpers without touching the live board DB, real git, or
 the network:
   * get_repo_resolver()
   * _find_setup_task()           -- the active_only dedup contract
-  * check_board_setup_status()   -- not-found + filesystem + env-restore
+  * check_board_setup_status()   -- not-found + filesystem status
   * create_setup_task()          -- dedup / not-found / create paths
 
 SQLite fixtures come from the shared ``initialized_db`` fixture; the repo
@@ -14,7 +14,6 @@ suite is hermetic.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
 from unittest import mock
@@ -429,65 +428,6 @@ def test_check_status_pending_and_dedup_reflect_task_states(
     assert res_active["dedup_task_status"] == "running"
 
 
-def test_check_status_env_skip_clone_restored_was_none(
-    initialized_db: Path, tmp_path: Path, monkeypatch
-):
-    """ZEROFACTORY_SKIP_CLONE is forced to '1' during the resolver call and
-    removed afterwards when it was not set before."""
-    _insert_board(initialized_db, "enva", git_url="https://example.com/x.git")
-    repo = _make_repo(tmp_path, "enva_repo")
-
-    captured: dict = {}
-
-    def fake_resolver(board):
-        captured["during"] = os.environ.get("ZEROFACTORY_SKIP_CLONE")
-        return repo
-
-    monkeypatch.setattr(sc, "get_repo_resolver", lambda: fake_resolver)
-    monkeypatch.delenv("ZEROFACTORY_SKIP_CLONE", raising=False)
-
-    sc.check_board_setup_status(
-        "enva",
-        has_key=HAS_KEY,
-        path_key=PATH_KEY,
-        preview_key=PREVIEW_KEY,
-        target_relpath="openwiki",
-        title_prefix="chore(repo): setup",
-        dedup_substring="setup:ow",
-    )
-    assert captured["during"] == "1"
-    assert "ZEROFACTORY_SKIP_CLONE" not in os.environ
-
-
-def test_check_status_env_skip_clone_restored_was_set(
-    initialized_db: Path, tmp_path: Path, monkeypatch
-):
-    """A pre-existing ZEROFACTORY_SKIP_CLONE value is restored, not wiped."""
-    _insert_board(initialized_db, "envb", git_url="https://example.com/x.git")
-    repo = _make_repo(tmp_path, "envb_repo")
-
-    captured: dict = {}
-
-    def fake_resolver(board):
-        captured["during"] = os.environ.get("ZEROFACTORY_SKIP_CLONE")
-        return repo
-
-    monkeypatch.setattr(sc, "get_repo_resolver", lambda: fake_resolver)
-    monkeypatch.setenv("ZEROFACTORY_SKIP_CLONE", "7")
-
-    sc.check_board_setup_status(
-        "envb",
-        has_key=HAS_KEY,
-        path_key=PATH_KEY,
-        preview_key=PREVIEW_KEY,
-        target_relpath="openwiki",
-        title_prefix="chore(repo): setup",
-        dedup_substring="setup:ow",
-    )
-    assert captured["during"] == "1"
-    assert os.environ.get("ZEROFACTORY_SKIP_CLONE") == "7"
-
-
 # --- create_setup_task ------------------------------------------------------
 
 
@@ -594,42 +534,3 @@ def test_create_setup_task_create_path(
     assert req.actor == "tester"
     assert captured["repo_path"] == repo  # resolver result fed to the prompt
     assert captured["slug"] == "create"
-
-
-def test_create_setup_task_allows_clone_at_setup_time(
-    initialized_db: Path, tmp_path: Path, monkeypatch
-):
-    """Intentional asymmetry: create_setup_task resolves the repo path WITHOUT
-    the ZEROFACTORY_SKIP_CLONE guard that check_board_setup_status applies, so
-    setup-time creation is allowed to trigger a clone. Lock that contract in."""
-    _insert_board(initialized_db, "cloneok", git_url="https://example.com/x.git")
-    repo = _make_repo(tmp_path, "cloneok_repo")
-
-    observed: dict = {}
-
-    def fake_resolver(board):
-        observed["skip_clone"] = os.environ.get("ZEROFACTORY_SKIP_CLONE")
-        return repo
-
-    monkeypatch.setattr(sc, "get_repo_resolver", lambda: fake_resolver)
-    monkeypatch.delenv("ZEROFACTORY_SKIP_CLONE", raising=False)
-
-    with mock.patch(
-        "dashboard.routes.tasks.create_task",
-        return_value={"ok": True, "id": "zf-clone-task"},
-    ):
-        res = sc.create_setup_task(
-            "cloneok",
-            status_checker=lambda slug: {"dedup_task_id": None},
-            title="chore(repo): setup target",
-            prompt_builder=lambda slug, repo_path=None: "prompt",
-            files=["openwiki"],
-            dedup_key="setup:ow",
-            progress_label="OpenWiki",
-            created_label="openwiki",
-        )
-
-    assert res["ok"] is True
-    # No SKIP_CLONE guard at setup-creation time: the resolver saw the env as
-    # unset (the status-check helper would have forced it to "1").
-    assert observed["skip_clone"] is None

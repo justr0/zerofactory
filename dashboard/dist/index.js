@@ -294,6 +294,43 @@ var ZeroFactoryDashboard = (function(exports) {
 		}
 	};
 	//#endregion
+	//#region dashboard/src/utils/formatters.js
+	var timeAgo = utils.timeAgo || function(ts) {
+		if (!ts) return "";
+		const diff = Math.floor(Date.now() / 1e3 - ts);
+		if (diff < 60) return "just now";
+		if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+		if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+		return Math.floor(diff / 86400) + "d ago";
+	};
+	var formatPrLabel = function(url) {
+		if (!url) return "";
+		const trimmed = String(url).trim();
+		if (/^#?\d+$/.test(trimmed)) return "PR #" + trimmed.replace(/^#/, "");
+		const m = trimmed.match(/\/(?:pull|merge_requests)\/(\d+)/i);
+		if (m) return "PR #" + m[1];
+		return "PR ↗";
+	};
+	var computeGitSlug = function(gitUrl) {
+		if (!gitUrl) return "";
+		let cleaned = gitUrl.trim().replace(/\.git$/, "").replace(/\/+$/, "");
+		cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
+		if (cleaned.includes("@")) {
+			cleaned = cleaned.split("@")[1];
+			if (cleaned.includes(":")) cleaned = cleaned.split(":")[1];
+			else if (cleaned.includes("/")) cleaned = cleaned.split("/").slice(1).join("/");
+		} else if (cleaned.includes("/")) {
+			const first = cleaned.split("/")[0];
+			if (first.includes(".") || first.includes(":")) cleaned = cleaned.split("/").slice(1).join("/");
+		}
+		const parts = cleaned.split("/").filter(Boolean);
+		const repo = parts.length >= 1 ? parts[parts.length - 1].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
+		const owner = parts.length >= 2 ? parts[parts.length - 2].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
+		if (owner && repo) return (owner + "-" + repo).toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
+		if (repo) return repo.toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
+		return "";
+	};
+	//#endregion
 	//#region dashboard/src/components/BoardSelector.jsx
 	function BoardSelector(props) {
 		const { boards = [], selectedBoard = "all", onSelectBoard, onOpenNewBoard, onOpenEditBoard, liveSessions = [] } = props;
@@ -702,43 +739,6 @@ var ZeroFactoryDashboard = (function(exports) {
 		}, isSettingUpGhIssues ? "Initiating Setup..." : "🏷️ Setup GitHub Issues")));
 	}
 	//#endregion
-	//#region dashboard/src/utils/formatters.js
-	var timeAgo = utils.timeAgo || function(ts) {
-		if (!ts) return "";
-		const diff = Math.floor(Date.now() / 1e3 - ts);
-		if (diff < 60) return "just now";
-		if (diff < 3600) return Math.floor(diff / 60) + "m ago";
-		if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
-		return Math.floor(diff / 86400) + "d ago";
-	};
-	var formatPrLabel = function(url) {
-		if (!url) return "";
-		const trimmed = String(url).trim();
-		if (/^#?\d+$/.test(trimmed)) return "PR #" + trimmed.replace(/^#/, "");
-		const m = trimmed.match(/\/(?:pull|merge_requests)\/(\d+)/i);
-		if (m) return "PR #" + m[1];
-		return "PR ↗";
-	};
-	var computeGitSlug = function(gitUrl) {
-		if (!gitUrl) return "";
-		let cleaned = gitUrl.trim().replace(/\.git$/, "").replace(/\/+$/, "");
-		cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
-		if (cleaned.includes("@")) {
-			cleaned = cleaned.split("@")[1];
-			if (cleaned.includes(":")) cleaned = cleaned.split(":")[1];
-			else if (cleaned.includes("/")) cleaned = cleaned.split("/").slice(1).join("/");
-		} else if (cleaned.includes("/")) {
-			const first = cleaned.split("/")[0];
-			if (first.includes(".") || first.includes(":")) cleaned = cleaned.split("/").slice(1).join("/");
-		}
-		const parts = cleaned.split("/").filter(Boolean);
-		const repo = parts.length >= 1 ? parts[parts.length - 1].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-		const owner = parts.length >= 2 ? parts[parts.length - 2].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-		if (owner && repo) return (owner + "-" + repo).toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-		if (repo) return repo.toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-		return "";
-	};
-	//#endregion
 	//#region dashboard/src/components/KanbanBoard.jsx
 	function KanbanBoard(props) {
 		const { tasksByColumn, doneArchiveDays = 7, dragOverCol, handleDragOver, handleDragLeave, handleDrop, handleDragStart, loadTaskDetails, selectedBoard, currentBoard, stoppingSessionId, handleStopTaskSession, handleAdvanceTask, handleTriageTask } = props;
@@ -820,6 +820,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					onDragStart: (e) => handleDragStart(e, t),
 					onClick: () => loadTaskDetails(t.id),
 					onKeyDown: (e) => {
+						if (e.target !== e.currentTarget) return;
 						if (e.key === "Enter" || e.key === " ") {
 							e.preventDefault();
 							loadTaskDetails(t.id);
@@ -1761,6 +1762,11 @@ var ZeroFactoryDashboard = (function(exports) {
 					icon: "🧠",
 					title: "Mem0 Vector Memory",
 					desc: "Hybrid semantic vector memory via Mem0 + Qdrant (FastEmbed ONNX CPU / OpenAI), auto-recorded on task completion."
+				},
+				{
+					icon: "🔒",
+					title: "Standalone Dashboard CSRF Boundary",
+					desc: "Standalone rejects cross-site/same-site browser mutations, validates Host as localhost/loopback, and requires any supplied Origin to match the request scheme, host, and port. Headerless API clients remain supported, so standalone mode is not authentication; GitHub issue sync is POST-only."
 				}
 			].map((card, idx) => React.createElement("div", {
 				key: idx,
@@ -2415,7 +2421,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						desc: "Bootstrap or inspect zf-* profiles and script symlinks"
 					}, {
 						cmd: "hermes zerofactory sync-profiles",
-						desc: "Update profile system prompts from plugin templates"
+						desc: "Refresh copied skills (changed files and tracked upstream removals) while preserving user files and live links; setup status reports stale copies and broken links"
 					}]
 				},
 				{
@@ -2471,7 +2477,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory import-gh-issue --sync",
-							desc: "Batch import open issues requested for AI investigation"
+							desc: "Batch import open issues labeled zerofactory, ai-investigate, or ai-triage; --label narrows the sync"
 						}
 					]
 				},
@@ -2577,7 +2583,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					title: "Codebase Improvement Scanner (zf-orchestrator)",
 					interval: "On Idle (Configured Capacity Gate)",
 					tokens: "0 Tokens when Busy / Cooldown",
-					desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
+					desc: "The dispatcher owns the scanner gate and spawns zf-orchestrator in the selected repository when scanning is enabled, global LLM capacity is available, the board is below its running/todo limits, no scan is already active, and cooldown has elapsed. LLM capacity counts agent-running tasks and active scanners; deterministic packaging consumes no LLM slot, but still counts toward task WIP and board running limits. If ineligible, no agent is spawned (0 tokens). The scanner audits the codebase for high-signal improvements and may file an actionable TODO task for zf-builder.",
 					badge: "Dispatcher-Gated • zf-orchestrator"
 				},
 				{
@@ -6068,25 +6074,6 @@ var ZeroFactoryDashboard = (function(exports) {
 			} finally {
 				setIsSubmittingTask(false);
 			}
-		};
-		const computeGitSlug = (gitUrl) => {
-			if (!gitUrl) return "";
-			let cleaned = gitUrl.trim().replace(/\.git$/, "").replace(/\/+$/, "");
-			cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
-			if (cleaned.includes("@")) {
-				cleaned = cleaned.split("@")[1];
-				if (cleaned.includes(":")) cleaned = cleaned.split(":")[1];
-				else if (cleaned.includes("/")) cleaned = cleaned.split("/").slice(1).join("/");
-			} else if (cleaned.includes("/")) {
-				const first = cleaned.split("/")[0];
-				if (first.includes(".") || first.includes(":")) cleaned = cleaned.split("/").slice(1).join("/");
-			}
-			const parts = cleaned.split("/").filter(Boolean);
-			let repo = parts.length >= 1 ? parts[parts.length - 1].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-			let owner = parts.length >= 2 ? parts[parts.length - 2].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-			if (owner && repo) return (owner + "-" + repo).toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-			if (repo) return repo.toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-			return "";
 		};
 		const handleCreateBoardSubmit = async (e) => {
 			e.preventDefault();

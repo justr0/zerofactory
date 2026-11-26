@@ -60,6 +60,17 @@ flowchart TD
 | 7 | Exactly one status reply is posted to a source GitHub issue, only at PR-open time | `scheduler.post_issue_pr_comment` |
 | 8 | Nothing runs unbounded: worker timeout 3600s, retries capped, review rounds capped | reaper + `_handle_precommit_failure` + review cap |
 
+### Standalone Dashboard Request Boundary
+
+The optional `dashboard.standalone` server binds only to a loopback IP. For
+state-changing browser requests, it rejects cross-site/same-site Fetch Metadata,
+validates the HTTP Host as `localhost` or a loopback IP (including `::1`), and
+requires any supplied `Origin` to be valid and match the request scheme, host, and
+port. Headerless non-browser API clients remain supported; this is a CSRF check,
+not authentication, so do not expose the standalone API through a non-loopback
+proxy. GitHub issue synchronization is POST-only so its importer cannot be invoked
+by a cross-origin GET.
+
 ---
 
 ## 2. Board & Task Model
@@ -203,9 +214,9 @@ flowchart TD
 - **Reap** first (see §4). Then select claim candidates:
   `status = 'todo' OR (status='triage' AND assignee='zf-orchestrator')`,
   ordered by priority (`P0`→`P3`) then age.
-- **Capacity guards** (all must pass): global `max_active_tasks`, global
-  `max_concurrent_llm_workers` (counts running tasks + active scanners + in-flight LLM cron jobs),
-  per-board `max_concurrent_running` (default 1).
+- **Capacity guards** (all must pass): global `max_active_tasks` (all running tasks, including packaging),
+  global `max_concurrent_llm_workers` (agent-running stages, excluding deterministic packaging, + active scanners + in-flight LLM cron jobs),
+  per-board `max_concurrent_running` (default 1; all running tasks, including packaging).
 - **Pre-flight (git boards)**: `check_unresolved_conflicts_safe` + `pull_and_merge_main` —
   conflicts route the task to the conflict handler **before** any worker burns tokens
   (fail-closed: unverifiable state → skip claim).
@@ -484,6 +495,10 @@ flowchart LR
 
 Entry points: dashboard **Sync GitHub Issues**, `import-gh-issue` endpoint/CLI,
 and the queue watchdog's rate-limited auto-sync (15-min per-repo cooldown).
+Batch sync without a label scans the supported request labels
+`zerofactory`, `ai-investigate`, and `ai-triage`, deduplicating issues returned
+by more than one label; an explicit `--label` (CLI) or `label` query parameter
+(dashboard) limits the sync to that label.
 
 ### Outbound (PR → source issue reply, "Option B")
 
@@ -521,7 +536,9 @@ flowchart TD
 | `zero-factory-openwiki-update-{slug}` | daily | **no-agent** (0 tokens) | docs fresh across all repos / task already queued | exactly **1 job per board** runs `scripts/zf_openwiki_gate.py` to synchronize the OpenWiki workspace, evaluate repositories, and file targeted refresh tasks |
 
 Global LLM capacity (`max_concurrent_llm_workers`) counts scanners and cron LLM jobs together
-with running tasks — busy boards suppress scans automatically. Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.
+with agent-running stages, excluding deterministic packaging (`running` + `awaiting_pr`). Packaging
+still counts toward task WIP and per-board running limits; busy boards suppress scans automatically.
+Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.
 
 ---
 
@@ -562,6 +579,13 @@ the pinned test stack — the dispatcher's bare `python3` may lack project depen
 ---
 
 ## 14. Agentic Roles (summary)
+
+`hermes zerofactory sync-profiles` refreshes profile prompts and bundled skill
+copies; profile setup also synchronizes skills while initializing missing
+profiles. Fallback copies update only changed files and remove only tracked files
+deleted upstream while preserving user-added files. Setup status reports stale
+copies and broken skill links; existing live skill symlinks, including noncanonical
+links, are preserved as configured.
 
 | Profile | Does | Never does | Config highlights |
 |---|---|---|---|

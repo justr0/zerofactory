@@ -173,6 +173,7 @@ export function KanbanBoard(props) {
                                       onDragStart: (e) => handleDragStart(e, t),
                                       onClick: () => loadTaskDetails(t.id),
                                       onKeyDown: (e) => {
+                                        if (e.target !== e.currentTarget) return;
                                         if (e.key === "Enter" || e.key === " ") {
                                           e.preventDefault();
                                           loadTaskDetails(t.id);

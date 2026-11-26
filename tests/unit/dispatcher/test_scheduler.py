@@ -196,6 +196,134 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
         assert child["status"] in ("todo", "running")
 
 
+def test_run_dispatch_cycle_defers_todo_with_unfinished_blocking_parent(
+    tmp_path: Path,
+):
+    """Todo tasks wait for every blocking parent, but not relates_to parents."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running) VALUES ('b1', 'Board 1', 10)"
+        )
+        for task_id, status in (
+            ("parent-done", "done"),
+            ("parent-unfinished", "todo"),
+        ):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, ?, '', ?, 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+                (task_id, task_id, status, now, now),
+            )
+        for task_id in ("child-blocked", "child-relates"):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, ?, '', 'todo', 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+                (task_id, task_id, now, now),
+            )
+        conn.executemany(
+            "INSERT INTO task_links (parent_id, child_id, link_type, created_at) VALUES (?, ?, ?, ?)",
+            (
+                ("parent-done", "child-blocked", "blocks", now),
+                ("parent-unfinished", "child-blocked", "blocks", now),
+                ("parent-unfinished", "child-relates", "relates_to", now),
+            ),
+        )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+    import dispatcher
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(
+            os.environ,
+            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
+        ),
+    ):
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        statuses = dict(conn.execute("SELECT id, status FROM tasks"))
+    assert statuses["child-blocked"] == "todo"
+    assert statuses["child-relates"] == "running"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = 'parent-unfinished'")
+        conn.commit()
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(
+            os.environ,
+            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
+        ),
+    ):
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        child_status = conn.execute(
+            "SELECT status FROM tasks WHERE id = 'child-blocked'"
+        ).fetchone()[0]
+    assert child_status == "running"
+
+
+def test_run_dispatch_cycle_does_not_claim_task_if_blocker_is_added_during_setup(
+    tmp_path: Path,
+):
+    """A hard dependency added during setup prevents the atomic task claim."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        for task_id, status in (("parent", "blocked"), ("child", "todo")):
+            conn.execute(
+                "INSERT INTO tasks "
+                + _TASK_COLS
+                + " VALUES (?, ?, '', ?, 'zf-builder', 'P0', '{}', '[]', '', '', '', 'b1', '', '', ?, ?)",
+                (task_id, task_id, status, now, now),
+            )
+        conn.commit()
+
+    lock_file = tmp_path / "dispatcher.lock"
+    import dispatcher
+
+    def add_blocking_dependency_during_setup(*args, **kwargs):
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id, link_type, created_at) "
+                "VALUES ('parent', 'child', 'blocks', ?)",
+                (now,),
+            )
+        return str(tmp_path)
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": "1"}),
+        patch.object(
+            dispatcher,
+            "setup_worktree",
+            side_effect=add_blocking_dependency_during_setup,
+        ) as setup_worktree,
+        patch.object(dispatcher, "spawn_agent_worker") as spawn_agent_worker,
+    ):
+        res = run_dispatch_cycle(db_path)
+        assert res["ok"] is True
+        setup_worktree.assert_called_once()
+        spawn_agent_worker.assert_not_called()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        child_status = conn.execute(
+            "SELECT status FROM tasks WHERE id = 'child'"
+        ).fetchone()[0]
+    assert child_status == "todo"
+
+
 def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
     """Bad repo metadata does not prevent a later valid task from dispatching."""
     db_path = tmp_path / "test.db"
@@ -304,6 +432,152 @@ def test_packaging_recovery_rejects_same_board_cross_task_symlink(
         assert conn.execute(
             "SELECT workspace_path FROM tasks WHERE id = 'persisted-task'"
         ).fetchone()[0] == str(persisted_task_root / "repo")
+
+
+@pytest.mark.parametrize(
+    (
+        "running_metadata",
+        "max_active_tasks",
+        "active_scanners",
+        "expected_todo_status",
+    ),
+    [
+        ('{"awaiting_pr": true}', 5, {}, "running"),
+        ("{}", 5, {}, "todo"),
+        ('{"awaiting_pr": true}', 1, {}, "todo"),
+        ('{"awaiting_pr": true}', 5, {"other-board": 2345}, "todo"),
+    ],
+)
+def test_dispatch_capacity_excludes_packaging_but_preserves_wip_limit(
+    tmp_path: Path,
+    running_metadata: str,
+    max_active_tasks: int,
+    active_scanners: dict[str, int],
+    expected_todo_status: str,
+):
+    """Packaging frees LLM capacity but still counts toward the task WIP limit."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running) VALUES ('b1', 'Board 1', 5)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, priority, metadata, board_slug, updated_at, created_at) VALUES ('t-running', 'Existing', 'running', 'zf-builder', 'P0', ?, 'b1', ?, ?)",
+            (running_metadata, now, now),
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, priority, metadata, board_slug, updated_at, created_at) VALUES ('t-todo', 'Queued', 'todo', 'zf-builder', 'P0', '{}', 'b1', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('max_concurrent_llm_workers', '1')"
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('max_active_tasks', ?)",
+            (str(max_active_tasks),),
+        )
+        conn.commit()
+
+    import dispatcher
+
+    lock_file = tmp_path / "dispatcher.lock"
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.object(dispatcher, "reap_active_workers", return_value=0),
+        patch.object(dispatcher, "reap_active_scanners"),
+        patch.object(
+            dispatcher.scanner,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
+        patch.object(
+            dispatcher,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
+        patch.dict(
+            os.environ,
+            {"ZEROFACTORY_SKIP_WORKER_SPAWN": "1", "ZEROFACTORY_SKIP_GIT": "1"},
+        ),
+    ):
+        result = run_dispatch_cycle(db_path)
+
+    assert result["ok"] is True
+    with sqlite3.connect(str(db_path)) as conn:
+        todo = conn.execute("SELECT status FROM tasks WHERE id = 't-todo'").fetchone()
+    assert todo[0] == expected_todo_status
+
+
+@pytest.mark.parametrize(
+    ("running_metadata", "active_scanners", "expect_scan"),
+    [
+        ('{"awaiting_pr": true}', {}, True),
+        ("{}", {}, False),
+        ('{"awaiting_pr": true}', {"other-board": 2345}, False),
+    ],
+)
+def test_packaging_does_not_consume_idle_scanner_llm_capacity(
+    tmp_path: Path,
+    running_metadata: str,
+    active_scanners: dict[str, int],
+    expect_scan: bool,
+):
+    """Idle scanning remains eligible during packaging, but not during agent work."""
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    now = 1000
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name, max_concurrent_running) VALUES ('b1', 'Board 1', 5)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, priority, metadata, board_slug, updated_at, created_at) VALUES ('t-running', 'Existing', 'running', 'zf-builder', 'P0', ?, 'b1', ?, ?)",
+            (running_metadata, now, now),
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('max_concurrent_llm_workers', '1')"
+        )
+        conn.commit()
+
+    import dispatcher
+
+    lock_file = tmp_path / "dispatcher.lock"
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.object(dispatcher, "reap_active_workers", return_value=0),
+        patch.object(dispatcher, "reap_active_scanners"),
+        patch.object(
+            dispatcher.scanner,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
+        patch.object(
+            dispatcher,
+            "get_active_scanner_pids",
+            return_value=active_scanners,
+        ),
+        patch.object(
+            dispatcher,
+            "get_scanner_cron_config",
+            return_value={
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 2,
+            },
+        ),
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
+        patch.object(dispatcher, "spawn_board_scanner", return_value=12345) as spawn,
+        patch.object(dispatcher, "clean_stale_git_locks"),
+        patch.dict(dispatcher._last_idle_scan_times, {}, clear=True),
+        patch.dict(os.environ, {"ZEROFACTORY_SKIP_GIT": "1"}),
+    ):
+        result = run_dispatch_cycle(db_path)
+
+    assert result["ok"] is True
+    assert result["scans_triggered"] == int(expect_scan)
+    assert spawn.called is expect_scan
 
 
 def test_run_dispatch_cycle_reverts_task_when_worker_spawn_fails(tmp_path: Path):
@@ -1077,6 +1351,7 @@ def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):
             INSERT INTO boards (slug, name)
             VALUES 
                 ('idle-board-enabled', 'Enabled'),
+                ('idle-board-zero-cap', 'Zero cap'),
                 ('idle-board-disabled', 'Disabled')
             """
         )
@@ -1096,6 +1371,13 @@ def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):
                 "scan_on_idle": True,
                 "idle_scan_cooldown_minutes": 15,
                 "idle_scan_max_todo": 2,
+                "enabled": True,
+            }
+        if board_slug == "idle-board-zero-cap":
+            return {
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 0,
                 "enabled": True,
             }
         return {
@@ -1121,6 +1403,7 @@ def test_run_dispatch_cycle_per_board_idle_scanning(tmp_path: Path):
         assert res["ok"] is True
         # Enabled board triggers scanner, disabled board does not
         assert "idle-board-enabled" in spawned_slugs
+        assert "idle-board-zero-cap" not in spawned_slugs
         assert "idle-board-disabled" not in spawned_slugs
         assert res["scans_triggered"] == 1
 
@@ -1161,6 +1444,127 @@ def test_run_dispatch_cycle_skips_idle_scan_without_resolved_repo(tmp_path: Path
     assert result["ok"] is True
     assert result["scans_triggered"] == 0
     mock_spawn.assert_not_called()
+
+
+def test_run_dispatch_cycle_skips_idle_scan_when_todo_count_fails(
+    tmp_path: Path, caplog
+):
+    """Unknown Todo backlog fails closed and logs instead of spawning a scanner."""
+    from types import SimpleNamespace
+
+    import dispatcher
+    import dispatcher.scheduler as scheduler
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    lock_file = tmp_path / "dispatcher.lock"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name) VALUES ('count-failure-board', 'Count failure')"
+        )
+        conn.commit()
+
+    class FailingTodoCountCursor(sqlite3.Cursor):
+        def execute(self, sql, parameters=()):
+            if "COUNT(*) AS cnt FROM tasks WHERE status = 'todo'" in sql:
+                raise sqlite3.OperationalError("injected Todo count failure")
+            return super().execute(sql, parameters)
+
+    class FailingTodoCountConnection(sqlite3.Connection):
+        def cursor(self, factory=None):
+            return super().cursor(factory or FailingTodoCountCursor)
+
+    real_connect = sqlite3.connect
+
+    def failing_todo_count_connect(*args, **kwargs):
+        kwargs["factory"] = FailingTodoCountConnection
+        return real_connect(*args, **kwargs)
+
+    with (
+        patch.object(
+            scheduler,
+            "sqlite3",
+            SimpleNamespace(
+                connect=failing_todo_count_connect,
+                Row=sqlite3.Row,
+                OperationalError=sqlite3.OperationalError,
+            ),
+        ),
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.object(dispatcher, "reap_active_scanners"),
+        patch.object(dispatcher, "spawn_board_scanner") as mock_spawn,
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
+        patch.object(dispatcher, "clean_stale_git_locks"),
+        patch.object(
+            dispatcher,
+            "get_scanner_cron_config",
+            return_value={
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 2,
+                "enabled": True,
+            },
+        ),
+    ):
+        result = run_dispatch_cycle(db_path)
+
+    assert result["ok"] is True
+    assert result["scans_triggered"] == 0
+    mock_spawn.assert_not_called()
+    assert "Failed to query Todo counts for idle scanner check" in caplog.text
+    assert "injected Todo count failure" in caplog.text
+
+
+def test_run_dispatch_cycle_skips_idle_scan_at_positive_todo_cap(tmp_path: Path):
+    """A successfully counted Todo backlog at a positive cap suppresses scanning."""
+    import dispatcher
+
+    db_path = tmp_path / "test.db"
+    _init_test_db(db_path)
+    lock_file = tmp_path / "dispatcher.lock"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO boards (slug, name) VALUES ('at-cap-board', 'At cap')"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, metadata, board_slug) "
+            "VALUES ('todo-at-cap', 'Todo at cap', 'todo', 'zf-reviewer', ?, 'at-cap-board')",
+            (json.dumps({"reviewer_orphan_recovered": True}),),
+        )
+        conn.commit()
+
+    with (
+        patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
+        patch.object(dispatcher, "reap_active_scanners"),
+        patch.object(dispatcher, "spawn_board_scanner") as mock_spawn,
+        patch.object(dispatcher, "spawn_agent_worker") as mock_spawn_worker,
+        patch.object(dispatcher, "resolve_task_repo_path", return_value=tmp_path),
+        patch.object(dispatcher, "clean_stale_git_locks"),
+        patch.object(
+            dispatcher,
+            "get_scanner_cron_config",
+            return_value={
+                "scan_on_idle": True,
+                "idle_scan_cooldown_minutes": 15,
+                "idle_scan_max_todo": 1,
+                "enabled": True,
+            },
+        ),
+    ):
+        result = run_dispatch_cycle(db_path)
+
+    assert result["ok"] is True
+    assert result["scans_triggered"] == 0
+    mock_spawn.assert_not_called()
+    mock_spawn_worker.assert_not_called()
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, assignee, metadata FROM tasks WHERE id = 'todo-at-cap'"
+        ).fetchone()
+    assert row[0:2] == ("todo", "zf-reviewer")
+    assert json.loads(row[2])["reviewer_orphan_recovered"] is True
 
 
 def test_run_dispatch_cycle_relates_to_does_not_block_task(tmp_path: Path):
