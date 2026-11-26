@@ -1,6 +1,7 @@
 """Unit tests for dispatcher/config.py step logging: paired STEP markers and rate-limited gate states."""
 
 import logging
+import time
 
 from dispatcher.config import (
     StepTracker,
@@ -110,7 +111,7 @@ def test_log_step_state_relogs_after_interval(caplog, monkeypatch):
         # simulate interval elapsed
         key = "package:t-3"
         sig, _ = _step_state_last[key]
-        monkeypatch.setitem(_step_state_last, key, (sig, 0.0))
+        monkeypatch.setitem(_step_state_last, key, (sig, time.monotonic() - 901))
         log_step_state("package", "t-3", "skip", "no candidate")
 
     assert len([m for m in _messages(caplog) if m.startswith("STEP package |")]) == 2
