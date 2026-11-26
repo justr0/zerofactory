@@ -247,6 +247,8 @@ def ensure_zf_profiles(
                             dest_skill.symlink_to(skill_dir, target_is_directory=True)
                         except Exception:
                             shutil.copytree(skill_dir, dest_skill, dirs_exist_ok=True)
+                    elif dest_skill.is_dir() and not dest_skill.is_symlink():
+                        shutil.copytree(skill_dir, dest_skill, dirs_exist_ok=True)
 
         # 5. Ensure profile's plugins/ directory and symlinks exist
         prof_plugins = target_dir / "plugins"
@@ -772,7 +774,9 @@ def check_gh_auth_status(*, use_cache: bool = True) -> bool:
 def check_setup_status(*, use_cache: bool = True) -> dict[str, Any]:
     """Read-only check of Zero Factory profile readiness, template sync, and GitHub auth status."""
     profiles_dir = get_hermes_profiles_root()
-    templates_dir = get_plugin_root() / "templates"
+    plugin_root = get_plugin_root()
+    templates_dir = plugin_root / "templates"
+    skills_dir = plugin_root / "skills"
     missing_profiles: list[str] = []
     outdated_profiles: list[str] = []
     for role in ZF_PROFILES:
@@ -785,15 +789,48 @@ def check_setup_status(*, use_cache: bool = True) -> dict[str, Any]:
             continue
         soul_src = templates_dir / role / "SOUL.md"
         soul_dst = prof_dir / "SOUL.md"
+        profile_outdated = False
         if soul_src.is_file():
             try:
                 if (
                     not soul_dst.is_file()
                     or soul_src.read_bytes() != soul_dst.read_bytes()
                 ):
-                    outdated_profiles.append(role)
+                    profile_outdated = True
             except OSError:
-                outdated_profiles.append(role)
+                profile_outdated = True
+
+        for skill_src in skills_dir.iterdir() if skills_dir.is_dir() else ():
+            if not skill_src.is_dir() or not (skill_src / "SKILL.md").is_file():
+                continue
+            if skill_src.name.startswith("zf-") and not skill_src.name.startswith(
+                f"{role}-"
+            ):
+                continue
+            skill_dst = prof_dir / "skills" / skill_src.name
+            try:
+                if skill_dst.is_symlink():
+                    if skill_dst.resolve() != skill_src.resolve():
+                        profile_outdated = True
+                elif not skill_dst.is_dir():
+                    profile_outdated = True
+                else:
+                    for source_file in skill_src.rglob("*"):
+                        if not source_file.is_file():
+                            continue
+                        destination_file = skill_dst / source_file.relative_to(
+                            skill_src
+                        )
+                        if (
+                            not destination_file.is_file()
+                            or source_file.read_bytes() != destination_file.read_bytes()
+                        ):
+                            profile_outdated = True
+                            break
+            except OSError:
+                profile_outdated = True
+        if profile_outdated:
+            outdated_profiles.append(role)
     plugin_update = check_plugin_update(use_cache=use_cache)
     return {
         "profiles_ready": len(missing_profiles) == 0,

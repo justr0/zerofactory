@@ -30,6 +30,70 @@ class TestProfileManagerUnit(unittest.TestCase):
                     self.assertTrue((p_dir / "SOUL.md").exists())
                     self.assertTrue((p_dir / "config.yaml").exists())
 
+    def test_fallback_skill_copies_resync_and_report_stale_status(self):
+        """Fallback skill copies refresh on setup and stale copies fail sync status."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_home = root / "hermes"
+            plugin_root = root / "plugin"
+            skill_source = plugin_root / "skills" / "zf-builder-example"
+            skill_source.mkdir(parents=True)
+            (skill_source / "SKILL.md").write_text("original skill\n", encoding="utf-8")
+            for role in PM.ZF_PROFILES:
+                template_dir = plugin_root / "templates" / role
+                template_dir.mkdir(parents=True)
+                (template_dir / "SOUL.md").write_text(f"{role}\n", encoding="utf-8")
+                (template_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+            original_symlink_to = Path.symlink_to
+
+            def reject_skill_symlinks(
+                path: Path, target: str | Path, target_is_directory: bool = False
+            ) -> None:
+                if path.parent.name == "skills":
+                    raise OSError("symlinks unavailable for profile skills")
+                original_symlink_to(
+                    path, target, target_is_directory=target_is_directory
+                )
+
+            profile_skill = (
+                fake_home
+                / "profiles"
+                / "zf-builder"
+                / "skills"
+                / "zf-builder-example"
+                / "SKILL.md"
+            )
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+                patch("profile_manager.check_gh_auth_status", return_value=True),
+                patch("profile_manager.check_plugin_update", return_value={}),
+                patch.object(
+                    Path, "symlink_to", autospec=True, side_effect=reject_skill_symlinks
+                ),
+            ):
+                PM.ensure_zf_profiles()
+                self.assertEqual(
+                    profile_skill.read_text(encoding="utf-8"), "original skill\n"
+                )
+                self.assertFalse(profile_skill.parent.is_symlink())
+
+                (skill_source / "SKILL.md").write_text(
+                    "updated skill\n", encoding="utf-8"
+                )
+                status_stale = PM.check_setup_status(use_cache=False)
+                self.assertFalse(status_stale["profiles_in_sync"])
+                self.assertEqual(status_stale["outdated_profiles"], ["zf-builder"])
+
+                PM.ensure_zf_profiles()
+                self.assertEqual(
+                    profile_skill.read_text(encoding="utf-8"), "updated skill\n"
+                )
+                status_synced = PM.check_setup_status(use_cache=False)
+                self.assertTrue(status_synced["profiles_in_sync"])
+                self.assertEqual(status_synced["outdated_profiles"], [])
+
     def test_ensure_plugin_symlinks(self):
         """Creates symlink to zerofactory only in zf-* profiles (never root)."""
         with tempfile.TemporaryDirectory() as td:
