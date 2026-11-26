@@ -32,7 +32,10 @@ def _init_tasks_db(conn: sqlite3.Connection):
             workspace_kind TEXT,
             workspace_path TEXT,
             branch_name TEXT,
-            updated_at INTEGER
+            updated_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )

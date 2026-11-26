@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -38,6 +37,11 @@ except (ImportError, ValueError):
         from dispatcher import transition_task  # type: ignore
     except (ImportError, ValueError):
         transition_task = None
+
+try:
+    from ...task_lifecycle import clear_task_block, record_task_block
+except (ImportError, ValueError):
+    from task_lifecycle import clear_task_block, record_task_block
 
 try:
     from ..db import (
@@ -741,30 +745,16 @@ def stop_task_session(task_id: str, to_status: str | None = "blocked"):
                 comment="⏹ AI session manually stopped by user.",
             )
         else:
-            try:
-                cursor.execute(
-                    "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, blocked_reason = ?, updated_at = ? WHERE id = ?",
-                    (
-                        target_status,
-                        assignee,
-                        json.dumps(meta),
-                        "AI session stopped by user"
-                        if target_status == "blocked"
-                        else None,
-                        now,
-                        task_id,
-                    ),
-                )
-            except sqlite3.OperationalError:
-                cursor.execute(
-                    "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                    (target_status, assignee, json.dumps(meta), now, task_id),
-                )
+            cursor.execute(
+                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
+                (target_status, assignee, json.dumps(meta), now, task_id),
+            )
             if target_status == "blocked":
-                cursor.execute(
-                    "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'user', 'blocked', ?, ?)",
-                    (task_id, "AI session stopped by user", now),
+                record_task_block(
+                    conn, task_id, "user", "AI session stopped by user", now
                 )
+            else:
+                clear_task_block(conn, task_id)
             cursor.execute(
                 "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'user', 'session_aborted', 'AI session stopped by user', ?)",
                 (task_id, now),
@@ -1027,16 +1017,10 @@ def move_task(task_id: str, req: TaskMove):
             # Serialize the ownership check with dispatcher claims/recovery so
             # a stale report cannot pass on a snapshot from before reassignment.
             conn.execute("BEGIN IMMEDIATE")
-        try:
-            cursor.execute(
-                "SELECT status, assignee, metadata, board_slug, title, pr_url, blocked_reason FROM tasks WHERE id = ?",
-                (task_id,),
-            )
-        except sqlite3.OperationalError:
-            cursor.execute(
-                "SELECT status, assignee, metadata, board_slug, title, pr_url FROM tasks WHERE id = ?",
-                (task_id,),
-            )
+        cursor.execute(
+            "SELECT status, assignee, metadata, board_slug, title, pr_url, blocked_reason FROM tasks WHERE id = ?",
+            (task_id,),
+        )
         curr = cursor.fetchone()
         if not curr:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
@@ -1293,33 +1277,16 @@ def move_task(task_id: str, req: TaskMove):
                     if new_status == "blocked" and prev_status == "blocked"
                     else None
                 )
-                try:
-                    cursor.execute(
-                        "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, blocked_reason = ?, updated_at = ? WHERE id = ?",
-                        (
-                            new_status,
-                            resolved_assignee,
-                            json.dumps(meta),
-                            fallback_blocked_reason,
-                            now,
-                            task_id,
-                        ),
-                    )
-                except sqlite3.OperationalError:
-                    cursor.execute(
-                        "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                        (new_status, resolved_assignee, json.dumps(meta), now, task_id),
-                    )
+                cursor.execute(
+                    "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
+                    (new_status, resolved_assignee, json.dumps(meta), now, task_id),
+                )
                 if new_status == "blocked" and (prev_status != "blocked" or req.reason):
-                    cursor.execute(
-                        "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, ?, 'blocked', ?, ?)",
-                        (
-                            task_id,
-                            req.actor or "user",
-                            fallback_blocked_reason or "No reason provided",
-                            now,
-                        ),
+                    record_task_block(
+                        conn, task_id, req.actor or "user", fallback_blocked_reason, now
                     )
+                elif new_status != "blocked":
+                    clear_task_block(conn, task_id)
             if prev_status != req.status:
                 move_actor = req.actor or "user"
                 move_detail = (
@@ -1600,6 +1567,8 @@ def triage_task(
             )
             msg = "Task queued for Grill-with-Docs triage by zf-orchestrator."
 
+        meta.pop("blocked_reason_type", None)
+
         if transition_task:
             transition_task(
                 conn,
@@ -1611,9 +1580,10 @@ def triage_task(
             )
         else:
             cursor.execute(
-                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, blocked_reason = NULL, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
                 (target_status, assignee, json.dumps(meta), now, task_id),
             )
+            clear_task_block(conn, task_id)
         log_activity(
             conn,
             task_id,
@@ -1802,11 +1772,14 @@ def split_task(task_id: str, req: TaskSplitRequest | None = None):
         meta["decomposed_into"] = child_ids
         meta["decomposed_at"] = now
         meta["target_repos"] = target_repos
+        meta.pop("blocked_reason", None)
+        meta.pop("blocked_reason_type", None)
 
         cursor.execute(
             "UPDATE tasks SET status = 'done', assignee = 'zf-orchestrator', metadata = ?, updated_at = ? WHERE id = ?",
             (json.dumps(meta), now, task_id),
         )
+        clear_task_block(conn, task_id)
 
         log_activity(
             conn,
@@ -1906,6 +1879,7 @@ def reply_interview(task_id: str, req: InterviewReply):
                 "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
                 (target_status, "zf-orchestrator", json.dumps(meta), now, task_id),
             )
+            clear_task_block(conn, task_id)
         conn.commit()
 
         if (
@@ -2035,9 +2009,10 @@ def recover_task(task_id: str, req: TaskRecoverRequest | None = None):
             )
         else:
             cursor.execute(
-                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, blocked_reason = NULL, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
                 (target_status, assignee, json.dumps(meta), now, task_id),
             )
+            clear_task_block(conn, task_id)
         conn.commit()
 
         if not os.environ.get("ZEROFACTORY_SKIP_DISPATCHER") and not os.environ.get(
@@ -2147,9 +2122,10 @@ def report_task_bug(task_id: str, req: TaskReportBugRequest):
                 )
             else:
                 cursor.execute(
-                    "UPDATE tasks SET status = 'blocked', assignee = 'human', blocked_reason = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                    (meta["blocked_reason"], json.dumps(meta), now, task_id),
+                    "UPDATE tasks SET status = 'blocked', assignee = 'human', metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), now, task_id),
                 )
+                record_task_block(conn, task_id, actor, meta["blocked_reason"], now)
             log_activity(
                 conn,
                 task_id,
@@ -2230,9 +2206,10 @@ def report_task_bug(task_id: str, req: TaskReportBugRequest):
                 )
             else:
                 cursor.execute(
-                    "UPDATE tasks SET status = 'blocked', assignee = 'human', blocked_reason = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                    (meta["blocked_reason"], json.dumps(meta), now, task_id),
+                    "UPDATE tasks SET status = 'blocked', assignee = 'human', metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), now, task_id),
                 )
+                record_task_block(conn, task_id, actor, meta["blocked_reason"], now)
             conn.commit()
             return {
                 "ok": True,
@@ -2381,9 +2358,10 @@ def report_task_bug(task_id: str, req: TaskReportBugRequest):
                 )
             else:
                 cursor.execute(
-                    "UPDATE tasks SET status = 'blocked', assignee = 'human', blocked_reason = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                    (meta["blocked_reason"], json.dumps(meta), now, task_id),
+                    "UPDATE tasks SET status = 'blocked', assignee = 'human', metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), now, task_id),
                 )
+                record_task_block(conn, task_id, actor, meta["blocked_reason"], now)
             conn.commit()
             return {
                 "ok": True,
@@ -2418,9 +2396,10 @@ def report_task_bug(task_id: str, req: TaskReportBugRequest):
             )
         else:
             cursor.execute(
-                "UPDATE tasks SET status = 'blocked', assignee = 'human', blocked_reason = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                (meta["blocked_reason"], json.dumps(meta), now, task_id),
+                "UPDATE tasks SET status = 'blocked', assignee = 'human', metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(meta), now, task_id),
             )
+            record_task_block(conn, task_id, actor, meta["blocked_reason"], now)
         log_activity(
             conn,
             task_id,
@@ -2483,10 +2462,13 @@ def approve_task(task_id: str, req: TaskApproveRequest | None = None):
         else:
             target_status = "todo"
             assignee = "zf-builder"
+            meta.pop("blocked_reason", None)
+            meta.pop("blocked_reason_type", None)
             cursor.execute(
                 "UPDATE tasks SET status = ?, assignee = ?, metadata = ?, updated_at = ? WHERE id = ?",
                 (target_status, assignee, json.dumps(meta), now, task_id),
             )
+            clear_task_block(conn, task_id)
             comment_body = (
                 f"✅ **[Specification Approved]** Specification approved by `{actor}`. "
                 "Task promoted to **Todo** and assigned to `zf-builder` for implementation."
@@ -2579,9 +2561,10 @@ def reject_task(task_id: str, req: TaskRejectRequest):
                 )
             else:
                 cursor.execute(
-                    "UPDATE tasks SET status = 'blocked', assignee = 'human', blocked_reason = ?, metadata = ?, updated_at = ? WHERE id = ?",
-                    (meta["blocked_reason"], json.dumps(meta), now, task_id),
+                    "UPDATE tasks SET status = 'blocked', assignee = 'human', metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), now, task_id),
                 )
+                record_task_block(conn, task_id, actor, meta["blocked_reason"], now)
             log_activity(
                 conn,
                 task_id,
@@ -2591,6 +2574,8 @@ def reject_task(task_id: str, req: TaskRejectRequest):
             )
         else:
             meta["triage_phase"] = "elephant_drafting"
+            meta.pop("blocked_reason", None)
+            meta.pop("blocked_reason_type", None)
             if transition_task:
                 transition_task(
                     conn,
@@ -2602,9 +2587,10 @@ def reject_task(task_id: str, req: TaskRejectRequest):
                 )
             else:
                 cursor.execute(
-                    "UPDATE tasks SET status = 'triage', assignee = 'zf-orchestrator', metadata = ?, blocked_reason = NULL, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET status = 'triage', assignee = 'zf-orchestrator', metadata = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(meta), now, task_id),
                 )
+                clear_task_block(conn, task_id)
             log_activity(
                 conn,
                 task_id,

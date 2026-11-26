@@ -141,7 +141,10 @@ def _init_db(db_path: Path):
                 tenant TEXT,
                 pr_url TEXT,
                 updated_at INTEGER,
-                created_at INTEGER
+                created_at INTEGER,
+                worker_pid INTEGER DEFAULT NULL,
+                started_at INTEGER DEFAULT NULL,
+                blocked_reason TEXT DEFAULT NULL
             )
             """
         )
@@ -206,8 +209,8 @@ def _init_db(db_path: Path):
 def _seed(db_path: Path, task_id: str, meta: dict, *, assignee="human", workspace=None):
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute(
-            "INSERT INTO tasks (id, title, status, assignee, pr_url, metadata, workspace_path, branch_name) "
-            "VALUES (?, ?, 'blocked', ?, ?, ?, ?, ?)",
+            "INSERT INTO tasks (id, title, status, assignee, pr_url, metadata, workspace_path, branch_name, blocked_reason) "
+            "VALUES (?, ?, 'blocked', ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 "feat: arbitrated",
@@ -216,6 +219,7 @@ def _seed(db_path: Path, task_id: str, meta: dict, *, assignee="human", workspac
                 json.dumps(meta),
                 workspace,
                 f"task/{task_id}",
+                meta.get("blocked_reason"),
             ),
         )
         conn.commit()
@@ -233,7 +237,7 @@ def _row(db_path: Path, task_id: str):
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
-            "SELECT status, assignee, metadata, workspace_path FROM tasks WHERE id = ?",
+            "SELECT status, assignee, metadata, workspace_path, blocked_reason FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
 
@@ -1318,6 +1322,36 @@ class TestArbitrationCycle:
         assert meta["review_round"] == 2
         return meta
 
+    @pytest.mark.parametrize("pr_state", ["MERGED", "CLOSED"])
+    def test_todo_reviewer_pr_terminal_state_finishes_task(self, tmp_path, pr_state):
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = f"t-todo-{pr_state.lower()}"
+        self._seed_parked_with_request(db_path, task_id)
+        meta = _meta(db_path, task_id)
+        meta["reviewer_orphan_recovered"] = True
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo', assignee = 'zf-reviewer', metadata = ? WHERE id = ?",
+                (json.dumps(meta), task_id),
+            )
+
+        self._run(db_path, [], pr_state=pr_state)
+
+        row = _row(db_path, task_id)
+        assert row["status"] == "done"
+        assert row["blocked_reason"] is None
+        assert "blocked_reason" not in json.loads(row["metadata"])
+        expected_action = "merged" if pr_state == "MERGED" else "closed"
+        with sqlite3.connect(str(db_path)) as conn:
+            actions = [
+                item[0]
+                for item in conn.execute(
+                    "SELECT action FROM task_activity WHERE task_id = ?", (task_id,)
+                )
+            ]
+        assert expected_action in actions
+
     # -- request (findings 4, 5) -------------------------------------------------------
 
     def test_cap_posts_one_request_and_parks(self, tmp_path: Path):
@@ -1325,6 +1359,14 @@ class TestArbitrationCycle:
         _init_db(db_path)
         task_id = "t-cap-arb"
         self._seed_reviewer_at_round_1(db_path, task_id)
+        old_reason = "Worker process failed 3 times (limit 3)"
+        with sqlite3.connect(str(db_path)) as conn:
+            meta = _meta(db_path, task_id)
+            meta["blocked_reason"] = old_reason
+            conn.execute(
+                "UPDATE tasks SET blocked_reason = ?, metadata = ? WHERE id = ?",
+                (old_reason, json.dumps(meta), task_id),
+            )
 
         result = self._run(db_path, [_ROUND_2], conversation=[], cycles=3)
 
@@ -1334,7 +1376,10 @@ class TestArbitrationCycle:
         assert meta["review_cap_reached"] is True
         assert meta["review_round"] == 2
         assert "Review cap reached (2 rounds on commit" in meta["blocked_reason"]
+        assert row["blocked_reason"] == meta["blocked_reason"]
         assert ARBITER in meta["blocked_reason"]
+        (blocked_activity,) = _activities(db_path, task_id, "blocked")
+        assert blocked_activity[0] == row["blocked_reason"]
         state = meta[arb.STATE_KEY]
         assert state["status"] == arb.STATUS_REQUESTED
         assert state["arbiter"] == ARBITER
@@ -1461,6 +1506,7 @@ class TestArbitrationCycle:
 
         row = _row(db_path, task_id)
         assert (row["status"], row["assignee"]) == ("todo", "zf-builder")
+        assert row["blocked_reason"] is None
         meta = json.loads(row["metadata"])
         # Same reset a human "recover" performs, plus a fresh review budget.
         for key in (
@@ -1598,6 +1644,7 @@ class TestArbitrationCycle:
 
         row = _row(db_path, task_id)
         assert (row["status"], row["assignee"]) == ("todo", "zf-builder")
+        assert row["blocked_reason"] is None
         meta = json.loads(row["metadata"])
         assert meta["review_round"] == 1
         assert meta[arb.STATE_KEY]["status"] == arb.STATUS_FIX_REQUESTED

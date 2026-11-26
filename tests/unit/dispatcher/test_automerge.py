@@ -213,7 +213,10 @@ def test_scheduler_automerge_on_approval(tmp_path, monkeypatch):
             tags TEXT,
             workspace_path TEXT,
             metadata TEXT,
-            updated_at INTEGER
+            updated_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )"""
     )
     conn.execute(
@@ -229,7 +232,7 @@ def test_scheduler_automerge_on_approval(tmp_path, monkeypatch):
     conn.execute("INSERT INTO boards VALUES ('test-board', 1)")
     conn.execute("INSERT INTO board_repositories VALUES ('test-board', 'repo-1', '[]')")
     conn.execute(
-        """INSERT INTO tasks VALUES (
+        """INSERT INTO tasks (id, title, assignee, status, board_slug, repo_alias, pr_url, tags, workspace_path, metadata, updated_at) VALUES (
             'task-100', 'Auto-merge feature', 'zf-reviewer', 'blocked', 'test-board',
             'repo-1', 'https://github.com/org/repo/pull/100', '[]', '/tmp/ws/100',
             '{"blocked_reason_type": "approved"}', 1000
@@ -318,7 +321,10 @@ def test_scheduler_automerge_on_approval_with_task_tags_override(tmp_path, monke
             tags TEXT,
             workspace_path TEXT,
             metadata TEXT,
-            updated_at INTEGER
+            updated_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )"""
     )
     conn.execute(
@@ -336,7 +342,7 @@ def test_scheduler_automerge_on_approval_with_task_tags_override(tmp_path, monke
     conn.execute("INSERT INTO board_repositories VALUES ('test-board', 'repo-1', '[]')")
     # Task has explicit 'automerge' tag
     conn.execute(
-        """INSERT INTO tasks VALUES (
+        """INSERT INTO tasks (id, title, description, assignee, status, board_slug, repo_alias, pr_url, tags, workspace_path, metadata, updated_at) VALUES (
             'task-101', 'Docs sync task', 'Documentation sync', 'zf-reviewer', 'blocked', 'test-board',
             'repo-1', 'https://github.com/org/repo/pull/101', '["automerge", "cat:documentation"]', '/tmp/ws/101',
             '{"blocked_reason_type": "approved"}', 1000
@@ -423,7 +429,10 @@ def test_scheduler_automerge_on_approval_fallback_tags_query(tmp_path, monkeypat
             tags TEXT,
             workspace_path TEXT,
             metadata TEXT,
-            updated_at INTEGER
+            updated_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )"""
     )
     conn.execute(
@@ -439,7 +448,7 @@ def test_scheduler_automerge_on_approval_fallback_tags_query(tmp_path, monkeypat
     conn.execute("INSERT INTO boards VALUES ('test-board', 0)")
     conn.execute("INSERT INTO board_repositories VALUES ('test-board', 'repo-1', '[]')")
     conn.execute(
-        """INSERT INTO tasks VALUES (
+        """INSERT INTO tasks (id, title, assignee, status, board_slug, repo_alias, pr_url, tags, workspace_path, metadata, updated_at) VALUES (
             'task-102', 'Feature task', 'zf-reviewer', 'blocked', 'test-board',
             'repo-1', 'https://github.com/org/repo/pull/102', '["automerge"]', '/tmp/ws/102',
             '{"blocked_reason_type": "approved"}', 1000

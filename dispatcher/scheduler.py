@@ -1567,29 +1567,27 @@ def _poll_arbitration_park(
     def _hold() -> bool:
         task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
         if dirty:
-            current_reason = task_meta.get("blocked_reason")
-            try:
-                cursor.execute(
-                    "SELECT blocked_reason FROM tasks WHERE id = ?", (task_id,)
-                )
-                current_reason = cursor.fetchone()[0]
-            except sqlite3.OperationalError:
-                pass
+            cursor.execute(
+                "SELECT status, blocked_reason FROM tasks WHERE id = ?", (task_id,)
+            )
+            current_status, current_reason = cursor.fetchone()
             new_reason = task_meta.get("blocked_reason")
-            if isinstance(new_reason, str) and new_reason != current_reason:
+            if current_status != "blocked" or (
+                isinstance(new_reason, str) and new_reason != current_reason
+            ):
                 transition_task(
                     cursor.connection,
                     task_id,
                     "blocked",
                     target_assignee="human",
-                    blocked_reason=new_reason,
+                    blocked_reason=new_reason if isinstance(new_reason, str) else None,
                     metadata_patch=task_meta,
                     actor="dispatcher",
                 )
             else:
                 # Parked stays parked: never let a stray status/assignee move it on.
                 cursor.execute(
-                    "UPDATE tasks SET assignee = 'human', status = 'blocked', metadata = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE tasks SET assignee = 'human', metadata = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(task_meta), now, task_id),
                 )
         return True
@@ -1698,9 +1696,8 @@ def _poll_arbitration_park(
         state["expired_at"] = int(now)
         task_meta[_cap_arb.STATE_KEY] = state
         task_meta["blocked_reason"] = (
-            f"{(task_meta.get('blocked_reason') or 'Review cap reached').rstrip('. ')}; "
-            f"arbiter did not answer within {cfg['timeout_hours']}h; "
-            "human decision required."
+            f"Review cap reached; arbiter did not answer within "
+            f"{cfg['timeout_hours']}h; human decision required."
         )
         task_meta["blocked_reason_type"] = "human-gate"
         _activity(
@@ -1809,6 +1806,7 @@ def _poll_pr_and_route_review(
                 "done",
                 metadata_patch=meta,
                 actor="dispatcher",
+                allow_todo_to_done=True,
             )
             cursor.execute(
                 "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
@@ -1877,6 +1875,7 @@ def _poll_pr_and_route_review(
                 "done",
                 metadata_patch=meta,
                 actor="dispatcher",
+                allow_todo_to_done=True,
             )
             cursor.execute(
                 "UPDATE tasks SET workspace_path = NULL, updated_at = ? WHERE id = ?",
@@ -3074,7 +3073,7 @@ def _package_and_open_pr(
         except Exception:
             pass
 
-        for key in (
+        cleared_metadata_keys = (
             "worker_pid",
             "session_id",
             "started_at",
@@ -3084,9 +3083,13 @@ def _package_and_open_pr(
             "blocked_reason_type",
             "permanently_blocked",
             "awaiting_pr",
+            "conflict_retries",
+            "precommit_retries",
+            "last_precommit_error",
             "packaging_retries",
             "last_packaging_error",
-        ):
+        )
+        for key in cleared_metadata_keys:
             meta.pop(key, None)
 
         # PR author is tracked in metadata; titles carry
@@ -3116,8 +3119,12 @@ def _package_and_open_pr(
             task_id,
             "todo",
             target_assignee="zf-reviewer",
-            metadata_patch=meta,
+            metadata_patch={
+                **meta,
+                **{key: None for key in cleared_metadata_keys},
+            },
             actor="dispatcher",
+            commit=False,
         )
         cursor.execute(
             "UPDATE tasks SET pr_url = ?, updated_at = ? WHERE id = ?",

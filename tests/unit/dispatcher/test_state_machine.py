@@ -122,6 +122,34 @@ def test_transition_invalid_raises(db_conn):
         transition_task(db_conn, "t2", "done")
 
 
+def test_transition_commit_false_keeps_writes_in_caller_transaction(db_conn):
+    db_conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, created_at, updated_at) "
+        "VALUES ('t-uncommitted', 'Caller transaction', 'todo', 'zf-builder', 1000, 1000)"
+    )
+    db_conn.commit()
+
+    transition_task(
+        db_conn, "t-uncommitted", "running", actor="dispatcher", commit=False
+    )
+    assert db_conn.in_transaction
+    assert (
+        db_conn.execute(
+            "SELECT status FROM tasks WHERE id = 't-uncommitted'"
+        ).fetchone()["status"]
+        == "running"
+    )
+    db_conn.rollback()
+
+    row = db_conn.execute(
+        "SELECT status FROM tasks WHERE id = 't-uncommitted'"
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert not db_conn.execute(
+        "SELECT 1 FROM task_activity WHERE task_id = 't-uncommitted'"
+    ).fetchone()
+
+
 def test_recovered_reviewer_marker_clears_on_ownership_change(db_conn):
     db_conn.execute(
         "INSERT INTO tasks (id, title, status, assignee, metadata, created_at, updated_at) VALUES ('t-reviewer', 'Recovered reviewer', 'todo', 'zf-reviewer', ?, 1000, 1000)",

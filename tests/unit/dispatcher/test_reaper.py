@@ -131,7 +131,10 @@ def test_reap_active_workers_transitions_stuck_task(tmp_path: Path):
             assignee TEXT,
             metadata TEXT,
             updated_at INTEGER,
-            created_at INTEGER
+            created_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )
@@ -171,7 +174,7 @@ def test_reap_active_workers_transitions_stuck_task(tmp_path: Path):
         }
     )
     conn.execute(
-        "INSERT INTO tasks VALUES ('t-stuck', 'Stuck Task', 'running', 'zf-builder', ?, ?, ?)",
+        "INSERT INTO tasks (id, title, status, assignee, metadata, updated_at, created_at) VALUES ('t-stuck', 'Stuck Task', 'running', 'zf-builder', ?, ?, ?)",
         (meta, started_at, started_at),
     )
     conn.commit()
@@ -193,11 +196,12 @@ def test_reap_active_workers_transitions_stuck_task(tmp_path: Path):
     mock_term.assert_called_once_with(mock_proc, 1111, task_id="t-stuck")
 
     row = conn.execute(
-        "SELECT status, metadata FROM tasks WHERE id = 't-stuck'"
+        "SELECT status, blocked_reason, metadata FROM tasks WHERE id = 't-stuck'"
     ).fetchone()
     assert row["status"] == "todo"
+    assert row["blocked_reason"] is None
     saved_meta = json.loads(row["metadata"])
-    assert "blocked_reason" in saved_meta
+    assert "blocked_reason" not in saved_meta
     assert saved_meta["worker_failure_retries"] == 1
     assert not saved_meta.get("permanently_blocked")
 
@@ -221,7 +225,10 @@ def test_reap_active_workers_parks_exhausted_stuck_task(tmp_path: Path):
             assignee TEXT,
             metadata TEXT,
             updated_at INTEGER,
-            created_at INTEGER
+            created_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )
@@ -262,7 +269,7 @@ def test_reap_active_workers_parks_exhausted_stuck_task(tmp_path: Path):
         }
     )
     conn.execute(
-        "INSERT INTO tasks VALUES ('t-stuck2', 'Stuck Task', 'running', 'zf-builder', ?, ?, ?)",
+        "INSERT INTO tasks (id, title, status, assignee, metadata, updated_at, created_at) VALUES ('t-stuck2', 'Stuck Task', 'running', 'zf-builder', ?, ?, ?)",
         (meta, started_at, started_at),
     )
     conn.commit()
@@ -340,7 +347,10 @@ def _spawn_grace_conn(task_id: str, meta: dict, now: int) -> sqlite3.Connection:
             assignee TEXT,
             metadata TEXT,
             updated_at INTEGER,
-            created_at INTEGER
+            created_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )
@@ -368,7 +378,7 @@ def _spawn_grace_conn(task_id: str, meta: dict, now: int) -> sqlite3.Connection:
         """
     )
     conn.execute(
-        "INSERT INTO tasks VALUES (?, 'Spawning Task', 'running', 'zf-builder', ?, ?, ?)",
+        "INSERT INTO tasks (id, title, status, assignee, metadata, updated_at, created_at) VALUES (?, 'Spawning Task', 'running', 'zf-builder', ?, ?, ?)",
         (task_id, json.dumps(meta), now, now),
     )
     conn.commit()
@@ -682,7 +692,10 @@ def test_reap_active_workers_exit0_clears_worker_pid(tmp_path: Path):
             assignee TEXT,
             metadata TEXT,
             updated_at INTEGER,
-            created_at INTEGER
+            created_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )
@@ -726,7 +739,7 @@ def test_reap_active_workers_exit0_clears_worker_pid(tmp_path: Path):
         }
     )
     conn.execute(
-        "INSERT INTO tasks VALUES ('t-exit0', 'Done Task', 'running', 'zf-builder', ?, ?, ?)",
+        "INSERT INTO tasks (id, title, status, assignee, metadata, updated_at, created_at) VALUES ('t-exit0', 'Done Task', 'running', 'zf-builder', ?, ?, ?)",
         (meta, now - 100, now - 100),
     )
     conn.commit()
@@ -996,7 +1009,10 @@ def test_reap_active_workers_reviewer_exit0_without_verdict_parks_blocked():
             assignee TEXT,
             metadata TEXT,
             updated_at INTEGER,
-            created_at INTEGER
+            created_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )
@@ -1041,7 +1057,7 @@ def test_reap_active_workers_reviewer_exit0_without_verdict_parks_blocked():
         }
     )
     conn.execute(
-        "INSERT INTO tasks VALUES ('t-rev-exit0', 'Reviewed Task', 'running', 'zf-reviewer', ?, ?, ?)",
+        "INSERT INTO tasks (id, title, status, assignee, metadata, updated_at, created_at) VALUES ('t-rev-exit0', 'Reviewed Task', 'running', 'zf-reviewer', ?, ?, ?)",
         (meta, now - 100, now - 100),
     )
     conn.commit()
