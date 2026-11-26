@@ -9,6 +9,8 @@ for large logs.
 from __future__ import annotations
 
 import builtins
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -132,6 +134,75 @@ def test_session_telemetry_coerces_task_metadata(
     progress = session_service.resolve_task_session_progress(task, backfill=False)
 
     assert progress["session_id"] == expected_session_id
+
+
+@pytest.mark.parametrize("backfill", [False, True])
+def test_discovered_session_backfill_respects_flag(
+    hermes_home: Path,
+    initialized_db: Path,
+    default_board: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    backfill: bool,
+):
+    task_id = "zf-session-backfill"
+    initial_metadata = {"session_id": "stored-session", "other": "preserved"}
+    with sqlite3.connect(initialized_db) as conn:
+        conn.execute(
+            """INSERT INTO tasks (id, board_slug, title, status, metadata, created_at, updated_at)
+               VALUES (?, ?, ?, 'done', ?, 1, 1)""",
+            (
+                task_id,
+                default_board,
+                "Backfill session metadata",
+                json.dumps(initial_metadata),
+            ),
+        )
+
+    state_db = tmp_path / "profile-state.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute(
+            """CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, model TEXT, started_at REAL, ended_at REAL,
+                last_activity_at REAL, last_activity_description TEXT,
+                message_count INTEGER, tool_call_count INTEGER, cwd TEXT, title TEXT,
+                profile_name TEXT
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO sessions VALUES (
+                'discovered-session', 'test-model', 100, 200, 200, NULL,
+                0, 0, ?, 'Backfill session metadata', 'zf-builder'
+            )""",
+            (f"/workspace/{task_id}",),
+        )
+
+    monkeypatch.setattr(session_service, "AGENT_ROLES", ["zf-builder"])
+    monkeypatch.setattr(
+        session_service,
+        "_resolve_profile_state_db_dyn",
+        lambda role: state_db if role == "zf-builder" else None,
+    )
+    task = {
+        "id": task_id,
+        "title": "Backfill session metadata",
+        "status": "done",
+        "metadata": initial_metadata,
+    }
+
+    progress = session_service.resolve_task_session_progress(task, backfill=backfill)
+
+    assert progress["session_id"] == "discovered-session"
+    with sqlite3.connect(initialized_db) as conn:
+        stored_metadata = json.loads(
+            conn.execute(
+                "SELECT metadata FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()[0]
+        )
+    expected_metadata = {**initial_metadata}
+    if backfill:
+        expected_metadata["session_id"] = "discovered-session"
+    assert stored_metadata == expected_metadata
 
 
 def test_running_telemetry_uses_metadata_start_or_task_timestamp(
