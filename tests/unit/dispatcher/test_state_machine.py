@@ -122,6 +122,27 @@ def test_transition_invalid_raises(db_conn):
         transition_task(db_conn, "t2", "done")
 
 
+def test_recovered_reviewer_marker_clears_on_ownership_change(db_conn):
+    db_conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, metadata, created_at, updated_at) VALUES ('t-reviewer', 'Recovered reviewer', 'todo', 'zf-reviewer', ?, 1000, 1000)",
+        (json.dumps({"reviewer_orphan_recovered": True}),),
+    )
+
+    transition_task(
+        db_conn,
+        "t-reviewer",
+        "todo",
+        target_assignee="zf-builder",
+        actor="human",
+    )
+
+    row = db_conn.execute(
+        "SELECT assignee, metadata FROM tasks WHERE id = 't-reviewer'"
+    ).fetchone()
+    assert row["assignee"] == "zf-builder"
+    assert "reviewer_orphan_recovered" not in json.loads(row["metadata"])
+
+
 def test_transition_exiting_running_terminates_worker(db_conn):
     """Verify exiting running triggers terminate_task_worker and clears worker_pid/started_at."""
     meta = json.dumps({"worker_pid": 1234, "started_at": 1000})
