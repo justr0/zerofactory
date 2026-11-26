@@ -439,6 +439,7 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
 
     httpd, thread, port = _start_http_bridge(_build_test_app())
     stop_requests: list[str] = []
+    pending_stop_routes = []
 
     def add_session_for_other_task(route) -> None:
         response = route.fetch()
@@ -458,11 +459,7 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
 
     def intercept_stop(route) -> None:
         stop_requests.append(route.request.url)
-        route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps({"ok": True, "message": "intercepted test stop"}),
-        )
+        pending_stop_routes.append(route)
 
     try:
         with sync_api.sync_playwright() as p:
@@ -473,22 +470,9 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
             page = browser.new_page()
             page_errors: list[str] = []
             page.on("pageerror", lambda err: page_errors.append(str(err)))
-            page.add_init_script(
-                """
-                const originalFetch = window.fetch.bind(window);
-                window.fetch = (input, init) => {
-                  const url = typeof input === "string" ? input : input.url;
-                  if (url.endsWith("/tasks/task-ui-newest/stop")) {
-                    return new Promise((resolve, reject) => {
-                      setTimeout(() => originalFetch(input, init).then(resolve, reject), 500);
-                    });
-                  }
-                  return originalFetch(input, init);
-                };
-                """
-            )
             page.route("**/api/plugins/zerofactory/agents*", add_session_for_other_task)
-            page.route("**/tasks/task-ui-newest/stop", intercept_stop)
+            page.route("**/tasks/*/stop", intercept_stop)
+            page.route("**/sessions/*/stop", intercept_stop)
 
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
             page.get_by_role("button", name="🤖 Agents").click()
@@ -516,13 +500,22 @@ def test_agents_view_exposes_concurrent_tasks_and_stops_explicit_target_playwrig
 
             stop_button = page.get_by_role("button", name="Stop task task-ui-newest")
             stop_button.click()
-            page.get_by_role("button", name="Stop Session").click()
-            assert stop_button.is_disabled()
-            assert "Stopping..." in stop_button.inner_text()
-            assert stop_requests == []
+            with page.expect_request("**/stop") as stop_request_info:
+                page.get_by_role("button", name="Stop Session").click()
+            stop_request = stop_request_info.value
+            sync_api.expect(stop_button).to_be_disabled()
+            sync_api.expect(stop_button).to_contain_text("Stopping...")
+            assert stop_request.method == "POST"
+            assert stop_requests == [stop_request.url]
+            assert len(pending_stop_routes) == 1
+            assert stop_request.url.endswith("/tasks/task-ui-newest/stop")
+            pending_stop_routes[0].fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"ok": True, "message": "intercepted test stop"}),
+            )
             stop_button.get_by_text("Stop", exact=True).wait_for(timeout=5000)
-            assert len(stop_requests) == 1
-            assert stop_requests[0].endswith("/tasks/task-ui-newest/stop")
+            assert stop_requests == [stop_request.url]
             assert page_errors == [], f"Uncaught page errors: {page_errors}"
             browser.close()
     finally:
