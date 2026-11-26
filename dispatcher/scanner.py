@@ -449,17 +449,3 @@ def spawn_board_scanner(board_slug: str, repo_path: Path | None = None) -> int |
             e,
         )
         return None
-
-
-def reset_idle_scanner_state() -> None:
-    """Reset scanner state tracking (useful for test isolation)."""
-    _last_idle_scan_times.clear()
-    for slug, proc in list(_active_scanners.items()):
-        if proc is not None and proc.poll() is None:
-            terminate_process_group(proc, proc.pid)
-        cleanup_process_artifacts(f"scanner_{slug}")
-    logs_dir = get_hermes_home() / "logs"
-    if logs_dir.exists():
-        for pf in logs_dir.glob("scanner_*.pid"):
-            pf.unlink(missing_ok=True)
-    _active_scanners.clear()
