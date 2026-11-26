@@ -3061,14 +3061,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					className: "font-mono text-xs font-semibold px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 shadow-xs",
 					title: "Auto-Merge Active"
 				}, "⚡ Auto-merge");
-				const meta = typeof selectedTask.metadata === "string" ? (() => {
-					try {
-						return JSON.parse(selectedTask.metadata);
-					} catch (e) {
-						return {};
-					}
-				})() : selectedTask.metadata || {};
-				const issueLabels = (meta && meta.external_issue && meta.external_issue.labels || []).map((x) => String(x).trim().toLowerCase());
+				const issueLabels = (taskMeta && taskMeta.external_issue && taskMeta.external_issue.labels || []).map((x) => String(x).trim().toLowerCase());
 				if (issueLabels.some((x) => x === "hitl" || x === "manual-review")) return null;
 				if (issueLabels.some((x) => x === "automerge" || x === "yolo")) return React.createElement("span", {
 					className: "font-mono text-xs font-semibold px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 shadow-xs",
@@ -3205,13 +3198,6 @@ var ZeroFactoryDashboard = (function(exports) {
 				onClick: () => handleAdvanceTask(selectedTask)
 			}, "Advance Stage →")))
 		}, (() => {
-			const taskMeta = typeof selectedTask.metadata === "string" ? (() => {
-				try {
-					return JSON.parse(selectedTask.metadata);
-				} catch (e) {
-					return {};
-				}
-			})() : selectedTask.metadata || {};
 			const bugReport = taskMeta && taskMeta.zf_bug_report;
 			if (!bugReport) return null;
 			if (bugReport.issue_url) return React.createElement("div", { className: "mb-3 px-3.5 py-2.5 rounded-xl border border-purple-500/30 bg-purple-950/20 backdrop-blur-md flex items-center justify-between gap-3 text-xs" }, React.createElement("div", { className: "flex items-center gap-2 text-purple-200 min-w-0" }, React.createElement("span", { className: "text-base" }, "🐛"), React.createElement("div", { className: "truncate" }, React.createElement("div", { className: "font-semibold text-slate-100 flex items-center gap-1.5" }, "Zero Factory Defect Tracked on GitHub", React.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-purple-950/80 text-purple-300 border border-purple-800/60" }, "Upstream")), React.createElement("div", { className: "text-slate-400 text-[11px] truncate" }, bugReport.title || selectedTask.title))), React.createElement("a", {
