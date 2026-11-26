@@ -353,6 +353,71 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
             page.get_by_role("button", name="Create Task").click()
             page.get_by_text("Playwright UI Task").wait_for(timeout=10000)
 
+            pr_url = "https://example.com/pull/1"
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "UPDATE tasks SET pr_url = ? WHERE title = ?",
+                    (pr_url, "Playwright UI Task"),
+                )
+            page.route(pr_url, lambda route: route.fulfill(body="Pull request"))
+            page.reload(wait_until="networkidle")
+
+            # Card keyboard activation opens details, but child controls retain
+            # their native keyboard activation without opening the card.
+            task_card = page.locator(
+                '[role="button"][aria-label$="Playwright UI Task"]'
+            )
+            task_card.wait_for(timeout=10000)
+            task_id = (
+                task_card.get_attribute("aria-label")
+                .split(":", 1)[0]
+                .replace("Open task ", "", 1)
+            )
+            for key in ("Enter", "Space"):
+                with page.expect_request(
+                    lambda request: (
+                        request.method == "GET"
+                        and request.url.endswith(f"/tasks/{task_id}")
+                    )
+                ):
+                    task_card.focus()
+                    page.keyboard.press(key)
+                page.get_by_role("dialog").wait_for(timeout=10000)
+                page.keyboard.press("Escape")
+                page.get_by_role("dialog").wait_for(state="detached")
+
+            pr_link = task_card.get_by_role("link")
+            with page.expect_popup() as popup_info:
+                pr_link.focus()
+                page.keyboard.press("Enter")
+            popup = popup_info.value
+            popup.wait_for_url(pr_url)
+            assert page.get_by_role("dialog").count() == 0
+            popup.close()
+
+            triage_requests: list[dict] = []
+
+            def mock_triage(route):
+                triage_requests.append(route.request.post_data_json)
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"ok": true}',
+                )
+
+            page.route(f"**/tasks/{task_id}/triage", mock_triage)
+            grill_button = task_card.get_by_role("button", name="Grill Me")
+            with page.expect_response(
+                lambda response: (
+                    response.request.method == "POST"
+                    and response.url.endswith(f"/tasks/{task_id}/triage")
+                )
+            ):
+                grill_button.focus()
+                page.keyboard.press("Enter")
+            assert triage_requests == [{"mode": "grill"}]
+            assert page.get_by_role("dialog").count() == 0
+
             # 4. Toggle lane info ("i") panel open and closed
             info_btn = page.get_by_role("button", name="Toggle Human lane information")
             info_btn.click()
