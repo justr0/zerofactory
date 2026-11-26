@@ -1,11 +1,53 @@
 """Integration tests for Board API endpoints (/api/plugins/zerofactory/boards)."""
 
+import json
 import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from dashboard.routes.boards import _normalize_repository_response
+
+
+def _setup_openwiki_workspace_test(monkeypatch, tmp_path: Path):
+    from dashboard import openwiki_service
+
+    openwiki_home = tmp_path / "openwiki-home"
+    repo_paths = {}
+    monkeypatch.setattr(
+        openwiki_service, "get_openwiki_home_dir", lambda: openwiki_home
+    )
+    monkeypatch.setattr(
+        openwiki_service,
+        "get_repo_resolver",
+        lambda: lambda repo: repo_paths.get(repo["git_url"]),
+    )
+    return openwiki_home, repo_paths
+
+
+def _create_openwiki_test_board(
+    api_client: TestClient,
+    tmp_path: Path,
+    repo_paths: dict,
+    slug: str,
+    aliases: list[str],
+) -> None:
+    repositories = []
+    for alias in aliases:
+        git_url = f"https://github.com/openwiki-test/{slug}-{alias}.git"
+        repo_path = tmp_path / f"{slug}-{alias}"
+        (repo_path / ".git").mkdir(parents=True)
+        repo_paths[git_url] = repo_path
+        repositories.append({"repo_alias": alias, "git_url": git_url})
+    response = api_client.post(
+        "/api/plugins/zerofactory/boards",
+        json={"slug": slug, "repositories": repositories},
+    )
+    assert response.status_code == 200
+
+
+def _read_openwiki_registry(openwiki_home: Path) -> dict:
+    return json.loads((openwiki_home / "wiki-workspaces.json").read_text())
 
 
 def test_repository_response_normalizes_reviewer_json_with_malformed_fallback():
@@ -166,6 +208,271 @@ def test_delete_board(api_client: TestClient):
     # Should no longer be present
     boards = api_client.get("/api/plugins/zerofactory/boards").json()["boards"]
     assert not any(b["slug"] == "delete-org-repo-del" for b in boards)
+
+
+def test_unlink_repository_reconciles_openwiki_workspace(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    slug = "openwiki-unlink-one"
+    _create_openwiki_test_board(
+        api_client, tmp_path, repo_paths, slug, ["first-repo", "second-repo"]
+    )
+
+    before = _read_openwiki_registry(openwiki_home)
+    workspace = next(ws for ws in before["workspaces"] if ws["name"] == slug)
+    wiki_ids = {wiki["name"]: wiki["id"] for wiki in before["wikis"]}
+    removed_wiki = wiki_ids["first-repo"]
+    remaining_wiki = wiki_ids["second-repo"]
+
+    response = api_client.delete(
+        f"/api/plugins/zerofactory/boards/{slug}/repositories/first-repo"
+    )
+
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    updated_workspace = next(ws for ws in after["workspaces"] if ws["name"] == slug)
+    assert updated_workspace["wikis"] == [remaining_wiki]
+    active = {entry["wiki"]: entry["workspace"] for entry in after["active"]}
+    assert removed_wiki not in active
+    assert active[remaining_wiki] == workspace["id"]
+
+
+def test_unlink_last_repository_removes_openwiki_workspace(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    slug = "openwiki-unlink-last"
+    _create_openwiki_test_board(api_client, tmp_path, repo_paths, slug, ["only-repo"])
+
+    before = _read_openwiki_registry(openwiki_home)
+    workspace = next(ws for ws in before["workspaces"] if ws["name"] == slug)
+    wiki_id = workspace["wikis"][0]
+    response = api_client.delete(
+        f"/api/plugins/zerofactory/boards/{slug}/repositories/only-repo"
+    )
+
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    assert not any(ws["name"] == slug for ws in after["workspaces"])
+    assert not any(entry["workspace"] == workspace["id"] for entry in after["active"])
+    assert not any(entry["wiki"] == wiki_id for entry in after["active"])
+
+
+def test_delete_board_removes_its_openwiki_workspace_only(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    deleted_slug = "openwiki-delete-board"
+    kept_slug = "openwiki-keep-board"
+    _create_openwiki_test_board(
+        api_client, tmp_path, repo_paths, deleted_slug, ["deleted-repo"]
+    )
+    _create_openwiki_test_board(
+        api_client, tmp_path, repo_paths, kept_slug, ["kept-repo"]
+    )
+
+    before = _read_openwiki_registry(openwiki_home)
+    deleted_workspace = next(
+        ws for ws in before["workspaces"] if ws["name"] == deleted_slug
+    )
+    kept_workspace = next(ws for ws in before["workspaces"] if ws["name"] == kept_slug)
+    kept_active = next(
+        entry
+        for entry in before["active"]
+        if entry["workspace"] == kept_workspace["id"]
+    )
+
+    response = api_client.delete(f"/api/plugins/zerofactory/boards/{deleted_slug}")
+
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    assert not any(ws["name"] == deleted_slug for ws in after["workspaces"])
+    assert (
+        next(ws for ws in after["workspaces"] if ws["name"] == kept_slug)
+        == kept_workspace
+    )
+    assert kept_active in after["active"]
+    assert not any(
+        entry["workspace"] == deleted_workspace["id"] for entry in after["active"]
+    )
+
+
+def test_same_name_custom_openwiki_workspace_survives_board_deletion(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    slug = "openwiki-custom-name"
+    _create_openwiki_test_board(api_client, tmp_path, repo_paths, slug, ["board-repo"])
+
+    registry = _read_openwiki_registry(openwiki_home)
+    custom_workspace = {
+        "id": slug,
+        "name": slug,
+        "wikis": ["user-wiki"],
+    }
+    registry["wikis"].append(
+        {"id": "user-wiki", "name": "user-wiki", "root": str(tmp_path / "user-wiki")}
+    )
+    registry["workspaces"] = [custom_workspace]
+    custom_active = {"wiki": "user-wiki", "workspace": slug}
+    registry["active"] = [custom_active]
+    (openwiki_home / "wiki-workspaces.json").write_text(json.dumps(registry))
+
+    response = api_client.delete(f"/api/plugins/zerofactory/boards/{slug}")
+
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    assert after["workspaces"] == [custom_workspace]
+    assert after["active"] == [custom_active]
+
+
+def test_unlink_with_unresolved_shared_checkout_uses_repository_identity(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    shared_path = tmp_path / "shared-checkout"
+    obsolete_path = tmp_path / "obsolete-checkout"
+    (shared_path / ".git").mkdir(parents=True)
+    (obsolete_path / ".git").mkdir(parents=True)
+    board_a = "openwiki-shared-source"
+    board_b = "openwiki-shared-consumer"
+    source_url = f"https://github.com/openwiki-test/{board_a}-original.git"
+    mirror_url = f"https://github.com/openwiki-test/{board_b}-mirror.git"
+    obsolete_url = f"https://github.com/openwiki-test/{board_b}-obsolete.git"
+    repo_paths.update(
+        {source_url: shared_path, mirror_url: shared_path, obsolete_url: obsolete_path}
+    )
+
+    for slug, repositories in (
+        (board_a, [{"repo_alias": "original", "git_url": source_url}]),
+        (
+            board_b,
+            [
+                {"repo_alias": "mirror", "git_url": mirror_url},
+                {"repo_alias": "obsolete", "git_url": obsolete_url},
+            ],
+        ),
+    ):
+        response = api_client.post(
+            "/api/plugins/zerofactory/boards",
+            json={"slug": slug, "repositories": repositories},
+        )
+        assert response.status_code == 200
+
+    before = _read_openwiki_registry(openwiki_home)
+    workspace_a = next(ws for ws in before["workspaces"] if ws["name"] == board_a)
+    workspace_b = next(ws for ws in before["workspaces"] if ws["name"] == board_b)
+    shared_wiki = workspace_a["wikis"][0]
+    obsolete_wiki = next(
+        wiki_id for wiki_id in workspace_b["wikis"] if wiki_id != shared_wiki
+    )
+    assert {entry["wiki"]: entry["workspace"] for entry in before["active"]}[
+        shared_wiki
+    ] == workspace_a["id"]
+
+    repo_paths.pop(source_url)
+    repo_paths.pop(mirror_url)
+    response = api_client.delete(
+        f"/api/plugins/zerofactory/boards/{board_b}/repositories/obsolete"
+    )
+
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    updated_b = next(ws for ws in after["workspaces"] if ws["name"] == board_b)
+    assert updated_b["wikis"] == [shared_wiki]
+    active = {entry["wiki"]: entry["workspace"] for entry in after["active"]}
+    assert active[shared_wiki] == workspace_a["id"]
+    assert obsolete_wiki not in active
+
+
+def test_unresolved_still_linked_repository_keeps_workspace_membership(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    slug = "openwiki-unresolved-member"
+    _create_openwiki_test_board(
+        api_client, tmp_path, repo_paths, slug, ["resolved-repo", "offline-repo"]
+    )
+    registry = _read_openwiki_registry(openwiki_home)
+    workspace = next(ws for ws in registry["workspaces"] if ws["name"] == slug)
+    expected_members = set(workspace["wikis"])
+    repo_paths.pop(f"https://github.com/openwiki-test/{slug}-offline-repo.git")
+
+    from dashboard.openwiki_service import sync_board_openwiki_workspace
+
+    result = sync_board_openwiki_workspace(slug)
+
+    assert result["status"] == "synced"
+    after = _read_openwiki_registry(openwiki_home)
+    updated_workspace = next(ws for ws in after["workspaces"] if ws["name"] == slug)
+    assert set(updated_workspace["wikis"]) == expected_members
+
+
+def test_openwiki_membership_lookup_failure_does_not_write_registry(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    slug = "openwiki-lookup-failure"
+    _create_openwiki_test_board(api_client, tmp_path, repo_paths, slug, ["repo"])
+    registry_file = openwiki_home / "wiki-workspaces.json"
+    before = registry_file.read_text()
+
+    from dashboard import openwiki_service
+
+    def fail_membership_lookup(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(
+        openwiki_service, "_get_board_repository_rows", fail_membership_lookup
+    )
+    result = openwiki_service.sync_board_openwiki_workspace(slug)
+
+    assert result["status"] == "error"
+    assert registry_file.read_text() == before
+
+
+def test_openwiki_active_selection_preserves_valid_shared_workspace_and_rehomes_removed(
+    api_client: TestClient, monkeypatch, tmp_path: Path
+):
+    openwiki_home, repo_paths = _setup_openwiki_workspace_test(monkeypatch, tmp_path)
+    shared_repo = tmp_path / "shared-repository"
+    (shared_repo / ".git").mkdir(parents=True)
+    board_slugs = ["openwiki-shared-a", "openwiki-shared-b"]
+    for slug in board_slugs:
+        git_url = f"https://github.com/openwiki-test/{slug}-shared.git"
+        repo_paths[git_url] = shared_repo
+        response = api_client.post(
+            "/api/plugins/zerofactory/boards",
+            json={
+                "slug": slug,
+                "repositories": [{"repo_alias": "shared", "git_url": git_url}],
+            },
+        )
+        assert response.status_code == 200
+
+    before = _read_openwiki_registry(openwiki_home)
+    workspace_a = next(
+        ws for ws in before["workspaces"] if ws["name"] == board_slugs[0]
+    )
+    workspace_b = next(
+        ws for ws in before["workspaces"] if ws["name"] == board_slugs[1]
+    )
+    shared_wiki = workspace_a["wikis"][0]
+    assert workspace_b["wikis"] == [shared_wiki]
+    assert {entry["wiki"]: entry["workspace"] for entry in before["active"]}[
+        shared_wiki
+    ] == workspace_a["id"]
+
+    response = api_client.delete(
+        f"/api/plugins/zerofactory/boards/{board_slugs[0]}/repositories/shared"
+    )
+    assert response.status_code == 200
+    after = _read_openwiki_registry(openwiki_home)
+    assert not any(ws["id"] == workspace_a["id"] for ws in after["workspaces"])
+    assert {entry["wiki"]: entry["workspace"] for entry in after["active"]}[
+        shared_wiki
+    ] == workspace_b["id"]
 
 
 def test_delete_board_cleans_up_scanner(api_client: TestClient, monkeypatch):
