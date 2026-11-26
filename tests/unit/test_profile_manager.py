@@ -201,6 +201,179 @@ class TestProfileManagerUnit(unittest.TestCase):
                     PM.check_setup_status(use_cache=False)["profiles_in_sync"]
                 )
 
+    def test_fallback_skill_copies_reconcile_file_directory_transitions(self):
+        """Managed file/directory transitions preserve unrelated copied files."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_home = root / "hermes"
+            plugin_root = root / "plugin"
+            skill_source = plugin_root / "skills" / "zf-builder-transitions"
+            skill_source.mkdir(parents=True)
+            (skill_source / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            (skill_source / "file-to-dir").write_text("old file\n", encoding="utf-8")
+            source_dir_to_file = skill_source / "dir-to-file"
+            source_dir_to_file.mkdir()
+            (source_dir_to_file / "child.txt").write_text(
+                "old child\n", encoding="utf-8"
+            )
+            for role in PM.ZF_PROFILES:
+                template_dir = plugin_root / "templates" / role
+                template_dir.mkdir(parents=True)
+                (template_dir / "SOUL.md").write_text(f"{role}\n", encoding="utf-8")
+                (template_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+            original_symlink_to = Path.symlink_to
+
+            def reject_skill_symlinks(
+                path: Path, target: str | Path, target_is_directory: bool = False
+            ) -> None:
+                if path.parent.name == "skills":
+                    raise OSError("symlinks unavailable for profile skills")
+                original_symlink_to(
+                    path, target, target_is_directory=target_is_directory
+                )
+
+            copied_skill = (
+                fake_home
+                / "profiles"
+                / "zf-builder"
+                / "skills"
+                / "zf-builder-transitions"
+            )
+            user_file = copied_skill / "user-notes.txt"
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+                patch("profile_manager.check_gh_auth_status", return_value=True),
+                patch("profile_manager.check_plugin_update", return_value={}),
+                patch.object(
+                    Path, "symlink_to", autospec=True, side_effect=reject_skill_symlinks
+                ),
+            ):
+                PM.ensure_zf_profiles()
+                user_file.write_text("keep this\n", encoding="utf-8")
+
+                (skill_source / "file-to-dir").unlink()
+                (skill_source / "file-to-dir").mkdir()
+                (skill_source / "file-to-dir" / "child.txt").write_text(
+                    "new child\n", encoding="utf-8"
+                )
+                (source_dir_to_file / "child.txt").unlink()
+                source_dir_to_file.rmdir()
+                source_dir_to_file.write_text("new file\n", encoding="utf-8")
+
+                self.assertFalse(
+                    PM.check_setup_status(use_cache=False)["profiles_in_sync"]
+                )
+                PM.ensure_zf_profiles()
+
+                self.assertFalse((copied_skill / "file-to-dir").is_file())
+                self.assertEqual(
+                    (copied_skill / "file-to-dir" / "child.txt").read_text(
+                        encoding="utf-8"
+                    ),
+                    "new child\n",
+                )
+                self.assertTrue((copied_skill / "dir-to-file").is_file())
+                self.assertEqual(
+                    (copied_skill / "dir-to-file").read_text(encoding="utf-8"),
+                    "new file\n",
+                )
+                self.assertEqual(user_file.read_text(encoding="utf-8"), "keep this\n")
+                self.assertTrue(
+                    PM.check_setup_status(use_cache=False)["profiles_in_sync"]
+                )
+
+    def test_fallback_skill_sync_does_not_follow_nested_symlinks(self):
+        """Nested symlinks cannot redirect writes or deletions outside the copy."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_home = root / "hermes"
+            plugin_root = root / "plugin"
+            skill_source = plugin_root / "skills" / "zf-builder-nested-link"
+            nested_source = skill_source / "nested"
+            nested_source.mkdir(parents=True)
+            (skill_source / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            source_keep = nested_source / "keep.txt"
+            source_remove = nested_source / "remove.txt"
+            source_keep.write_text("initial\n", encoding="utf-8")
+            source_remove.write_text("remove me\n", encoding="utf-8")
+            for role in PM.ZF_PROFILES:
+                template_dir = plugin_root / "templates" / role
+                template_dir.mkdir(parents=True)
+                (template_dir / "SOUL.md").write_text(f"{role}\n", encoding="utf-8")
+                (template_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+            original_symlink_to = Path.symlink_to
+
+            def reject_skill_symlinks(
+                path: Path, target: str | Path, target_is_directory: bool = False
+            ) -> None:
+                if path.parent.name == "skills":
+                    raise OSError("symlinks unavailable for profile skills")
+                original_symlink_to(
+                    path, target, target_is_directory=target_is_directory
+                )
+
+            copied_skill = (
+                fake_home
+                / "profiles"
+                / "zf-builder"
+                / "skills"
+                / "zf-builder-nested-link"
+            )
+            outside = root / "outside"
+            outside.mkdir()
+            outside_keep = outside / "keep.txt"
+            outside_remove = outside / "remove.txt"
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+                patch("profile_manager.check_gh_auth_status", return_value=True),
+                patch("profile_manager.check_plugin_update", return_value={}),
+                patch.object(
+                    Path, "symlink_to", autospec=True, side_effect=reject_skill_symlinks
+                ),
+            ):
+                PM.ensure_zf_profiles()
+                copied_nested = copied_skill / "nested"
+                outside_keep.write_text("initial\n", encoding="utf-8")
+                outside_remove.write_text("remove me\n", encoding="utf-8")
+                for copied_file in copied_nested.iterdir():
+                    copied_file.unlink()
+                copied_nested.rmdir()
+                copied_nested.symlink_to(outside, target_is_directory=True)
+                source_keep.write_text("updated\n", encoding="utf-8")
+                source_remove.unlink()
+
+                self.assertFalse(
+                    PM.check_setup_status(use_cache=False)["profiles_in_sync"]
+                )
+                PM.ensure_zf_profiles()
+
+                self.assertFalse(copied_nested.is_symlink())
+                self.assertEqual(
+                    (copied_nested / "keep.txt").read_text(encoding="utf-8"),
+                    "updated\n",
+                )
+                self.assertFalse((copied_nested / "remove.txt").exists())
+                self.assertEqual(outside_keep.read_text(encoding="utf-8"), "initial\n")
+                self.assertEqual(
+                    outside_remove.read_text(encoding="utf-8"), "remove me\n"
+                )
+                self.assertTrue(
+                    PM.check_setup_status(use_cache=False)["profiles_in_sync"]
+                )
+
+                (copied_skill / ".zerofactory-managed-files").write_bytes(b"\xff")
+                self.assertFalse(
+                    PM.check_setup_status(use_cache=False)["profiles_in_sync"]
+                )
+                PM.ensure_zf_profiles()
+                self.assertTrue(
+                    PM.check_setup_status(use_cache=False)["profiles_in_sync"]
+                )
+
     def test_ensure_plugin_symlinks(self):
         """Creates symlink to zerofactory only in zf-* profiles (never root)."""
         with tempfile.TemporaryDirectory() as td:

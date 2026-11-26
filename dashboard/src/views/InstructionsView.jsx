@@ -1054,7 +1054,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
           group: "Profile & System Setup",
           cmds: [
             { cmd: "hermes zerofactory setup", desc: "Bootstrap or inspect zf-* profiles and script symlinks" },
-            { cmd: "hermes zerofactory sync-profiles", desc: "Sync profile prompts and bundled skill copies; setup status reports stale copies and broken links" }
+            { cmd: "hermes zerofactory sync-profiles", desc: "Refresh copied skills (changed files and tracked upstream removals) while preserving user files and live links; setup status reports stale copies and broken links" }
           ]
         },
         {

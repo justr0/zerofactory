@@ -188,9 +188,9 @@ hermes zerofactory cron run <job_id>              # Run a cron scanner immediate
 
 `sync-profiles` refreshes profile prompts and bundled skill copies; profile setup
 also synchronizes skills while initializing missing profiles. Fallback copies
-update changed files, remove previously managed files deleted upstream, and
-preserve user-added files. Setup status reports stale copies and broken skill
-links; existing live skill symlinks are left unchanged.
+update changed files, remove only files tracked as managed when deleted upstream,
+and preserve user-added files. Setup status reports stale copies and broken skill
+links; existing live skill symlinks, including noncanonical links, are left unchanged.
 
 ---
 
