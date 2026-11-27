@@ -36,7 +36,7 @@ def _task_comments_context(task_id: str, role: str, heading: str) -> str:
         db_path = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if not db_path.exists():
             return ""
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT author, body, created_at FROM task_comments "
@@ -136,7 +136,7 @@ def is_unattended_approvals_enabled() -> bool:
     try:
         db_path = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if db_path.exists():
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 return bool(
                     load_settings(conn).get("allow_unattended_approvals", False)
@@ -195,7 +195,7 @@ def spawn_agent_worker(
         try:
             _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
             if _db.exists():
-                with sqlite3.connect(str(_db), timeout=2.0) as _c:
+                with closing(sqlite3.connect(str(_db), timeout=2.0)) as _c, _c:
                     _c.row_factory = sqlite3.Row
                     _r = _c.execute(
                         "SELECT repo_alias FROM tasks WHERE id = ?", (task_id,)
@@ -224,7 +224,7 @@ def spawn_agent_worker(
     try:
         _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if _db.exists():
-            with sqlite3.connect(str(_db), timeout=2.0) as _c:
+            with closing(sqlite3.connect(str(_db), timeout=2.0)) as _c, _c:
                 _c.row_factory = sqlite3.Row
                 _task_r = _c.execute(
                     "SELECT tags, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -344,9 +344,11 @@ def spawn_agent_worker(
             f"   - If you catch a recurring mistake, testing gotcha, or project convention that future tasks should follow, record it!\n"
             f"   - In your review comment or summary, include a line: `GOTCHA: <rule>` or `CONVENTION: <rule>` (the system will auto-record it).\n"
             f'   - Or run: `hermes zerofactory memory add --board {board_slug or "default"} "<rule>" --category <gotcha|convention>`.\n'
-            f"6. When finished:\n"
-            f"   - If approved: {reviewer_approved_action}\n"
-            f"   - If changes are requested (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` when defects remain; the dispatcher routes Round 1 back to the builder and escalates Round {max_review_rounds} to Human blocked).\n"
+            f"6. When finished, record ONE verdict with `hermes zerofactory block {task_id} --reason ...`:\n"
+            f"   - Defects remain (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` while defects remain). The dispatcher owns the round budget: it routes Round 1 back to the builder and escalates Round {max_review_rounds} to Human blocked. Never hand a defect to a human yourself.\n"
+            f"   - Code passes: {reviewer_approved_action}\n"
+            f"   - Code passes, but the repository requires a human's explicit merge authorization (check its AGENTS.md): do not record 'approved'. Post your comment with the sentence `No code changes requested.` and run `hermes zerofactory block {task_id} --reason 'human-gate'`. The task then waits for the human merge decision instead of going back to the builder.\n"
+            f"   - The `Review Round` header above is the only round count that applies. Earlier comments on this PR may say 'Round 2 of 2' or 'cap reached'; they were written under an older budget and are superseded.\n"
             f"7. Provide a clear review summary.\n"
         )
     elif assignee == "zf-orchestrator":
@@ -624,7 +626,7 @@ def spawn_agent_worker(
             try:
                 _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
                 if _db.exists():
-                    with sqlite3.connect(str(_db)) as _c:
+                    with closing(sqlite3.connect(str(_db))) as _c, _c:
                         _c.row_factory = sqlite3.Row
                         _cur = _c.cursor()
                         _cur.execute(

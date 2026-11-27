@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,13 +28,14 @@ from dashboard.plugin_api import (
     init_db,
     move_task,
 )
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 
 class TestMultiAgentLifecycleE2E(unittest.TestCase):
     """End-to-End validation of the autonomous multi-agent pipeline and Git worktrees."""
 
     def setUp(self):
-        self.td = tempfile.mkdtemp(prefix="zf-lifecycle-e2e-")
+        self.td = tempfile.mkdtemp(prefix="zf-e2e-")
         self.db_path = Path(self.td) / "lifecycle.db"
         self.lock_path = Path(self.td) / "lifecycle_lock.lock"
         self.fake_home = Path(self.td) / "home"
@@ -50,13 +51,13 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
             "ZEROFACTORY_DISABLE_DISPATCHER": os.environ.get(
                 "ZEROFACTORY_DISABLE_DISPATCHER"
             ),
-            "HOME": os.environ.get("HOME"),
+            **{key: os.environ.get(key) for key in HOME_ENV_KEYS},
         }
 
         os.environ["ZEROFACTORY_DB"] = str(self.db_path)
         os.environ["ZEROFACTORY_LOCK_PATH"] = str(self.lock_path)
         os.environ["ZEROFACTORY_DISABLE_DISPATCHER"] = "1"
-        os.environ["HOME"] = str(self.fake_home)
+        os.environ.update(fake_home_env(self.fake_home))
         os.environ.pop("ZEROFACTORY_SKIP_GIT", None)  # Enable real git operations
         os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = (
             "1"  # Workers driven deterministically
@@ -82,13 +83,32 @@ class TestMultiAgentLifecycleE2E(unittest.TestCase):
         )
         self.board_slug = b_res["slug"]
 
+        # Git for Windows refuses ``git worktree add`` once ``<dest>/.git`` reaches
+        # 220 characters ("'$GIT_DIR' too big") and ``core.longpaths`` does not
+        # lift it, so a deep temporary home makes every worktree uncreatable.
+        longest_dest = (
+            self.fake_home
+            / ".zerofactory"
+            / "workspaces"
+            / self.board_slug
+            / "worktrees"
+            / ("t" * 16)
+            / ("r" * len(self.board_slug))
+        )
+        if sys.platform == "win32" and len(str(longest_dest)) > 215:
+            self.tearDown()
+            self.skipTest(
+                f"git worktree destination would be {len(str(longest_dest))} "
+                "characters; Git for Windows caps it at 215"
+            )
+
     def tearDown(self):
         for k, v in self.orig_env.items():
             if v is not None:
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _git(self, cwd: Path, *args: str) -> str:
         res = subprocess.run(

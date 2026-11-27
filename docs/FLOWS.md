@@ -240,7 +240,7 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      remove worktree, clear `blocked_reason` / `blocked_reason_type`, route back to builder on Round 1: `todo` + `assignee=<PR author>` + review-comment
      prompt block. Actionable review feedback from reviewers/humans overrides any prior `approved` status and unparks tasks back to `todo`. When `review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**)
      → escalate: `blocked` + `assignee=human` + `review_cap_reached` (short-circuiting idempotently on subsequent poll cycles until recovered).
-     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **1**; `0` restores the plain human park)
+     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **0**: off, and the cap parks the task for a human as before; `1` enables it and needs a `zf-gatekeeper` profile)
      the cap also posts exactly one `[AI:zf-dispatcher] ARBITRATION REQUEST` conversation comment on the PR —
      carrying the request key `arbitration:<task_id>:<full_head_sha>` and the full head SHA — and parks the task
      (`blocked` + `assignee=human`) for the arbiter profile (`ZEROFACTORY_REVIEW_CAP_ARBITER`, default
@@ -611,7 +611,7 @@ runtime → installed deps → simple functions → minimum viable diff) via bun
 | `ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS` | `300` | gate hard timeout |
 | `ZEROFACTORY_MAX_PRECOMMIT_RETRIES` | `3` | self-heal retries before blocking |
 | `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before escalation |
-| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `1` | at the review cap, ask an arbiter profile instead of parking for a human (`0`: plain human park) |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `0` | at the review cap, ask an arbiter profile instead of parking for a human (`1` opts in and needs a `zf-gatekeeper` profile; `0`: plain human park) |
 | `ZEROFACTORY_REVIEW_CAP_ARBITER` | `zf-gatekeeper` | arbiter profile (role tag on the verdict comment) |
 | `ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS` | `gh` login + repo owner | comma-separated GitHub accounts whose verdict comment counts |
 | `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` | `2` | arbitrations per task before falling back to the human |

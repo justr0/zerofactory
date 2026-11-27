@@ -130,6 +130,51 @@ def _resolve_task_repo(
         return None, True
 
 
+def _spawned_worker_is_stale(cursor, task_id, assignee):
+    """True when the task no longer awaits the worker just spawned for it.
+
+    A re-route can land between this cycle's row read and the end of the spawn
+    (claim -> spawn is about 12 s). The claim guards only ``status``, so the
+    operator's new assignee may already be on the row while this worker was
+    built for the old role. An unreadable row keeps the previous behaviour.
+    """
+    try:
+        cursor.execute("SELECT status, assignee FROM tasks WHERE id = ?", (task_id,))
+        row = cursor.fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None or "status" not in row.keys():
+        return True
+    return row["status"] != "running" or (
+        normalize_assignee(row["assignee"] or "zf-builder") != assignee
+    )
+
+
+def _release_stale_claim(cursor, task_id, now):
+    """Return a row still marked running by a stale claim to the todo queue."""
+    cursor.execute("SELECT status, metadata FROM tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    if row is None or row["status"] != "running":
+        return
+    try:
+        meta = json.loads(row["metadata"] or "{}")
+    except Exception:
+        meta = {}
+    if isinstance(meta, dict):
+        meta.pop("spawning_at", None)
+        cursor.execute(
+            "UPDATE tasks SET status = 'todo', metadata = ?, updated_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (json.dumps(meta), now, task_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE tasks SET status = 'todo', updated_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (now, task_id),
+        )
+
+
 def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
     """Execute one full dispatch cycle."""
     import dispatcher as _disp
@@ -571,6 +616,30 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                             cursor.execute(
                                 "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
                                 (revert_status, now, task_id),
+                            )
+                            conn.commit()
+                            continue
+
+                        if pid and _spawned_worker_is_stale(cursor, task_id, assignee):
+                            # The row was re-routed while this worker was starting.
+                            # Attached anyway, its exit report is judged by the new
+                            # role: a builder parked as "Reviewer exited without
+                            # recording a verdict". Stop it and hand the row back.
+                            _log.warning(
+                                "Task %s was re-routed while a %s worker was spawning; stopping worker PID %s",
+                                task_id,
+                                assignee,
+                                pid,
+                            )
+                            _disp.stop_task_worker(task_id, cursor, pid=pid)
+                            _release_stale_claim(cursor, task_id, now)
+                            cursor.execute(
+                                "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'spawn_superseded', ?, ?)",
+                                (
+                                    task_id,
+                                    f"Task re-routed during spawn; {assignee} worker PID {pid} was stopped and not attached",
+                                    now,
+                                ),
                             )
                             conn.commit()
                             continue

@@ -7,6 +7,11 @@ answers. Arbitration adds one step before that park becomes final: the
 dispatcher requests a decision on the PR from an arbiter profile (default
 ``zf-gatekeeper``, the profile that already runs the merge sweeps).
 
+Off by default: a ``FIX`` verdict spends fresh review budgets past the cap, and a
+``MERGE`` verdict lets an agent merge, so a host opts in to both with
+``ZEROFACTORY_REVIEW_CAP_ARBITRATION=1``. With it off, or with no arbiter profile
+installed, the cap parks the task for a human straight away.
+
 Protocol - every message is a PR conversation comment, so the decision trail
 stays on the PR. The dispatcher's request:
 
@@ -175,7 +180,7 @@ def arbitration_settings() -> dict[str, Any]:
     """Env-driven knobs; nothing here needs dashboard plumbing."""
     arbiter = (os.environ.get("ZEROFACTORY_REVIEW_CAP_ARBITER") or "").strip()
     return {
-        "enabled": _env_flag("ZEROFACTORY_REVIEW_CAP_ARBITRATION", True),
+        "enabled": _env_flag("ZEROFACTORY_REVIEW_CAP_ARBITRATION", False),
         "arbiter": arbiter or DEFAULT_ARBITER,
         "timeout_hours": _env_int(
             "ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS", 24, minimum=1
