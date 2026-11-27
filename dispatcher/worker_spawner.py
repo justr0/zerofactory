@@ -634,13 +634,21 @@ def spawn_agent_worker(
                             (task_id,),
                         )
                         _rows = _cur.fetchall()
+                        # Arbitration protocol records (the request, a recorded
+                        # verdict, the dispatcher's fix-round note) are history,
+                        # not review work: once the round they belong to is
+                        # closed they must not come back as mandatory feedback.
+                        # A live verdict reaches the builder as the brief below.
                         _rev_rows = [
                             r
                             for r in _rows
-                            if "[github review" in r["body"].lower()
-                            or "[github pr" in r["body"].lower()
-                            or r["author"] == "zf-reviewer"
-                            or r["author"] != assignee
+                            if (
+                                "[github review" in r["body"].lower()
+                                or "[github pr" in r["body"].lower()
+                                or r["author"] == "zf-reviewer"
+                                or r["author"] != assignee
+                            )
+                            and not _cap_arb.is_protocol_record(r["author"], r["body"])
                         ]
                         if _rev_rows:
                             _cmt_blocks = []

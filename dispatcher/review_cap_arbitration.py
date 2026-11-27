@@ -122,6 +122,10 @@ _VERDICT_LINE_RE = re.compile(
 _FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 _COMMENT_URL_RE = re.compile(r"#issuecomment-(\d+)")
 
+# The task comment the FIX branch leaves for the builder: the handoff note
+# that precedes the verdict body, not feedback about the change.
+_FIX_ROUND_NOTE_PREFIX = "[AI:zf-dispatcher] Arbitration fix round"
+
 # Tolerated clock skew between this host and GitHub timestamps.
 _CLOCK_SLACK_SECONDS = 300
 _MAX_TRACKED_REJECTIONS = 50
@@ -341,6 +345,106 @@ def verdict_line(arbiter: str, verdict: str, key: str, head_sha: str) -> str:
     return f"[AI:{arbiter}] ARBITRATION VERDICT: {verdict} | REQUEST: {key} | HEAD: {head_sha}"
 
 
+def _unwrapped_first_line(body: Any) -> str:
+    """The first line of ``body`` with one enclosing inline-code span removed.
+
+    The request comment shows each verdict line as an inline code span and asks
+    for a verbatim copy, so a literal copy arrives wrapped in backticks. Exactly
+    one span around the whole line is unwrapped; anything else before or after
+    it still fails the first-line match.
+    """
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    first_line = text.splitlines()[0].strip()
+    if len(first_line) > 2 and first_line.startswith("`") and first_line.endswith("`"):
+        first_line = first_line[1:-1].strip()
+    return first_line
+
+
+def is_protocol_comment(comment: dict[str, Any] | None) -> bool:
+    """A PR comment that belongs to the arbitration protocol, not to the review.
+
+    True for the dispatcher's request comment and for any comment whose first
+    line carries a verdict (well-formed or not, inline review or conversation:
+    in the wrong place it is simply a rejected verdict). Such a comment asks
+    for a decision or records one; it is never feedback about the change, so
+    ordinary review-comment routing must not copy it to a builder as work to
+    do. The arbitration poll records what it needs for visibility itself.
+    """
+    item = comment if isinstance(comment, dict) else {}
+    first_line = _unwrapped_first_line(item.get("body"))
+    if not first_line:
+        return False
+    return first_line == REQUEST_PREFIX or VERDICT_PREFIX in first_line.upper()
+
+
+def is_protocol_record(author: Any, body: Any) -> bool:
+    """A ``task_comments`` row that records the protocol, not review feedback.
+
+    Three kinds: the request text (the review-cap branch copies the request it
+    posted onto the task), an arbiter's verdict (recorded for visibility when
+    it is consumed) and the dispatcher's fix-round handoff note. The rows stay
+    on the task as history; a builder prompt must not present them as
+    mandatory review work once the round they belong to is closed.
+    """
+    text = str(body or "").strip()
+    if not text:
+        return False
+    lines = text.splitlines()
+    # format_task_comment_body() prefixes a copied PR comment with a
+    # "**[GitHub PR Comment]**"-style header line; the protocol line follows.
+    if lines[0].startswith("**[GitHub") and len(lines) > 1:
+        lines = lines[1:]
+    first_line = _unwrapped_first_line("\n".join(lines))
+    if first_line == REQUEST_PREFIX or VERDICT_PREFIX in first_line.upper():
+        return True
+    return str(author or "").strip() == "zf-dispatcher" and text.startswith(
+        _FIX_ROUND_NOTE_PREFIX
+    )
+
+
+def fetch_issue_comment_created_at(
+    *, repo_path: Any, pr_url: str | None, comment_id: Any
+) -> int | None:
+    """GitHub's ``created_at`` for one PR conversation comment, or None.
+
+    Resolves exactly one comment by id. Used when a request was posted but the
+    paginated thread could not be read back, so the request deadline can still
+    be anchored to GitHub's timestamp for that comment instead of this host's
+    clock. None when the comment cannot be resolved: skip modes, an unusable
+    id or PR URL, an API error, or a timestamp that does not parse.
+    """
+    if os.environ.get("ZEROFACTORY_SKIP_GIT") or os.environ.get(
+        "ZEROFACTORY_SKIP_GH_API"
+    ):
+        return None
+    info = extract_gh_repo_info(pr_url or "")
+    match = re.search(r"\d+", str(comment_id or ""))
+    if not info or not match:
+        return None
+    owner, repo = info[0], info[1]
+    try:
+        res = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{owner}/{repo}/issues/comments/{match.group(0)}",
+                "--jq",
+                ".created_at",
+            ],
+            cwd=str(repo_path) if repo_path else None,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if res.returncode != 0:
+        return None
+    return parse_github_timestamp(res.stdout)
+
+
 def parse_github_timestamp(value: Any) -> int | None:
     """Epoch seconds for a GitHub ISO-8601 timestamp; None when unusable."""
     raw = str(value or "").strip()
@@ -396,6 +500,12 @@ def build_arbitration_request(
 
 def arbitration_is_stale(state: dict[str, Any], now: int, timeout_hours: int) -> bool:
     if not state or state.get("status") != STATUS_REQUESTED:
+        return False
+    if state.get("timestamp_pending"):
+        # Posted, but GitHub's timestamp for the request comment has not been
+        # read back yet. Until it is, there is no deadline a verdict could be
+        # held to and none the park could expire on: nothing is consumed and
+        # nothing expires. The poll verifies the timestamp when GitHub answers.
         return False
     requested_at = _coerce_int(state.get("requested_at"))
     if requested_at <= 0:
@@ -540,17 +650,7 @@ def find_arbitration_verdict(
         body = comment["body"]
         if VERDICT_PREFIX not in body.upper():
             continue
-        first_line = body.strip().splitlines()[0].strip() if body.strip() else ""
-        # The request comment shows each verdict line as an inline code span and
-        # asks for a verbatim copy, so a literal copy arrives wrapped in
-        # backticks. Unwrap exactly one span around the whole line; anything
-        # else before or after it still fails the first-line match below.
-        if (
-            len(first_line) > 2
-            and first_line.startswith("`")
-            and first_line.endswith("`")
-        ):
-            first_line = first_line[1:-1].strip()
+        first_line = _unwrapped_first_line(body)
         if first_line == REQUEST_PREFIX:
             # The dispatcher's request carries the paste-ready verdict lines;
             # it asks for a decision, it is not one.
@@ -780,9 +880,20 @@ def post_arbitration_request(
             (res.stderr if res else "").strip()[:300],
         )
         return None
-    return {
-        "comment_id": f"issue_{url_match.group(1)}",
+    # The thread could not confirm the POST, so the comment's own timestamp is
+    # the only authoritative anchor for the deadline. Resolve it by id; this
+    # host's clock is never used as a substitute. When GitHub does not answer,
+    # the caller keeps the request's timestamp pending instead.
+    comment_id = f"issue_{url_match.group(1)}"
+    created_at = fetch_issue_comment_created_at(
+        repo_path=repo_path, pr_url=pr_url, comment_id=comment_id
+    )
+    posted = {
+        "comment_id": comment_id,
         "author": author,
-        "created_at": None,
+        "created_at": created_at,
         "adopted": False,
     }
+    if created_at is None:
+        posted["timestamp_pending"] = True
+    return posted

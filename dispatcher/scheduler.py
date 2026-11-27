@@ -1424,6 +1424,12 @@ def _request_review_cap_arbitration(
     if posted.get("created_at"):
         # Anchor the deadline to when the request comment really went up.
         state["requested_at"] = posted["created_at"]
+    elif posted.get("timestamp_pending"):
+        # Posted, but GitHub's timestamp for the comment is not verified. No
+        # local stand-in: with no verified request time no verdict is consumed
+        # and nothing expires until the poll reads the timestamp back.
+        state["requested_at"] = 0
+        state["timestamp_pending"] = True
     if posted.get("adopted"):
         # The comment already existed (a previous cycle lost its local state).
         state["adopted"] = True
@@ -1697,6 +1703,35 @@ def _poll_arbitration_park(
         _log.info("Task %s: arbitration request voided (%s)", task_id, reason)
         dirty = True
         return _hold()
+
+    if state.get("timestamp_pending"):
+        # The request was posted without a readable thread, so its comment time
+        # was never verified. Resolve it by id before anything else: a verdict
+        # is consumed, and the deadline measured, from GitHub's time only.
+        created = _cap_arb.fetch_issue_comment_created_at(
+            repo_path=repo_path,
+            pr_url=current_pr_url,
+            comment_id=state.get("comment_id"),
+        )
+        if created is None:
+            _log.info(
+                "Task %s: arbitration request %s has no verified timestamp yet; holding",
+                task_id,
+                state.get("request_key"),
+            )
+            return _hold()
+        state["requested_at"] = created
+        state["timestamp_verified_at"] = int(now)
+        state.pop("timestamp_pending", None)
+        task_meta[_cap_arb.STATE_KEY] = state
+        _activity(
+            "review_cap_arbitration_timestamp_verified",
+            (
+                f"Arbitration request {state.get('request_key')} timestamp verified "
+                f"from GitHub comment {state.get('comment_id')}"
+            ),
+        )
+        dirty = True
 
     conversation = _disp.fetch_pr_conversation_comments(
         repo_path=repo_path, pr_url=current_pr_url
@@ -2047,6 +2082,36 @@ def _poll_pr_and_route_review(
                     task_meta = json.loads(m_res[0])
             except Exception:
                 pass
+            if _cap_arb.is_review_cap_park(
+                task_meta, status=row["status"], assignee=assignee
+            ):
+                # A plain review-cap park (a live request returned above)
+                # waits on a person, not on a merge. With no new PR comment it
+                # holds here: conflict routing would hand a parked task to a
+                # builder and start another build/review loop past the cap.
+                _park_processed = set(task_meta.get("processed_review_comment_ids", []))
+                _park_new = [
+                    c
+                    for c in _disp.fetch_pr_review_comments(
+                        repo_path=repo_path,
+                        pr_url=current_pr_url,
+                        task_id=task_id,
+                        pr_data=pr_data,
+                        additional_reviewer_usernames=_board_additional_reviewers(
+                            cursor, row, board_slug
+                        ),
+                    )
+                    if c["comment_id"] not in _park_processed
+                    and not _cap_arb.is_protocol_comment(c)
+                ]
+                if not _park_new:
+                    log_step_state(
+                        "pr_poll",
+                        task_id,
+                        "cap_park_hold",
+                        "review-cap park; PR conflicting with no new comment; holding",
+                    )
+                    return True
             max_conflict_retries = int(
                 os.environ.get(
                     "ZEROFACTORY_MAX_CONFLICT_RETRIES",
@@ -2110,6 +2175,13 @@ def _poll_pr_and_route_review(
         new_pr_comments = [
             c for c in all_pr_comments if c["comment_id"] not in processed_cmt_ids
         ]
+        # The dispatcher's own arbitration requests and the arbiter's verdicts
+        # are protocol, not feedback about the change. The arbitration poll
+        # records what it needs; here they are neither copied onto the task nor
+        # routed to a builder, however they come back through the fetch.
+        new_pr_comments = [
+            c for c in new_pr_comments if not _cap_arb.is_protocol_comment(c)
+        ]
 
         # PR author lives in metadata (set at
         # packaging); titles carry no state.
@@ -2131,8 +2203,16 @@ def _poll_pr_and_route_review(
         # that crashes before signaling self-heals
         # via the worker retry budget.
         blocked_type = str(task_meta.get("blocked_reason_type") or "human-gate")
+        # An approval park carries the dispatcher's own latest verdict: the
+        # reviewer answered the fix commit. GitHub's aggregate reviewDecision
+        # keeps reporting CHANGES_REQUESTED until the account that requested
+        # changes dismisses or re-reviews, so on such a park it is stale state,
+        # not fresh feedback - routing on it handed an approved task back to a
+        # builder with no open brief. Fresh feedback still arrives as a new
+        # review or comment (an unprocessed id) and routes below.
+        approval_parked = blocked_type == "approved"
         has_actionable_feedback = (
-            decision == "CHANGES_REQUESTED"
+            (decision == "CHANGES_REQUESTED" and not approval_parked)
             or blocked_type == "changes-requested"
             or bool(actionable_comments)
         )
@@ -2459,7 +2539,10 @@ def _poll_pr_and_route_review(
             task_dict = {"tags": tags_val, "metadata": task_meta}
             automerge_active = _disp.is_task_automerge_enabled(task_dict, board_dict)
 
-            if automerge_active:
+            # GitHub's merge rules are never bypassed: while a review still
+            # requests changes, an approval park does not auto-merge. The human
+            # merge is where that outstanding request gets cleared.
+            if automerge_active and decision != "CHANGES_REQUESTED":
                 merged, merge_msg = _disp.attempt_pr_automerge(
                     current_pr_url, repo_path
                 )
