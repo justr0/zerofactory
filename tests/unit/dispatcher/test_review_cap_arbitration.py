@@ -2318,6 +2318,71 @@ class TestArbitrationCycle:
             )
             assert not _activities(db_path, task_id, "review_cap_arbitration_void")
 
+    @pytest.mark.parametrize("park", ["approved", "human-gate", "stuck", "fix-round"])
+    def test_dependency_unblock_never_lifts_a_decision_wait_park(
+        self, tmp_path: Path, park: str
+    ):
+        """Every park that waits on a person or the arbiter holds once all its
+        parents are done: an approval awaiting merge, a human HOLD, a stuck
+        worker and an open fix round. Only an ordinary dependency wait is
+        released - the sibling is the control."""
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = f"t-park-{park}"
+        sibling = f"{task_id}-ordinary"
+        meta: dict = {"processed_review_comment_ids": [], "packaged_by": "zf-builder"}
+        if park == "fix-round":
+            meta["last_reviewed_commit"] = HEAD
+            meta[arb.STATE_KEY] = _parked_state(
+                task_id,
+                status=arb.STATUS_FIX_REQUESTED,
+                decision=arb.VERDICT_FIX,
+                decision_body="1. race in refresh()",
+                decision_comment_id="issue_501",
+            )
+            assert arb.fix_round_brief(meta)
+        else:
+            meta["blocked_reason_type"] = park
+            meta["blocked_reason"] = f"parked: {park}"
+        _seed(
+            db_path,
+            task_id,
+            meta,
+            assignee="human",
+            workspace=str(_managed_workspace(db_path.parent, task_id)),
+        )
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, assignee, metadata) "
+                "VALUES (?, 'ordinary blocked child', 'blocked', 'human', '{}')",
+                (sibling,),
+            )
+            for child in (task_id, sibling):
+                conn.execute(
+                    "INSERT INTO tasks (id, title, status, assignee) "
+                    "VALUES (?, 'parent', 'done', 'zf-builder')",
+                    (f"{child}-parent",),
+                )
+                conn.execute(
+                    "INSERT INTO task_links (parent_id, child_id, link_type) "
+                    "VALUES (?, ?, 'blocks')",
+                    (f"{child}-parent", child),
+                )
+            conn.commit()
+
+        # No verdict on the PR and no new review comment: nothing but Step 1
+        # could claim these parents-done tasks.
+        self._run(db_path, [], cycles=2, review_decision="")
+
+        row = _row(db_path, task_id)
+        assert (row["status"], row["assignee"]) == ("blocked", "human")
+        assert not _activities(db_path, task_id, "unblock")
+        if park != "fix-round":
+            assert json.loads(row["metadata"])["blocked_reason_type"] == park
+        # Control: the ordinary blocked child was unblocked as before.
+        assert _row(db_path, sibling)["status"] != "blocked"
+        assert _activities(db_path, sibling, "unblock")
+
     @pytest.mark.parametrize("arrival", ["cli", "cli+comment", "pr-state"])
     def test_reviewer_approval_closes_the_fix_round(self, tmp_path: Path, arrival: str):
         """The reviewer approving the fix commit ends the round exactly like a

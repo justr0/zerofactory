@@ -175,6 +175,30 @@ def _release_stale_claim(cursor, task_id, now):
         )
 
 
+# Parks that wait on a person or the arbiter rather than on a parent task.
+_DECISION_WAIT_PARK_TYPES = frozenset({"approved", "human-gate", "stuck"})
+
+
+def _waits_on_a_decision(task_meta: Any, *, status: Any, assignee: Any) -> bool:
+    """A blocked task that waits on a decision, not on its parents.
+
+    Step 1 releases a blocked child once its parents are done. A decision-wait
+    park had its parents done before it was parked - it ran, was reviewed or
+    failed - so that event is no release signal. The review-cap park, an open
+    fix round (the arbitration poll applies that verdict) and the typed parks
+    ``approved`` (merge pending), ``human-gate`` (a human decision or HOLD) and
+    ``stuck`` (the worker failed to the limit; an operator recovers it) all hold.
+    """
+    if not isinstance(task_meta, dict):
+        return False
+    if _cap_arb.is_review_cap_park(task_meta, status=status, assignee=assignee):
+        return True
+    if _cap_arb.fix_round_brief(task_meta):
+        return True
+    park_type = str(task_meta.get("blocked_reason_type") or "").strip().lower()
+    return park_type in _DECISION_WAIT_PARK_TYPES
+
+
 def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
     """Execute one full dispatch cycle."""
     import dispatcher as _disp
@@ -253,15 +277,14 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                         row_meta = json.loads(row["metadata"] or "{}")
                     except (TypeError, ValueError):
                         row_meta = {}
-                    if _cap_arb.is_review_cap_park(
-                        row_meta if isinstance(row_meta, dict) else None,
-                        status=row["status"],
-                        assignee=row["assignee"],
+                    if _waits_on_a_decision(
+                        row_meta, status=row["status"], assignee=row["assignee"]
                     ):
-                        # A review-cap park waits on a merge decision (human or
-                        # arbiter), not on its parents. Unblocking it here
-                        # dispatched a builder with no verdict and voided the
-                        # open request.
+                        # A decision-wait park (review cap, human HOLD, approval
+                        # awaiting merge, stuck worker, open fix round) does not
+                        # wait on its parents. Unblocking it here dispatched a
+                        # builder with no verdict, voided the open request, lifted
+                        # human HOLDs and restarted stuck workers every cycle.
                         continue
                     transition_task(conn, row["id"], "todo", actor="dispatcher")
                     cursor.execute(
