@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,16 @@ from unittest.mock import patch
 import yaml
 
 import profile_manager as PM
+
+
+def _dir_symlinks_supported() -> bool:
+    """Directory symlinks need Developer Mode or elevation on Windows."""
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            Path(td, "l").symlink_to(Path(td, "t"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return False
+        return True
 
 
 class TestProfileManagerUnit(unittest.TestCase):
@@ -133,6 +144,9 @@ class TestProfileManagerUnit(unittest.TestCase):
                     PM.check_setup_status(use_cache=False)["profiles_in_sync"]
                 )
 
+    @unittest.skipUnless(
+        _dir_symlinks_supported(), "directory symlinks need privilege on Windows"
+    )
     def test_live_skill_symlinks_are_not_relinked_or_reported_outdated(self):
         """Setup preserves healthy and noncanonical live skill symlinks."""
         with tempfile.TemporaryDirectory() as td:
@@ -284,6 +298,9 @@ class TestProfileManagerUnit(unittest.TestCase):
                     PM.check_setup_status(use_cache=False)["profiles_in_sync"]
                 )
 
+    @unittest.skipUnless(
+        _dir_symlinks_supported(), "directory symlinks need privilege on Windows"
+    )
     def test_fallback_skill_sync_does_not_follow_nested_symlinks(self):
         """Nested symlinks cannot redirect writes or deletions outside the copy."""
         with tempfile.TemporaryDirectory() as td:
@@ -378,17 +395,115 @@ class TestProfileManagerUnit(unittest.TestCase):
         """Creates symlink to zerofactory only in zf-* profiles (never root)."""
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td)
-            with patch("profile_manager.get_hermes_home", return_value=fake_home):
+            # A plain directory as the plugin source: the real one sits in a git
+            # worktree when these tests run from one, which the guardrail refuses.
+            plugin_root = fake_home / "plugin-src"
+            plugin_root.mkdir()
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+            ):
                 PM.ensure_zf_profiles()
                 res = PM.ensure_plugin_symlinks()
                 self.assertIsInstance(res, dict)
                 self.assertFalse((fake_home / "plugins").exists())
                 for role in PM.ZF_PROFILES:
-                    self.assertTrue(
-                        (
-                            fake_home / "profiles" / role / "plugins" / "zerofactory"
-                        ).is_symlink()
-                    )
+                    link = fake_home / "profiles" / role / "plugins" / "zerofactory"
+                    # A junction on Windows, a symlink elsewhere: either way it
+                    # must lead back to the plugin's own root.
+                    self.assertTrue(link.exists())
+                    self.assertEqual(link.resolve(), plugin_root.resolve())
+
+    def test_ensure_plugin_symlinks_relinks_existing_link(self):
+        """A repeated setup keeps a correct link and replaces a foreign or broken one.
+
+        On Windows the link is a junction, which ``Path.is_symlink()`` reports as
+        False; it must be swapped with ``os.rmdir`` and never recursed into.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            plugin_root = fake_home / "plugin-src"
+            plugin_root.mkdir()
+            foreign = fake_home / "old-plugin"
+            foreign.mkdir()
+            (foreign / "keep.txt").write_text("old install\n", encoding="utf-8")
+            gone = fake_home / "vanished-plugin"
+            gone.mkdir()
+            links = [
+                fake_home / "profiles" / role / "plugins" / "zerofactory"
+                for role in PM.ZF_PROFILES
+            ]
+
+            def link_all(source: Path) -> dict:
+                with (
+                    patch("profile_manager.get_hermes_home", return_value=fake_home),
+                    patch("profile_manager.get_plugin_root", return_value=source),
+                ):
+                    PM.ensure_zf_profiles()
+                    return PM.ensure_plugin_symlinks()
+
+            link_all(foreign)
+            self.assertTrue(all(link.resolve() == foreign.resolve() for link in links))
+            # Relink away from the previous install: its files must survive.
+            res = link_all(plugin_root)
+            self.assertTrue(
+                all(link.resolve() == plugin_root.resolve() for link in links)
+            )
+            self.assertTrue((foreign / "keep.txt").exists())
+            self.assertEqual(sorted(res["linked"]), sorted(str(link) for link in links))
+            created = [os.lstat(link).st_ctime_ns for link in links]
+            # A correct link is left alone: nothing re-created, no warning.
+            with self.assertNoLogs("zerofactory.profiles", level="WARNING"):
+                link_all(plugin_root)
+            self.assertEqual([os.lstat(link).st_ctime_ns for link in links], created)
+            # A link whose target vanished is replaced as well.
+            link_all(gone)
+            shutil.rmtree(gone)
+            link_all(plugin_root)
+            self.assertTrue(
+                all(link.resolve() == plugin_root.resolve() for link in links)
+            )
+
+    def test_ensure_plugin_symlinks_removes_directory_symlink_without_rmtree(self):
+        """Windows directory symlinks must be unlinked without recursive deletion."""
+        if os.name != "nt":
+            self.skipTest("Windows directory-symlink attributes")
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            plugin_root = fake_home / "plugin-src"
+            plugin_root.mkdir()
+            link = (
+                fake_home / "profiles" / PM.ZF_PROFILES[0] / "plugins" / "zerofactory"
+            )
+            with (
+                patch("profile_manager.get_hermes_home", return_value=fake_home),
+                patch("profile_manager.get_plugin_root", return_value=plugin_root),
+            ):
+                PM.ensure_zf_profiles()
+                os.rmdir(link)  # Remove the junction created by setup.
+                link.mkdir()  # Simulate an existing directory symlink without privileges.
+
+                original_is_symlink = Path.is_symlink
+                original_is_junction = PM._is_junction
+
+                def is_directory_symlink(path: Path) -> bool:
+                    return path == link or original_is_symlink(path)
+
+                def is_junction(path: Path) -> bool:
+                    return False if path == link else original_is_junction(path)
+
+                with (
+                    patch.object(Path, "is_symlink", is_directory_symlink),
+                    patch("profile_manager._is_junction", is_junction),
+                    patch(
+                        "profile_manager.shutil.rmtree", wraps=shutil.rmtree
+                    ) as rmtree,
+                ):
+                    PM.ensure_plugin_symlinks()
+
+                rmtree.assert_not_called()
+                self.assertEqual(link.resolve(), plugin_root.resolve())
 
     def test_ensure_script_files(self):
         """Copies background scripts as real files only into zf-* profile scripts/."""

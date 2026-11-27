@@ -55,7 +55,7 @@ graph TD
 | **Plugin-First Architecture** | Self-contained Hermes plugin with zero external Node.js or `hermes-profile-manager` dependencies. |
 | **Isolated Profiles** | Profiles are cleanly namespaced (`zf-orchestrator`, `zf-goldfish`, `zf-builder`, `zf-reviewer`) in `~/.hermes/profiles/` and never clash with personal user profiles. |
 | **Isolated Git Worktrees** | Every task runs in its own dedicated Git worktree (`~/.zerofactory/workspaces/<board>/worktrees/<task_id>`). Sibling repositories on the board check out side-by-side. Agents never touch `main` directly. |
-| **Thematic Continuous Review** | Layered code review capping at 2 focused rounds (Correctness & Tests → Verification & Polish), then arbitration by the gatekeeper profile (fix / merge / escalate) before handing off to human merge. |
+| **Thematic Continuous Review** | Layered code review capping at 2 focused rounds (Correctness & Tests → Verification & Polish), then, only with `ZEROFACTORY_REVIEW_CAP_ARBITRATION=1` and a `zf-gatekeeper` profile installed, arbitration by the gatekeeper (fix / merge / escalate) before handing off to human merge. |
 | **Deterministic Precommit Gate** | Standardized format ➔ build ➔ test pipeline (`.zerofactory/precommit.sh`) ensuring zero broken builds or lint errors before PRs. |
 | **Self-Healing & Autonomous Recovery** | 3-tier fault tolerance: deterministic process reaper recovers dead/orphaned tasks (0 tokens), `zf-orchestrator` diagnoses failure logs to auto-recover with advice (strictly capped at 1 attempt), and human operators retain full override control via CLI and web UI. |
 | **OpenWiki Context Optimization** | Machine-readable architecture wiki (`openwiki/`) that slashes agent context bloat and exploratory tool calls by 30–40%. |
@@ -104,7 +104,7 @@ npm ci
 The active Python environment may be uv-managed and have no `pip` module, so use `uv pip` rather than `pip install`. The precommit test phase checks these requirements and prints remediation commands when they are missing; missing UI dependencies warn but do not fail environments that intentionally skip browser tests.
 
 ### 3. Start the Dispatcher & Open the Kanban Dashboard
-The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal (or enable `auto_start_dispatcher` in Settings):
+The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal, or enable `auto_start_dispatcher` in Settings: the gateway process then starts it when it loads the plugin. No other process starts it on its own, the dashboard included — it keeps its explicit "start dispatcher" control:
 ```bash
 hermes zerofactory start
 ```

@@ -171,7 +171,7 @@ def test_forget_deliberate_stop_removes_only_the_matching_marker():
 def test_terminate_task_worker_marks_the_stop_when_it_signals():
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
+        patch("dispatcher.process_manager.inspect_process_identity", return_value=True),
         patch(
             "dispatcher.process_manager.terminate_process_group", return_value=True
         ) as term,
@@ -185,7 +185,7 @@ def test_terminate_task_worker_marks_the_stop_when_it_signals():
 def test_terminate_worker_process_marks_only_after_a_signal_was_sent():
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
+        patch("dispatcher.process_manager.inspect_process_identity", return_value=True),
         patch("dispatcher.process_manager.terminate_process_group", return_value=True),
     ):
         terminate_worker_process(None, 9876, task_id=TASK_ID)
@@ -193,7 +193,7 @@ def test_terminate_worker_process_marks_only_after_a_signal_was_sent():
 
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
-        patch("dispatcher.process_manager.process_matches_identity", return_value=True),
+        patch("dispatcher.process_manager.inspect_process_identity", return_value=True),
         patch("dispatcher.process_manager.terminate_process_group", return_value=False),
     ):
         terminate_worker_process(None, 9876, task_id=TASK_ID)
@@ -206,7 +206,7 @@ def test_terminate_worker_process_skips_mismatched_identity():
     with (
         patch("dispatcher.process_manager.is_pid_alive", return_value=True),
         patch(
-            "dispatcher.process_manager.process_matches_identity", return_value=False
+            "dispatcher.process_manager.inspect_process_identity", return_value=False
         ),
         patch("dispatcher.process_manager.terminate_process_group") as mock_term,
     ):
@@ -333,14 +333,32 @@ def test_pid_is_ancestor_walks_the_parent_chain():
     assert _pid_is_ancestor(999_999_999) is False
 
 
+def test_pid_is_ancestor_walks_recorded_parent_pids_on_windows():
+    """Windows has no ``/proc``: the same walk reads a parent-PID snapshot."""
+    # Above any host's largest PID, so no assertion passes by accident.
+    child, parent, grandparent = 2**22 + 1, 2**22 + 2, 2**22 + 3
+    chain = {os.getpid(): child, child: parent, parent: grandparent}
+    with (
+        patch("dispatcher.process_manager.IS_WINDOWS", True),
+        patch("dispatcher.process_manager.parent_pid_map", return_value=chain) as snap,
+    ):
+        assert _pid_is_ancestor(child) is True
+        assert _pid_is_ancestor(grandparent) is True
+        assert _pid_is_ancestor(2**22 + 4) is False
+        snap.return_value = None
+        assert _pid_is_ancestor(child) is False
+
+
 def test_terminate_process_group_refuses_to_signal_its_own_worker():
     """``hermes zerofactory block <own task>`` runs inside the worker it transitions."""
     with (
         patch("dispatcher.process_manager._pid_is_ancestor", return_value=True),
-        patch("dispatcher.process_manager.os.killpg") as killpg,
+        patch("dispatcher.process_manager.os.killpg", create=True) as killpg,
+        patch("dispatcher.process_manager.kill_tree") as kill_tree,
     ):
         assert terminate_process_group(None, 4242) is False
-    killpg.assert_not_called()
+    killpg.assert_not_called()  # POSIX group signal
+    kill_tree.assert_not_called()  # Windows tree kill
 
 
 def test_grandparent_worker_is_recognised_from_a_real_subprocess():

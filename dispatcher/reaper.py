@@ -337,6 +337,32 @@ def _mark_task_session_ended(
     return meta
 
 
+def _current_worker_handle(task_id, meta):
+    """This process's handle for the task's *current* worker, plus the recorded PID.
+
+    ``_active_workers`` is per-process memory. A handle this process still holds
+    for an earlier worker of the same task (finished, or still running because its
+    terminate was skipped) must never be polled for the current one: its exit
+    code or liveness would be booked as the new worker's result.
+    """
+    proc = _active_workers.get(task_id)
+    pid = meta.get("worker_pid") or (proc.pid if proc else None)
+    try:
+        recorded = int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        recorded = None
+    if proc is not None and recorded is not None and proc.pid != recorded:
+        _log.warning(
+            "Reaper: ignoring stale in-process handle for task %s (handle pid %s != worker pid %s)",
+            task_id,
+            proc.pid,
+            recorded,
+        )
+        _active_workers.pop(task_id, None)
+        proc = None
+    return proc, pid
+
+
 def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
     """Check running tasks and reap finished, crashed, or stuck worker processes."""
     try:
@@ -364,8 +390,9 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
         )
         meta = _parse_task_metadata(row["metadata"])
 
-        proc = _active_workers.get(task_id)
-        pid = proc.pid if proc else (meta.get("worker_pid") or row["worker_pid"])
+        proc, pid = _current_worker_handle(
+            task_id, {**meta, "worker_pid": meta.get("worker_pid") or row["worker_pid"]}
+        )
 
         sessions = meta.get("sessions")
         has_ongoing_session = isinstance(sessions, list) and any(
@@ -802,7 +829,8 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                         ),
                     )
                 _log.warning(
-                    "Worker PID %d for task %s not found; moved to blocked",
+                    "Worker PID %d for task %s not found; retry/block policy applied "
+                    "(see task activity for the resulting status)",
                     pid,
                     task_id,
                 )
@@ -1004,8 +1032,7 @@ def check_stuck_tasks(
             task_id = str(row["id"])
             meta = _parse_task_metadata(row["metadata"])
 
-            proc = _active_workers.get(task_id)
-            pid = meta.get("worker_pid") or (proc.pid if proc else None)
+            proc, pid = _current_worker_handle(task_id, meta)
 
             is_alive = False
             if proc is not None:

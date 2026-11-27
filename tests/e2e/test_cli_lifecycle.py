@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import io
 import os
-import shutil
 import sqlite3
 import tempfile
 import time
@@ -15,6 +14,7 @@ from pathlib import Path
 
 import __init__ as zf_cli
 from dashboard.plugin_api import init_db
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 
 class TestZeroFactoryCLIE2E(unittest.TestCase):
@@ -37,7 +37,7 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
                 "ZEROFACTORY_SKIP_WORKER_SPAWN"
             ),
             "ZEROFACTORY_SKIP_GIT": os.environ.get("ZEROFACTORY_SKIP_GIT"),
-            "HOME": os.environ.get("HOME"),
+            **{key: os.environ.get(key) for key in HOME_ENV_KEYS},
             "HERMES_PROFILE": os.environ.get("HERMES_PROFILE"),
             "HERMES_HOME": os.environ.get("HERMES_HOME"),
         }
@@ -47,9 +47,9 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         os.environ["ZEROFACTORY_DISABLE_DISPATCHER"] = "1"
         os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = "1"
         os.environ["ZEROFACTORY_SKIP_GIT"] = "1"
-        os.environ["HOME"] = str(self.fake_home)
+        os.environ.update(fake_home_env(self.fake_home))
         # Pop HERMES_HOME (set in factory worker sessions) so get_hermes_home()
-        # falls back to Path.home()/.hermes, which tracks HOME = fake_home.
+        # falls back to Path.home()/.hermes, which tracks the fake home.
         # NOTE: setting it to the scratch path instead would break
         # get_hermes_home() because TMPDIR itself lives under
         # ~/.hermes/profiles/<profile>/cache/scratch.
@@ -74,7 +74,7 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _run_cli(self, args_list: list[str]) -> str:
         """Parse arguments and execute the CLI handler, returning captured stdout."""

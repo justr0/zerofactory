@@ -14,6 +14,7 @@ import json
 import sqlite3
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +66,7 @@ def run_daily_stats() -> int:
     one_day_ago = now - 86400
 
     try:
-        with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 

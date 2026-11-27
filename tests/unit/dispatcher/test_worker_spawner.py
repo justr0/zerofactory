@@ -1,5 +1,6 @@
 """Unit tests for dispatcher/worker_spawner.py worker spawning and session isolation."""
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -532,6 +533,31 @@ def test_spawn_builder_arbitration_fix_round_prompt_is_the_verdict_only():
     )
     assert "Your goal as Builder (Fix Review Comments)" in re_reviewed
     assert "Arbitration Fix Round" not in re_reviewed
+
+
+def test_spawn_builder_closes_the_board_connections_it_opens():
+    """Every board connection the spawn path opens is closed by the time the
+    spawn returns. `with sqlite3.connect(...)` commits but never closes, and an
+    open handle keeps the board file from being deleted or replaced on Windows."""
+    opened = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    with patch.object(sqlite3, "connect", recording_connect):
+        # While connections leak, Windows refuses to delete the board file, so
+        # the helper's cleanup raises first; let the assertions name the cause.
+        with contextlib.suppress(PermissionError):
+            _spawn_builder_with_comments(PRIOR_FINDINGS, "zf-close-probe", None)
+
+    # The helper's own writer, plus at least one reader on the spawn path.
+    assert len(opened) >= 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
 
 def test_spawn_builder_arbitration_fix_round_keeps_deterministic_gate_failures():

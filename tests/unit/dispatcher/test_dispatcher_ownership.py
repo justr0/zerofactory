@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import threading
 
 import pytest
@@ -49,6 +50,8 @@ def _configure_autostart_environment(
         monkeypatch.delenv("HERMES_PROFILE", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("ZEROFACTORY_DB", str(db_path))
+    # The Windows port auto-starts only in the gateway runtime.
+    monkeypatch.setattr(sys, "argv", ["hermes-gateway"])
     for name in (
         "ZEROFACTORY_SKIP_DISPATCHER",
         "ZEROFACTORY_DISABLE_DISPATCHER",
@@ -247,6 +250,8 @@ def test_tick_hook_defers_to_the_loop_owner(tmp_path, monkeypatch):
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zf.db"))
+    # The Windows port auto-starts only in the gateway runtime.
+    monkeypatch.setattr(sys, "argv", ["hermes-gateway"])
     monkeypatch.setenv("ZEROFACTORY_LOCK_PATH", str(tmp_path / "dispatch.lock"))
     monkeypatch.setattr(plugin_init, "_should_auto_start_dispatcher", lambda: True)
     monkeypatch.setattr(plugin_init, "init_db", lambda: None)
@@ -299,6 +304,8 @@ def test_dispatch_routes_report_a_loop_owned_by_another_process(tmp_path, monkey
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zf.db"))
+    # The Windows port auto-starts only in the gateway runtime.
+    monkeypatch.setattr(sys, "argv", ["hermes-gateway"])
     monkeypatch.setenv("ZEROFACTORY_LOCK_PATH", str(tmp_path / "dispatch.lock"))
     monkeypatch.setattr(
         profile_manager, "check_gh_auth_status", lambda use_cache=True: True

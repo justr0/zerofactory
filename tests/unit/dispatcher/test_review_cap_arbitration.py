@@ -380,7 +380,7 @@ class TestWireFormat:
         with patch.dict(os.environ, {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"}):
             assert arb.arbitration_settings()["enabled"] is False
         with patch.dict(os.environ, {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": ""}):
-            assert arb.arbitration_settings()["enabled"] is True
+            assert arb.arbitration_settings()["enabled"] is False
         with patch.dict(
             os.environ,
             {
