@@ -182,12 +182,10 @@ _DECISION_WAIT_PARK_TYPES = frozenset({"approved", "human-gate", "stuck"})
 def _waits_on_a_decision(task_meta: Any, *, status: Any, assignee: Any) -> bool:
     """A blocked task that waits on a decision, not on its parents.
 
-    Step 1 releases a blocked child once its parents are done. A decision-wait
-    park had its parents done before it was parked - it ran, was reviewed or
-    failed - so that event is no release signal. The review-cap park, an open
-    fix round (the arbitration poll applies that verdict) and the typed parks
-    ``approved`` (merge pending), ``human-gate`` (a human decision or HOLD) and
-    ``stuck`` (the worker failed to the limit; an operator recovers it) all hold.
+    Step 1 releases a blocked child once its parents are done; a decision-wait
+    park had its parents done before it was parked, so that is no release
+    signal. The review-cap park, an open fix round and the typed parks
+    ``approved``, ``human-gate`` and ``stuck`` all hold.
     """
     if not isinstance(task_meta, dict):
         return False
@@ -2067,7 +2065,72 @@ def _poll_pr_and_route_review(
             )
             return True
 
-        if mergeable == "CONFLICTING" and row["status"] in ("blocked", "done"):
+        # A reviewer's approval answers the commit an arbitration FIX round
+        # produced, whatever the PR's merge state: close the round before any
+        # routing, or conflict routing requeues a builder and the open brief
+        # comes back as its mandatory work - a second fix round after approval.
+        _approved_park = (
+            row["status"] == "blocked"
+            and str(meta.get("blocked_reason_type") or "") == "approved"
+        )
+        if (decision == "APPROVED" or _approved_park) and _cap_arb.close_fix_round(
+            meta, now, by="approval"
+        ):
+            cursor.execute(
+                "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(meta), now, task_id),
+            )
+
+        def _unprocessed_feedback() -> list[dict]:
+            """PR comments this task has not processed, minus the arbitration
+            protocol's own records: requests and verdicts are not feedback."""
+            processed = set(meta.get("processed_review_comment_ids", []))
+            return [
+                c
+                for c in _disp.fetch_pr_review_comments(
+                    repo_path=repo_path,
+                    pr_url=current_pr_url,
+                    task_id=task_id,
+                    pr_data=pr_data,
+                    additional_reviewer_usernames=_board_additional_reviewers(
+                        cursor, row, board_slug
+                    ),
+                )
+                if c["comment_id"] not in processed
+                and not _cap_arb.is_protocol_comment(c)
+            ]
+
+        # A park waits on a person, whatever GitHub reports about the PR. On a
+        # quiet poll - no unprocessed comment that is feedback - a plain
+        # review-cap park (arbitration off, spent or unavailable) and a stuck
+        # park hold before any routing: a standing approval would auto-merge
+        # them, a conflict would hand them to a builder, a stale
+        # CHANGES_REQUESTED would burn a review round on nothing new. New
+        # feedback routes exactly as before.
+        _park_type = str(meta.get("blocked_reason_type") or "").strip().lower()
+        if (
+            _cap_arb.is_review_cap_park(meta, status=row["status"], assignee=assignee)
+            or _park_type == "stuck"
+        ):
+            if not _unprocessed_feedback():
+                log_step_state(
+                    "pr_poll",
+                    task_id,
+                    "park_hold",
+                    f"{_park_type or 'review-cap'} park; no new comment; holding",
+                )
+                return True
+
+        # An approval that answered a fix round is not sent back to a builder
+        # over a conflict: the routing below keeps it at the human gate.
+        _approval_answered = (decision == "APPROVED" or _approved_park) and (
+            _cap_arb.fix_round_closed_by(meta) == "approval"
+        )
+        if (
+            mergeable == "CONFLICTING"
+            and row["status"] in ("blocked", "done")
+            and not _approval_answered
+        ):
             # PR is conflicted on GitHub: route to
             # the builder's conflict flow (bounded
             # by ZEROFACTORY_MAX_CONFLICT_RETRIES).
@@ -2082,36 +2145,6 @@ def _poll_pr_and_route_review(
                     task_meta = json.loads(m_res[0])
             except Exception:
                 pass
-            if _cap_arb.is_review_cap_park(
-                task_meta, status=row["status"], assignee=assignee
-            ):
-                # A plain review-cap park (a live request returned above)
-                # waits on a person, not on a merge. With no new PR comment it
-                # holds here: conflict routing would hand a parked task to a
-                # builder and start another build/review loop past the cap.
-                _park_processed = set(task_meta.get("processed_review_comment_ids", []))
-                _park_new = [
-                    c
-                    for c in _disp.fetch_pr_review_comments(
-                        repo_path=repo_path,
-                        pr_url=current_pr_url,
-                        task_id=task_id,
-                        pr_data=pr_data,
-                        additional_reviewer_usernames=_board_additional_reviewers(
-                            cursor, row, board_slug
-                        ),
-                    )
-                    if c["comment_id"] not in _park_processed
-                    and not _cap_arb.is_protocol_comment(c)
-                ]
-                if not _park_new:
-                    log_step_state(
-                        "pr_poll",
-                        task_id,
-                        "cap_park_hold",
-                        "review-cap park; PR conflicting with no new comment; holding",
-                    )
-                    return True
             max_conflict_retries = int(
                 os.environ.get(
                     "ZEROFACTORY_MAX_CONFLICT_RETRIES",
@@ -2163,25 +2196,7 @@ def _poll_pr_and_route_review(
             pass
 
         processed_cmt_ids = set(task_meta.get("processed_review_comment_ids", []))
-        all_pr_comments = _disp.fetch_pr_review_comments(
-            repo_path=repo_path,
-            pr_url=current_pr_url,
-            task_id=task_id,
-            pr_data=pr_data,
-            additional_reviewer_usernames=_board_additional_reviewers(
-                cursor, row, board_slug
-            ),
-        )
-        new_pr_comments = [
-            c for c in all_pr_comments if c["comment_id"] not in processed_cmt_ids
-        ]
-        # The dispatcher's own arbitration requests and the arbiter's verdicts
-        # are protocol, not feedback about the change. The arbitration poll
-        # records what it needs; here they are neither copied onto the task nor
-        # routed to a builder, however they come back through the fetch.
-        new_pr_comments = [
-            c for c in new_pr_comments if not _cap_arb.is_protocol_comment(c)
-        ]
+        new_pr_comments = _unprocessed_feedback()
 
         # PR author lives in metadata (set at
         # packaging); titles carry no state.
@@ -2205,11 +2220,9 @@ def _poll_pr_and_route_review(
         blocked_type = str(task_meta.get("blocked_reason_type") or "human-gate")
         # An approval park carries the dispatcher's own latest verdict: the
         # reviewer answered the fix commit. GitHub's aggregate reviewDecision
-        # keeps reporting CHANGES_REQUESTED until the account that requested
-        # changes dismisses or re-reviews, so on such a park it is stale state,
-        # not fresh feedback - routing on it handed an approved task back to a
-        # builder with no open brief. Fresh feedback still arrives as a new
-        # review or comment (an unprocessed id) and routes below.
+        # keeps reporting CHANGES_REQUESTED until that review is dismissed, so
+        # on such a park it is stale state, not fresh feedback. Fresh feedback
+        # still arrives as a new review or comment (an unprocessed id).
         approval_parked = blocked_type == "approved"
         has_actionable_feedback = (
             (decision == "CHANGES_REQUESTED" and not approval_parked)
@@ -2228,14 +2241,6 @@ def _poll_pr_and_route_review(
                 and reviewer_orphan_recovered
             )
         ):
-            if (
-                _cap_arb.is_review_cap_park(
-                    task_meta, status=row["status"], assignee=row["assignee"]
-                )
-                and not new_pr_comments
-            ):
-                return False
-
             for c in new_pr_comments:
                 cmt_body = _disp.format_task_comment_body(c)
                 cursor.execute(
@@ -2503,9 +2508,6 @@ def _poll_pr_and_route_review(
 
             task_meta["processed_review_comment_ids"] = list(processed_cmt_ids)
             task_meta.pop("reviewer_orphan_recovered", None)
-            # The reviewer answered the fix commit - approved or not, the
-            # arbitration verdict is no longer an open builder brief.
-            fix_round_closed = _cap_arb.close_fix_round(task_meta, now)
 
             # Check if Auto-Merge is enabled for this task
             board_dict = {}
@@ -2540,9 +2542,13 @@ def _poll_pr_and_route_review(
             automerge_active = _disp.is_task_automerge_enabled(task_dict, board_dict)
 
             # GitHub's merge rules are never bypassed: while a review still
-            # requests changes, an approval park does not auto-merge. The human
-            # merge is where that outstanding request gets cleared.
-            if automerge_active and decision != "CHANGES_REQUESTED":
+            # requests changes, an approval park does not auto-merge, and a
+            # conflicting PR is not merged by a poll. The human merge clears both.
+            if (
+                automerge_active
+                and decision != "CHANGES_REQUESTED"
+                and mergeable != "CONFLICTING"
+            ):
                 merged, merge_msg = _disp.attempt_pr_automerge(
                     current_pr_url, repo_path
                 )
@@ -2617,11 +2623,8 @@ def _poll_pr_and_route_review(
                 # approved-for-human-merge gate. Re-running the park side effects
                 # every cycle stamped one `approved` activity row per pass (450x
                 # on zf-hdz-4dc03cee) and re-ran worker/worktree teardown every
-                # 30s. Only newly-arrived comments - or a fix round the
-                # reviewer's approval has just closed - are worth persisting
-                # here: dropping that closure would keep a consumed FIX verdict
-                # live as the builder's brief.
-                if new_pr_comments or fix_round_closed:
+                # 30s. Only newly-arrived comments are worth persisting here.
+                if new_pr_comments:
                     cursor.execute(
                         "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
                         (json.dumps(task_meta), now, task_id),

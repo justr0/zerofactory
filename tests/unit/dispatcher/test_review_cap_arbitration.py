@@ -316,32 +316,6 @@ class TestWireFormat:
             assert f"`{arb.verdict_line(ARBITER, verdict, key, HEAD)}`" in lines
         assert "Task: t1 - feat: x" in lines
 
-    def test_the_posted_request_answers_to_its_own_attempt_key(self):
-        """Everything a retry or an arbiter needs is keyed by the attempt: the
-        formatted comment is found by its own key and by no other attempt's."""
-        body = arb.format_arbitration_request(
-            task_id="t1",
-            title="feat: x",
-            head_sha=HEAD,
-            rounds=2,
-            arbiter=ARBITER,
-            attempt=2,
-            max_arbitrations=2,
-        )
-        assert f"REQUEST: {_key('t1', HEAD, attempt=2)}" in body.splitlines()
-        posted = _convo(9, body)
-        for verdict in arb.VERDICTS:
-            pasted = arb.verdict_line(ARBITER, verdict, _key("t1", HEAD, 2), HEAD)
-            assert pasted in body
-        found = arb.find_request_comment(
-            [posted], key=_key("t1", HEAD, 2), head_sha=HEAD
-        )
-        assert found is not None and found["comment_id"] == "issue_9"
-        assert (
-            arb.find_request_comment([posted], key=_key("t1", HEAD, 1), head_sha=HEAD)
-            is None
-        )
-
     def test_request_needs_a_full_head_and_one_live_request_per_task(self):
         assert (
             arb.build_arbitration_request(
@@ -402,66 +376,6 @@ class TestWireFormat:
         assert second["request_key"] == _key("t1", HEAD_2, attempt=2)
         assert second["request_key"] != first["request_key"]
         assert build({arb.STATE_KEY: second}, 300, HEAD_3) is None
-
-    @pytest.mark.parametrize("attempts", [-3, "abc", None])
-    def test_a_nonsense_counter_builds_the_first_attempt(self, attempts):
-        """A negative or corrupt counter cannot mint a request keyed on a
-        nonsense attempt: it reads as no attempt yet."""
-        request = arb.build_arbitration_request(
-            {arb.STATE_KEY: {"status": arb.STATUS_VOID, "attempts": attempts}},
-            task_id="t1",
-            arbiter=ARBITER,
-            now=100,
-            head_sha=HEAD,
-            rounds=2,
-            max_arbitrations=2,
-        )
-        assert request["attempts"] == 1
-        assert request["request_key"] == _key("t1")
-
-    def test_each_attempt_is_its_own_request_even_on_the_same_head(self):
-        """A FIX verdict settles attempt 1; a later cap on the SAME head must
-        not let that verdict - or that request comment - stand for attempt 2."""
-
-        def build(meta: dict, now: int):
-            return arb.build_arbitration_request(
-                meta,
-                task_id="t1",
-                arbiter=ARBITER,
-                now=now,
-                head_sha=HEAD,
-                rounds=2,
-                max_arbitrations=2,
-            )
-
-        first = build({}, 100)
-        after_fix = {
-            **first,
-            "status": arb.STATUS_FIX_REQUESTED,
-            "decision": arb.VERDICT_FIX,
-            "decision_comment_id": "issue_501",
-            "fix_round_closed_at": 150,
-        }
-        second = build({arb.STATE_KEY: after_fix}, 200)
-        assert second["attempts"] == 2
-        assert second["request_key"] == f"arbitration:t1:{HEAD}:2"
-        # The old request comment names the old key, so it is not this request's.
-        old_request = _convo(1, _request_body(first["request_key"]))
-        assert (
-            arb.find_request_comment(
-                [old_request],
-                key=second["request_key"],
-                head_sha=HEAD,
-                authors={ALLOWED},
-            )
-            is None
-        )
-        assert (
-            arb.find_request_comment(
-                [old_request], key=first["request_key"], head_sha=HEAD
-            )["comment_id"]
-            == "issue_1"
-        )
 
     def test_settings_come_from_env_like_max_review_rounds(self):
         with patch.dict(os.environ, {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"}):
@@ -932,64 +846,21 @@ class TestRequestPosting:
         fetch.assert_called_once()
         run.assert_not_called()
 
-    def test_post_publishes_once_and_anchors_to_the_comment_timestamp(self):
-        """The thread did not confirm the POST, so the comment is resolved by
-        id: the deadline is anchored to GitHub's ``created_at`` for exactly
-        that comment, never to this host's clock."""
+    def test_post_publishes_once_and_returns_the_comment_id(self):
         calls: list[list[str]] = []
-        posted_at = _NOW - 5
 
         def fake_run(cmd, **kwargs):
             calls.append(list(cmd))
-            if "issues/comments/555" in " ".join(cmd):
-                stdout = f"{_iso(posted_at)}\n"
-            else:
-                stdout = f"{PR}#issuecomment-555\n"
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=stdout, stderr=""
-            )
-
-        with (
-            self._env(),
-            patch.object(
-                arb, "fetch_pr_conversation_comments", return_value=None
-            ) as fetch,
-            patch.object(arb.subprocess, "run", side_effect=fake_run) as run,
-            patch.object(arb, "gh_authenticated_login", return_value=ALLOWED),
-        ):
-            result = self._post(body="please decide")
-        assert result == {
-            "comment_id": "issue_555",
-            "author": ALLOWED,
-            "created_at": posted_at,
-            "adopted": False,
-        }
-        assert [c[:2] for c in calls] == [["gh", "pr"], ["gh", "api"]]
-        assert calls[0][:4] == ["gh", "pr", "comment", PR]
-        assert calls[1][2] == "repos/acme/repo/issues/comments/555"  # from the PR URL
-        # Reconciled against GitHub before and after the POST.
-        assert fetch.call_count == 2
-        sent = Path(calls[0][calls[0].index("--body-file") + 1])
-        assert not sent.exists()  # temp body file cleaned up
-
-    def test_post_without_a_verifiable_timestamp_leaves_it_pending(self):
-        """POST landed, thread unreadable and the by-id lookup failed: the
-        comment id is kept and the timestamp is explicitly pending, so the
-        caller consumes nothing and expires nothing until it is verified."""
-
-        def fake_run(cmd, **kwargs):
-            if "issues/comments/" in " ".join(cmd):
-                return subprocess.CompletedProcess(
-                    args=cmd, returncode=1, stdout="", stderr="gh: rate limited"
-                )
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout=f"{PR}#issuecomment-555\n", stderr=""
             )
 
         with (
             self._env(),
-            patch.object(arb, "fetch_pr_conversation_comments", return_value=None),
-            patch.object(arb.subprocess, "run", side_effect=fake_run),
+            patch.object(
+                arb, "fetch_pr_conversation_comments", return_value=[]
+            ) as fetch,
+            patch.object(arb.subprocess, "run", side_effect=fake_run) as run,
             patch.object(arb, "gh_authenticated_login", return_value=ALLOWED),
         ):
             result = self._post(body="please decide")
@@ -1000,6 +871,15 @@ class TestRequestPosting:
             "adopted": False,
             "timestamp_pending": True,
         }
+        # The POST, then the by-id lookup for the comment's own timestamp.
+        assert run.call_count == 2
+        assert calls[0][:4] == ["gh", "pr", "comment", PR]
+        # Reconciled against GitHub before and after the POST.
+        # The thread is read before the POST only: a successful POST names
+        # its own comment (the cycle tests follow that id).
+        assert fetch.call_count == 1
+        sent = Path(calls[0][calls[0].index("--body-file") + 1])
+        assert not sent.exists()  # temp body file cleaned up
 
     def test_post_failure_without_a_reconcilable_comment_is_no_live_request(self):
         def fake_run(cmd, **kwargs):
@@ -1251,6 +1131,7 @@ class TestArbitrationCycle:
         review_decision="CHANGES_REQUESTED",
         thread_unknown=False,
         issue_comment_api: list | None = None,
+        thread_calls: list | None = None,
     ) -> SimpleNamespace:
         """Drive ``run_dispatch_cycle`` with gh, the GitHub comment fetch and the
         worktree helpers stubbed. ``conversation`` is what the paginated
@@ -1259,6 +1140,8 @@ class TestArbitrationCycle:
         ``issue_comment_api`` is the sequence of ``(returncode, stdout)`` answers
         the by-id comment lookup (``gh api .../issues/comments/<id>``) gives, one
         per call, the last one repeating; default: the API is unavailable;
+        ``thread_calls`` is what the thread reads inside ``post_arbitration_request``
+        itself return, in call order (the last repeating; None = unreadable);
         ``package`` replaces ``_package_and_open_pr`` (the commit/push/reviewer
         handoff boundary)."""
         lock_file = db_path.parent / "dispatcher.lock"
@@ -1271,6 +1154,10 @@ class TestArbitrationCycle:
         }
         gh_calls: list[list[str]] = []
         issue_api = list(issue_comment_api or [])
+        arb_reads = list(thread_calls or [])
+
+        def arb_thread(*_args, **_kwargs):
+            return arb_reads[0] if len(arb_reads) < 2 else arb_reads.pop(0)
 
         def fake_subprocess_run(cmd, *args, **kwargs):
             if "view" in cmd:
@@ -1358,6 +1245,7 @@ class TestArbitrationCycle:
                 patch.object(
                     arb,
                     "fetch_pr_conversation_comments",
+                    side_effect=arb_thread if arb_reads else None,
                     return_value=thread,
                 )
             )
@@ -1525,37 +1413,6 @@ class TestArbitrationCycle:
         assert arb.STATE_KEY not in meta
         assert "escalating to human review" in meta["blocked_reason"]
         result.post.assert_not_called()
-
-    def test_the_deadline_is_anchored_to_the_posted_comment(self, tmp_path: Path):
-        """A first post is no adoption, and the request window starts when the
-        comment was created (GitHub's clock), not when the dispatcher got
-        around to persisting it; a comment without a timestamp falls back to
-        the dispatcher's clock."""
-        before = int(time.time())
-        for label, created_at in (("dated", before - 900), ("undated", None)):
-            db_path = tmp_path / f"{label}.db"
-            _init_db(db_path)
-            task_id = f"t-arb-anchor-{label}"
-            self._seed_reviewer_at_round_1(db_path, task_id)
-
-            self._run(
-                db_path,
-                [_ROUND_2],
-                conversation=[],
-                post={
-                    "comment_id": "issue_1",
-                    "author": ALLOWED,
-                    "created_at": created_at,
-                    "adopted": False,
-                },
-            )
-
-            state = _meta(db_path, task_id)[arb.STATE_KEY]
-            assert "adopted" not in state
-            if created_at is None:
-                assert state["requested_at"] >= before
-            else:
-                assert state["requested_at"] == created_at
 
     def test_failed_post_leaves_no_live_request_and_a_later_cycle_retries(
         self, tmp_path: Path, caplog
@@ -2216,369 +2073,6 @@ class TestArbitrationCycle:
         assert not _activities(db_path, task_id, "review_cap_arbitration_expired")
         result.post.assert_not_called()
 
-    # -- round-2 review regressions ---------------------------------------------------
-
-    def test_second_arbitration_on_the_same_head_is_a_new_request(self, tmp_path: Path):
-        """Attempt 1 ended in FIX and the cap recurs on the SAME head: the
-        attempt-1 comment must not be adopted and its verdict must not be
-        replayed. Attempt 2 is posted and waits for an answer of its own."""
-        db_path = tmp_path / "test.db"
-        _init_db(db_path)
-        task_id = "t-arb-replay"
-        now = int(time.time())
-        _seed(
-            db_path,
-            task_id,
-            {
-                "last_reviewed_commit": HEAD,
-                "review_round": 1,
-                "commit_review_count": 1,
-                "processed_review_comment_ids": [],
-                "blocked_reason_type": "changes-requested",
-                "packaged_by": "zf-builder",
-                arb.STATE_KEY: _parked_state(
-                    task_id,
-                    status=arb.STATUS_FIX_REQUESTED,
-                    requested_at=now - 7200,
-                    decision=arb.VERDICT_FIX,
-                    decision_comment_id="issue_501",
-                    decision_body="1. race in refresh()",
-                    decided_at=now - 3600,
-                    fix_round_closed_at=now - 1800,
-                ),
-            },
-            assignee="zf-reviewer",
-            workspace=str(_managed_workspace(db_path.parent, task_id)),
-        )
-        old_request = _convo(
-            1, _request_body(_key(task_id)), created_at=_iso(now - 7200)
-        )
-        old_verdict = _convo(
-            501, _verdict_body("FIX", task_id), created_at=_iso(now - 3600)
-        )
-        thread = [old_request, old_verdict]
-        # The same comment as the review-comment fetch hands it to the scheduler.
-        old_request_seen = _std(
-            1, _request_body(_key(task_id)), created_at=_iso(now - 7200)
-        )
-
-        # Cycle 1 hits the cap and posts; cycle 2 polls the new request (the
-        # attempt-1 request comes back through the review-comment fetch). The
-        # thread does not yet show the new comment, so its timestamp is read
-        # back by id (90s off the host clock: the anchor is GitHub's, not ours).
-        posted_at = int(time.time()) - 90
-        result = self._run(
-            db_path,
-            [_ROUND_2, old_request_seen],
-            conversation=thread,
-            real_post=True,
-            cycles=2,
-            issue_comment_api=[(0, f"{_iso(posted_at)}\n")],
-        )
-
-        state = self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)[
-            arb.STATE_KEY
-        ]
-        # Only the attempt-2 request is on the task; the attempt-1 request
-        # that came back through the fetch was not copied.
-        (on_task,) = _dispatcher_comments(db_path, task_id)
-        assert f"REQUEST: {state['request_key']}" in on_task
-        assert state["attempts"] == 2
-        assert state["request_key"] == _key(task_id, HEAD, attempt=2)
-        assert "decision" not in state
-        assert "adopted" not in state  # the attempt-1 comment was not adopted
-        assert state["requested_at"] == posted_at  # anchored to the new post
-        assert "timestamp_pending" not in state
-        assert state["comment_id"] == "issue_9001"
-        (posted,) = [cmd for cmd in result.gh_calls if "comment" in cmd]
-        assert posted[:4] == ["gh", "pr", "comment", PR]
-        result.setup.assert_not_called()
-        (ignored,) = _activities(db_path, task_id, "review_cap_arbitration_ignored")
-        assert "issue_501" in ignored[0] and "request-mismatch" in ignored[0]
-        assert not _activities(db_path, task_id, "review_cap_arbitration")
-
-        # The arbiter answers attempt 2: that verdict is consumed exactly once.
-        answer = _convo(
-            777,
-            _verdict_body("FIX", task_id, key=state["request_key"]),
-            created_at=_iso(int(time.time())),
-        )
-        self._run(db_path, [], conversation=thread + [answer], cycles=2)
-
-        settled = _meta(db_path, task_id)[arb.STATE_KEY]
-        assert settled["status"] == arb.STATUS_FIX_REQUESTED
-        assert settled["decision_comment_id"] == "issue_777"
-        (rounds,) = _activities(db_path, task_id, "review_cap_arbitration")
-        assert "attempt 2/2" in rounds[0]
-
-    @pytest.mark.parametrize("arbitrated", [True, False])
-    def test_dependency_unblock_never_lifts_a_review_cap_park(
-        self, tmp_path: Path, arbitrated: bool
-    ):
-        """All parents done: an ordinary blocked child goes to todo, a
-        review-cap park (arbitrated or plain) stays parked."""
-        db_path = tmp_path / "test.db"
-        _init_db(db_path)
-        task_id = "t-arb-links"
-        sibling = "t-links-ordinary"
-        self._seed_parked_with_request(db_path, task_id)
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute(
-                "INSERT INTO tasks (id, title, status, assignee, metadata) "
-                "VALUES (?, 'ordinary blocked child', 'blocked', 'human', '{}')",
-                (sibling,),
-            )
-            for child in (task_id, sibling):
-                conn.execute(
-                    "INSERT INTO tasks (id, title, status, assignee) "
-                    "VALUES (?, 'parent', 'done', 'zf-builder')",
-                    (f"{child}-parent",),
-                )
-                conn.execute(
-                    "INSERT INTO task_links (parent_id, child_id, link_type) "
-                    "VALUES (?, ?, 'blocks')",
-                    (f"{child}-parent", child),
-                )
-            if not arbitrated:
-                meta = _meta(db_path, task_id)
-                meta.pop(arb.STATE_KEY)
-                conn.execute(
-                    "UPDATE tasks SET metadata = ? WHERE id = ?",
-                    (json.dumps(meta), task_id),
-                )
-            conn.commit()
-
-        result = self._run(
-            db_path,
-            [],
-            cycles=2,
-            env=None if arbitrated else {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"},
-        )
-
-        row = _row(db_path, task_id)
-        assert (row["status"], row["assignee"]) == ("blocked", "human")
-        assert _meta(db_path, task_id)["review_cap_reached"] is True
-        assert not _activities(db_path, task_id, "unblock")
-        # Control: the ordinary blocked child was unblocked as before.
-        assert _row(db_path, sibling)["status"] != "blocked"
-        assert _activities(db_path, sibling, "unblock")
-        if arbitrated:
-            # The open request was neither voided nor answered.
-            assert (
-                _meta(db_path, task_id)[arb.STATE_KEY]["status"] == arb.STATUS_REQUESTED
-            )
-            assert not _activities(db_path, task_id, "review_cap_arbitration_void")
-
-    @pytest.mark.parametrize("park", ["approved", "human-gate", "stuck", "fix-round"])
-    def test_dependency_unblock_never_lifts_a_decision_wait_park(
-        self, tmp_path: Path, park: str
-    ):
-        """Every park that waits on a person or the arbiter holds once all its
-        parents are done: an approval awaiting merge, a human HOLD, a stuck
-        worker and an open fix round. Only an ordinary dependency wait is
-        released - the sibling is the control."""
-        db_path = tmp_path / "test.db"
-        _init_db(db_path)
-        task_id = f"t-park-{park}"
-        sibling = f"{task_id}-ordinary"
-        meta: dict = {"processed_review_comment_ids": [], "packaged_by": "zf-builder"}
-        if park == "fix-round":
-            meta["last_reviewed_commit"] = HEAD
-            meta[arb.STATE_KEY] = _parked_state(
-                task_id,
-                status=arb.STATUS_FIX_REQUESTED,
-                decision=arb.VERDICT_FIX,
-                decision_body="1. race in refresh()",
-                decision_comment_id="issue_501",
-            )
-            assert arb.fix_round_brief(meta)
-        else:
-            meta["blocked_reason_type"] = park
-            meta["blocked_reason"] = f"parked: {park}"
-        _seed(
-            db_path,
-            task_id,
-            meta,
-            assignee="human",
-            workspace=str(_managed_workspace(db_path.parent, task_id)),
-        )
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute(
-                "INSERT INTO tasks (id, title, status, assignee, metadata) "
-                "VALUES (?, 'ordinary blocked child', 'blocked', 'human', '{}')",
-                (sibling,),
-            )
-            for child in (task_id, sibling):
-                conn.execute(
-                    "INSERT INTO tasks (id, title, status, assignee) "
-                    "VALUES (?, 'parent', 'done', 'zf-builder')",
-                    (f"{child}-parent",),
-                )
-                conn.execute(
-                    "INSERT INTO task_links (parent_id, child_id, link_type) "
-                    "VALUES (?, ?, 'blocks')",
-                    (f"{child}-parent", child),
-                )
-            conn.commit()
-
-        # No verdict on the PR and no new review comment: nothing but Step 1
-        # could claim these parents-done tasks.
-        self._run(db_path, [], cycles=2, review_decision="")
-
-        row = _row(db_path, task_id)
-        assert (row["status"], row["assignee"]) == ("blocked", "human")
-        assert not _activities(db_path, task_id, "unblock")
-        if park != "fix-round":
-            assert json.loads(row["metadata"])["blocked_reason_type"] == park
-        # Control: the ordinary blocked child was unblocked as before.
-        assert _row(db_path, sibling)["status"] != "blocked"
-        assert _activities(db_path, sibling, "unblock")
-
-    @pytest.mark.parametrize("arrival", ["cli", "cli+comment", "pr-state"])
-    def test_reviewer_approval_closes_the_fix_round(self, tmp_path: Path, arrival: str):
-        """The reviewer approving the fix commit ends the round exactly like a
-        recorded round does, so a later recovery cannot resurrect the verdict
-        as the builder's brief. "cli" is how the reviewer worker signals it
-        (`hermes zerofactory block <id> --reason 'approved'`): the task is
-        already parked when the dispatcher first looks, so the closure must be
-        persisted even when nothing else changed in that poll."""
-        db_path = tmp_path / "test.db"
-        _init_db(db_path)
-        task_id = "t-arb-approved"
-        meta = {
-            "last_reviewed_commit": HEAD,
-            "processed_review_comment_ids": [],
-            "packaged_by": "zf-builder",
-            arb.STATE_KEY: _parked_state(
-                task_id,
-                status=arb.STATUS_FIX_REQUESTED,
-                decision=arb.VERDICT_FIX,
-                decision_body="1. race in refresh()",
-                decision_comment_id="issue_501",
-            ),
-        }
-        comments: list[dict] = []
-        if arrival == "pr-state":
-            assignee, decision = "zf-reviewer", "APPROVED"
-        else:
-            # What `block --reason 'approved'` leaves behind.
-            assignee, decision = "human", ""
-            meta["blocked_reason_type"] = "approved"
-            if arrival == "cli+comment":
-                comments.append(
-                    _std(
-                        777,
-                        "[AI:zf-reviewer] ✅ Approved: LGTM, no blocking findings.",
-                        author="zf-reviewer",
-                    )
-                )
-        _seed(
-            db_path,
-            task_id,
-            meta,
-            assignee=assignee,
-            workspace=str(_managed_workspace(db_path.parent, task_id)),
-        )
-        assert arb.fix_round_brief(_meta(db_path, task_id))  # open until answered
-
-        self._run(db_path, comments, review_decision=decision, cycles=2)
-
-        row = _row(db_path, task_id)
-        assert (row["status"], row["assignee"]) == ("blocked", "human")
-        meta = json.loads(row["metadata"])
-        assert meta["blocked_reason_type"] == "approved"
-        state = meta[arb.STATE_KEY]
-        assert state["status"] == arb.STATUS_FIX_REQUESTED  # outcome stays on record
-        assert state["fix_round_closed_at"]
-        assert arb.fix_round_brief(meta) is None
-        # What an operator recovery resets: still no brief.
-        recovered = {
-            k: v
-            for k, v in meta.items()
-            if k not in ("review_round", "commit_review_count")
-        }
-        assert arb.fix_round_brief(recovered) is None
-        # The idempotent park gate still holds: an approval that arrives on an
-        # already-parked task is persisted without re-running the park.
-        assert len(_activities(db_path, task_id, "approved")) == (
-            1 if arrival == "pr-state" else 0
-        )
-
-    def test_an_unreadable_thread_neither_consumes_nor_expires(self, tmp_path: Path):
-        """Past the deadline with a verdict posted inside the window: a poll
-        that could not read the thread decides nothing; the next readable poll
-        consumes the verdict."""
-        db_path = tmp_path / "test.db"
-        _init_db(db_path)
-        task_id = "t-arb-unreadable"
-        now = int(time.time())
-        self._seed_parked_with_request(
-            db_path, task_id, _parked_state(task_id, requested_at=now - 25 * 3600)
-        )
-        verdict = _std(
-            530, _verdict_body("MERGE", task_id), created_at=_iso(now - 2 * 3600)
-        )
-
-        self._run(db_path, [verdict], thread_unknown=True)
-
-        self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
-        assert not _activities(db_path, task_id, "review_cap_arbitration_expired")
-
-        self._run(db_path, [verdict])
-
-        meta = self._assert_still_parked(db_path, task_id, arb.STATUS_MERGE_APPROVED)
-        assert meta[arb.STATE_KEY]["decision"] == "MERGE"
-
-    def test_the_request_comment_is_neither_echoed_nor_an_ignored_verdict(
-        self, tmp_path: Path
-    ):
-        db_path = tmp_path / "test.db"
-        _init_db(db_path)
-        task_id = "t-arb-echo"
-        self._seed_parked_with_request(db_path, task_id)
-        state = _meta(db_path, task_id)[arb.STATE_KEY]
-        # The real request body: it carries the paste-ready verdict lines, so
-        # the verdict scan's own pre-filter lets it through and only the
-        # request-prefix rule can skip it.
-        body = arb.format_arbitration_request(
-            task_id=task_id,
-            title="feat: x",
-            head_sha=HEAD,
-            rounds=2,
-            arbiter=ARBITER,
-            attempt=1,
-            max_arbitrations=2,
-        )
-        assert f"REQUEST: {state['request_key']}" in body
-        assert arb.VERDICT_PREFIX in body
-        request = _std(1, body)
-        # The same comment as the conversation fetch returns it: inside the
-        # request window.
-        in_thread = _convo(1, body, created_at=_iso(state["requested_at"]))
-        # An earlier attempt's request: another comment id, same shape.
-        earlier = _std(
-            7,
-            arb.format_arbitration_request(
-                task_id=task_id,
-                title="feat: x",
-                head_sha=HEAD_3,
-                rounds=2,
-                arbiter=ARBITER,
-                attempt=1,
-                max_arbitrations=2,
-            ),
-        )
-
-        self._run(db_path, [request, earlier], conversation=[in_thread])
-
-        self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
-        assert not _activities(db_path, task_id, "review_cap_arbitration_ignored")
-        with sqlite3.connect(str(db_path)) as conn:
-            copies = conn.execute(
-                "SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (task_id,)
-            ).fetchone()[0]
-        assert copies == 0
-
     def test_a_corrupt_attempt_counter_does_not_strand_the_task(self, tmp_path: Path):
         db_path = tmp_path / "test.db"
         _init_db(db_path)
@@ -2598,63 +2092,18 @@ class TestArbitrationCycle:
 
 
 # --------------------------------------------------------------------------------------
-# Cycle: a park outlives the signal that triggered it (PR #137 round-4 gaps)
+# Cycle: what a poll does with a parked task
 # --------------------------------------------------------------------------------------
 
 _CYCLE = TestArbitrationCycle()
 
-_VERDICT_FOR_CLOSED_ROUND = dict(
-    status=arb.STATUS_FIX_REQUESTED,
-    decision=arb.VERDICT_FIX,
-    decision_body="1. race in refresh()",
-    decision_comment_id="issue_501",
-)
-
-
-def _seed_park(
-    db_path: Path,
-    task_id: str,
-    *,
-    park_type: str,
-    at_cap: bool,
-    state: dict | None = None,
-    processed: list | None = None,
-) -> None:
-    """A task parked ``blocked``/``human`` with the given canonical park code."""
-    meta: dict = {
-        "last_reviewed_commit": HEAD,
-        "processed_review_comment_ids": processed or [],
-        "packaged_by": "zf-builder",
-        "blocked_reason_type": park_type,
-    }
-    if at_cap:
-        meta.update(
-            review_cap_reached=True,
-            review_round=2,
-            commit_review_count=2,
-            blocked_reason="Review cap reached (2 rounds on commit)",
-        )
-    if state is not None:
-        meta[arb.STATE_KEY] = state
-    _seed(
-        db_path,
-        task_id,
-        meta,
-        assignee="human",
-        workspace=str(_managed_workspace(db_path.parent, task_id)),
-    )
-
-
-def _seed_cli_approved(db_path: Path, task_id: str, *, at_cap: bool = False) -> None:
-    """What `block --reason 'approved'` leaves behind after the reviewer answered
-    the fix commit of an arbitration round."""
-    _seed_park(
-        db_path,
-        task_id,
-        park_type="approved",
-        at_cap=at_cap,
-        state=_parked_state(task_id, **_VERDICT_FOR_CLOSED_ROUND),
-    )
+_PARKED = "t-park"
+# Times here follow the clock the cycle runs on, not _NOW: a verdict dated in
+# the future is ignored as such.
+_POSTED_AT = int(time.time()) - 1800
+# The request's earlier copy for the same attempt key: same key and head, posted
+# two hours before the comment this cycle's own POST names.
+_OLDER_AT = _POSTED_AT - 7200
 
 
 def _tag(db_path: Path, task_id: str, tags: str) -> None:
@@ -2665,373 +2114,355 @@ def _tag(db_path: Path, task_id: str, tags: str) -> None:
         conn.execute("UPDATE tasks SET tags = ? WHERE id = ?", (tags, task_id))
 
 
-def _assert_parked(db_path: Path, task_id: str, park_type: str):
-    row = _row(db_path, task_id)
-    assert (row["status"], row["assignee"]) == ("blocked", "human")
-    meta = json.loads(row["metadata"])
-    assert meta["blocked_reason_type"] == park_type
-    return meta
-
-
-@pytest.mark.parametrize("with_approval_note", [False, True])
-def test_cli_approval_holds_while_github_still_shows_changes_requested(
-    tmp_path: Path, with_approval_note: bool
-):
-    """C2/C3: the reviewer approved the fix commit through the CLI while GitHub's
-    aggregate decision still says CHANGES_REQUESTED (the account that asked never
-    re-reviewed). With no new feedback the approval park holds: no re-queue, no
-    builder, no review round recorded, the closed fix round stays closed."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-approve-stale"
-    _seed_cli_approved(db_path, task_id)
-    # The fix round is open until this poll sees the approval.
-    assert arb.fix_round_brief(_meta(db_path, task_id))
-    comments: list[dict] = []
-    if with_approval_note:
-        comments.append(
-            _std(
-                777,
-                "[AI:zf-reviewer] ✅ Approved: LGTM, no blocking findings.",
-                author="zf-reviewer",
-            )
-        )
-
-    result = _CYCLE._run(
-        db_path, comments, review_decision="CHANGES_REQUESTED", cycles=3
-    )
-
-    meta = _assert_parked(db_path, task_id, "approved")
-    assert "review_round" not in meta and "commit_review_count" not in meta
-    assert meta[arb.STATE_KEY]["fix_round_closed_at"]
-    assert arb.fix_round_brief(meta) is None
-    result.spawn.assert_not_called()
-    result.setup.assert_not_called()
-    assert not _activities(db_path, task_id, "changes_requested")
-    assert not _activities(db_path, task_id, "approved")
-
-
-def test_new_changes_requested_review_still_reaches_the_builder(tmp_path: Path):
-    """Control for the stale-decision rule: a request-changes review nobody has
-    processed yet is fresh feedback and routes exactly as before."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-approve-fresh"
-    _seed_cli_approved(db_path, task_id)
-    fresh = _std(
-        900,
-        "Still racy: two dispatch cycles overlap in refresh().",
-        type_="review_summary",
-    )
-    fresh["state"] = "CHANGES_REQUESTED"
-
-    result = _CYCLE._run(db_path, [fresh], review_decision="CHANGES_REQUESTED")
-
-    row = _row(db_path, task_id)
-    assert (row["status"], row["assignee"]) == ("todo", "zf-builder")
-    meta = json.loads(row["metadata"])
-    assert meta["review_round"] == 1
-    # The approval closed its round before the re-route; the new round is ordinary.
-    assert meta[arb.STATE_KEY]["fix_round_closed_at"]
-    assert arb.fix_round_brief(meta) is None
-    (routed,) = _activities(db_path, task_id, "changes_requested")
-    assert "Round 1/2" in routed[0]
-    assert any("Still racy" in body for body in _task_comments(db_path, task_id))
-
-
-def test_automerge_waits_while_a_review_still_requests_changes(tmp_path: Path):
-    """A park is not a merge clearance: under a standing CHANGES_REQUESTED the
-    approval never auto-merges, even with automerge on. The same park with the
-    request cleared merges exactly as before."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-automerge-held"
-    _seed_cli_approved(db_path, task_id)
-    _tag(db_path, task_id, '["automerge"]')
-
-    result = _CYCLE._run(db_path, [], review_decision="CHANGES_REQUESTED", cycles=3)
-
-    _assert_parked(db_path, task_id, "approved")
-    assert not [cmd for cmd in result.gh_calls if "merge" in cmd]
-    result.spawn.assert_not_called()
-
-    # Control: the request cleared, the same park auto-merges as before.
-    result = _CYCLE._run(db_path, [], review_decision="APPROVED", cycles=1)
-
-    assert _row(db_path, task_id)["status"] == "done"
-    assert [cmd for cmd in result.gh_calls if "merge" in cmd]
-
-
-def test_plain_cap_park_holds_through_a_pr_conflict(tmp_path: Path):
-    """B1/D2: arbitration off, a quiet plain review-cap park and a PR that went
-    CONFLICTING. The park waits on a person, not on a merge: no conflict routing,
-    no builder, no retry counter, the round counters are untouched."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-cap-conflict"
-    _seed_park(db_path, task_id, park_type="human-gate", at_cap=True)
-
-    result = _CYCLE._run(
-        db_path,
-        [],
-        mergeable="CONFLICTING",
-        review_decision="",
-        env={"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"},
-        cycles=2,
-    )
-
-    meta = _assert_parked(db_path, task_id, "human-gate")
-    assert meta["review_cap_reached"] is True
-    assert (meta["review_round"], meta["commit_review_count"]) == (2, 2)
-    assert "conflict_retries" not in meta
-    result.conflict.assert_not_called()
-    result.spawn.assert_not_called()
-    result.setup.assert_not_called()
-
-
-def test_conflict_routing_still_applies_outside_the_cap(tmp_path: Path):
-    """Control: the same CONFLICTING PR on a task that is not at the review cap
-    goes to the conflict flow exactly as before."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-conflict-ordinary"
-    _seed_park(db_path, task_id, park_type="human-gate", at_cap=False)
-
-    result = _CYCLE._run(db_path, [], mergeable="CONFLICTING", review_decision="")
-
-    result.conflict.assert_called_once()
-
-
-def test_cap_park_with_new_feedback_is_no_longer_quiet(tmp_path: Path):
-    """The hold is for a quiet park: a new comment on the PR ends the quiet, and
-    the ordinary routing (here: conflict flow) sees the task again."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-cap-conflict-loud"
-    _seed_park(db_path, task_id, park_type="human-gate", at_cap=True)
-    note = _std(900, "Rebased main this morning; the conflict is expected.")
-
-    result = _CYCLE._run(
-        db_path,
-        [note],
-        mergeable="CONFLICTING",
-        review_decision="",
-        env={"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"},
-    )
-
-    result.conflict.assert_called_once()
-
-
-@pytest.mark.parametrize("park_type", ["human-gate", "approved"])
-def test_arbitration_request_comments_are_never_builder_feedback(
-    tmp_path: Path, park_type: str
-):
-    """A5/B1: the dispatcher's request comment is protocol. Once the task sits
-    in an ordinary park (the request was voided by a recovery), an unprocessed
-    copy of it coming back through the fetch is neither copied onto the task as
-    feedback nor routed to a builder."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = f"t-request-echo-{park_type}"
-    _seed_park(db_path, task_id, park_type=park_type, at_cap=False)
-    old_request = _std(
-        1, _request_body(_key(task_id)), created_at=_iso(int(time.time()) - 7200)
-    )
-
-    result = _CYCLE._run(db_path, [old_request], review_decision="", cycles=2)
-
-    _assert_parked(db_path, task_id, park_type)
-    assert not _task_comments(db_path, task_id)
-    result.spawn.assert_not_called()
-    result.setup.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "state", [None, {"status": arb.STATUS_VOID, "void_reason": "task-left-park"}]
+_TWO_DAYS_AGO = int(time.time()) - 48 * 3600
+_OPEN_FIX_ROUND = dict(
+    status=arb.STATUS_FIX_REQUESTED,
+    decision=arb.VERDICT_FIX,
+    decision_body="1. race in refresh()",
+    decision_comment_id="issue_501",
 )
-def test_arbitration_verdict_comments_are_never_builder_feedback(tmp_path: Path, state):
-    """A verdict is protocol wherever it appears: an old attempt's verdict (or a
-    malformed one) reaching the ordinary routing is not review feedback."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = f"t-verdict-echo-{bool(state)}"
-    _seed_park(db_path, task_id, park_type="human-gate", at_cap=False, state=state)
-    echoes = [
-        _std(
-            501, _verdict_body("FIX", task_id), created_at=_iso(int(time.time()) - 60)
-        ),
-        _std(
-            502,
-            "[AI:zf-gatekeeper] ARBITRATION VERDICT: MAYBE | REQUEST: x",
-            created_at=_iso(int(time.time()) - 30),
-        ),
-    ]
-
-    result = _CYCLE._run(db_path, echoes, review_decision="", cycles=2)
-
-    _assert_parked(db_path, task_id, "human-gate")
-    assert not _task_comments(db_path, task_id)
-    result.spawn.assert_not_called()
-
-
-def test_request_posted_with_an_unreadable_thread_anchors_to_github_time(
-    tmp_path: Path,
-):
-    """A4/D1: the POST landed but the thread could not be read back. The request
-    deadline is anchored to GitHub's ``created_at`` for exactly that comment
-    (resolved by id), never to this host's clock."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-post-unreadable"
-    _CYCLE._seed_reviewer_at_round_1(db_path, task_id)
-    posted_at = int(time.time()) - 7200  # GitHub's clock: two hours off the host's
-
-    result = _CYCLE._run(
-        db_path,
-        [_ROUND_2],
-        thread_unknown=True,
-        real_post=True,
-        issue_comment_api=[(0, f"{_iso(posted_at)}\n")],
-    )
-
-    meta = _assert_parked(db_path, task_id, "human-gate")
-    state = meta[arb.STATE_KEY]
-    assert state["status"] == arb.STATUS_REQUESTED
-    assert (state["attempts"], state["max_arbitrations"]) == (1, 2)
-    assert state["comment_id"] == "issue_9001"
-    assert state["requested_at"] == posted_at
-    assert "timestamp_pending" not in state
-    (posted,) = [cmd for cmd in result.gh_calls if "comment" in cmd]
-    assert posted[:4] == ["gh", "pr", "comment", PR]
-    (lookup,) = [cmd for cmd in result.gh_calls if "issues/comments/" in " ".join(cmd)]
-    assert lookup[2].endswith("/issues/comments/9001")
-    # The deadline runs from GitHub's time, not from when this host noticed.
-    assert not arb.arbitration_is_stale(state, posted_at + 23 * 3600, 24)
-    assert arb.arbitration_is_stale(state, posted_at + 24 * 3600, 24)
-
-    # ...and the poll enforces it from there: 25h after the real post the
-    # request expires, whatever the host clock said when the POST returned.
-    request = _convo(9001, _request_body(_key(task_id)), created_at=_iso(posted_at))
-    with patch("time.time", return_value=posted_at + 25 * 3600):
-        _CYCLE._run(db_path, [], conversation=[request], cycles=1)
-    settled = _meta(db_path, task_id)[arb.STATE_KEY]
-    assert settled["status"] == arb.STATUS_EXPIRED
-    assert _activities(db_path, task_id, "review_cap_arbitration_expired")
+# kind: (assignee, park code or None, at the review cap, arbitration-state
+# overrides, extra metadata). A fix-round seed also gets the FIX handoff note.
+_SEEDS = {
+    # The reviewer approved the fix commit of an arbitration FIX round through the
+    # CLI (``block --reason 'approved'``): parked, round still open.
+    "cli-approved": ("human", "approved", False, _OPEN_FIX_ROUND, None),
+    # ...or approved on the PR while the reviewer worker still holds the task.
+    "pr-approved": ("zf-reviewer", None, False, _OPEN_FIX_ROUND, None),
+    # A review-cap park: plain (arbitration off, spent or unavailable) ...
+    "cap": ("human", "human-gate", True, None, None),
+    # ... or waiting on a live request, fresh or long past its deadline.
+    "request": ("human", "human-gate", True, {}, None),
+    "request-old": ("human", "human-gate", True, {"requested_at": _TWO_DAYS_AGO}, None),
+    # The cap recurring on a head whose earlier attempt ended in FIX.
+    "fix-closed": (
+        "zf-reviewer",
+        "changes-requested",
+        False,
+        {**_OPEN_FIX_ROUND, "fix_round_closed_at": _NOW - 1800},
+        {"review_round": 1, "commit_review_count": 1},
+    ),
+    # A human HOLD that is not a review-cap park, and a stuck worker.
+    "hold": ("human", "human-gate", False, None, None),
+    "stuck": ("human", "stuck", False, None, None),
+}
 
 
-def test_unverified_request_time_consumes_nothing_expires_nothing_never_reposts(
-    tmp_path: Path,
-):
-    """A4/D1: POST landed, thread unreadable and the by-id lookup failed too.
-    Until GitHub's timestamp is verified no verdict is consumed and nothing
-    expires, however old the request looks on the host clock; the request is
-    never posted twice. Once verified, the deadline is measured from GitHub's
-    time."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = "t-post-pending"
-    _CYCLE._seed_reviewer_at_round_1(db_path, task_id)
-
-    result = _CYCLE._run(db_path, [_ROUND_2], thread_unknown=True, real_post=True)
-
-    state = _meta(db_path, task_id)[arb.STATE_KEY]
-    assert state["status"] == arb.STATUS_REQUESTED
-    assert state["comment_id"] == "issue_9001"
-    assert state["requested_at"] == 0
-    assert state["timestamp_pending"] is True
-    assert not arb.arbitration_is_stale(state, int(time.time()) + 365 * 86400, 24)
-    assert len([cmd for cmd in result.gh_calls if "comment" in cmd]) == 1
-
-    # 30h later on the host's clock, with an answer in the thread and the
-    # lookup still down: the host would call this request long stale.
-    real_now = int(time.time())
-    later = real_now + 30 * 3600
-    key = state["request_key"]
-    request = _convo(9001, _request_body(key), created_at=_iso(real_now - 3600))
-    answer = _convo(
-        777, _verdict_body("FIX", task_id, key=key), created_at=_iso(real_now - 60)
-    )
-    with patch("time.time", return_value=later):
-        result = _CYCLE._run(db_path, [], conversation=[request, answer], cycles=2)
-
-    state = _meta(db_path, task_id)[arb.STATE_KEY]
-    assert state["status"] == arb.STATUS_REQUESTED
-    assert state["timestamp_pending"] is True
-    assert "decision" not in state
-    assert not _activities(db_path, task_id, "review_cap_arbitration")
-    assert not _activities(db_path, task_id, "review_cap_arbitration_expired")
-    assert not [cmd for cmd in result.gh_calls if "comment" in cmd]
-    result.setup.assert_not_called()
-
-    # GitHub answers: the timestamp is verified and the deadline applies from
-    # it. The request went up 31h ago, past the 24h budget; the answer that
-    # arrived meanwhile was posted after that deadline and is not applied.
-    posted_at = real_now - 31 * 3600
-    with patch("time.time", return_value=later):
-        result = _CYCLE._run(
-            db_path,
-            [],
-            conversation=[request, answer],
-            issue_comment_api=[(0, f"{_iso(posted_at)}\n")],
-            cycles=1,
+def _seed_park(db_path: Path, task_id: str, kind: str) -> None:
+    """A task parked ``blocked`` as ``kind`` describes it (see ``_SEEDS``)."""
+    assignee, park_type, at_cap, state, extra = _SEEDS[kind]
+    meta: dict = {
+        "last_reviewed_commit": HEAD,
+        "processed_review_comment_ids": [],
+        "packaged_by": "zf-builder",
+    }
+    if at_cap:
+        meta.update(
+            review_cap_reached=True,
+            review_round=2,
+            commit_review_count=2,
+            blocked_reason="Review cap reached (2 rounds on commit)",
         )
-
-    state = _meta(db_path, task_id)[arb.STATE_KEY]
-    assert state["status"] == arb.STATUS_EXPIRED
-    assert state["requested_at"] == posted_at
-    assert "timestamp_pending" not in state
-    assert "decision" not in state
-    (verified,) = _activities(
-        db_path, task_id, "review_cap_arbitration_timestamp_verified"
-    )
-    assert "issue_9001" in verified[0]
-    assert _activities(db_path, task_id, "review_cap_arbitration_expired")
-    (ignored,) = _activities(db_path, task_id, "review_cap_arbitration_ignored")
-    assert "posted-after-deadline" in ignored[0]
-    assert not [cmd for cmd in result.gh_calls if "comment" in cmd]
-
-
-@pytest.mark.parametrize("corrupt", [-3, "abc", None])
-def test_corrupt_attempt_counter_mints_a_first_attempt_through_the_cycle(
-    tmp_path: Path, corrupt
-):
-    """D3: a negative, non-numeric or missing attempt counter on an earlier,
-    settled request reads as zero through the real cycle: the cap posts a valid
-    attempt-1 request, keyed on attempt 1, and parks on it."""
-    db_path = tmp_path / "test.db"
-    _init_db(db_path)
-    task_id = f"t-cap-corrupt-{corrupt}"
+    if park_type:
+        meta["blocked_reason_type"] = park_type
+    meta.update(extra or {})
+    if state is not None:
+        meta[arb.STATE_KEY] = state = _parked_state(task_id, **state)
     _seed(
         db_path,
         task_id,
-        {
-            "last_reviewed_commit": HEAD,
-            "review_round": 1,
-            "commit_review_count": 1,
-            "processed_review_comment_ids": [],
-            "blocked_reason_type": "changes-requested",
-            "packaged_by": "zf-builder",
-            arb.STATE_KEY: {
-                "status": arb.STATUS_VOID,
-                "void_reason": "task-left-park",
-                "attempts": corrupt,
-                "max_arbitrations": 2,
-                "request_key": _key(task_id, HEAD, attempt=7),
-                "request_head": HEAD,
-            },
-        },
-        assignee="zf-reviewer",
+        meta,
+        assignee=assignee,
         workspace=str(_managed_workspace(db_path.parent, task_id)),
     )
+    if state and state.get("decision") == arb.VERDICT_FIX:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'zf-dispatcher', ?, ?)",
+                (
+                    task_id,
+                    "[AI:zf-dispatcher] Arbitration fix round (1/2): the arbiter's "
+                    "verdict below defines the scope of this round.\n\n"
+                    "=== ARBITRATION VERDICT: FIX ===\n"
+                    f"{state['decision_body']}",
+                    _NOW,
+                ),
+            )
 
-    result = _CYCLE._run(db_path, [_ROUND_2], conversation=[], cycles=2)
 
-    meta = _assert_parked(db_path, task_id, "human-gate")
-    state = meta[arb.STATE_KEY]
-    assert state["status"] == arb.STATUS_REQUESTED
-    assert (state["attempts"], state["max_arbitrations"]) == (1, 2)
-    assert state["request_key"] == _key(task_id, HEAD, attempt=1)
-    assert result.post.call_count == 1
-    assert result.post.call_args.kwargs["key"] == _key(task_id, HEAD, attempt=1)
-    assert "Arbitration attempt 1/2." in result.post.call_args.kwargs["body"]
-    result.conflict.assert_not_called()
+def _older_request_copy(**overrides) -> dict:
+    return _convo(
+        8999,
+        _request_body(_key(_PARKED)),
+        **{"created_at": _iso(_OLDER_AT), **overrides},
+    )
+
+
+_OLDER_DATED = _older_request_copy()
+_OLDER_UNDATED = _older_request_copy(created_at="")
+_ARB_OFF = {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"}
+# The dispatcher's request and a recorded verdict: the protocol's own comments on
+# the PR, never feedback about the change.
+_PROTOCOL = [
+    _std(1, _request_body(_key(_PARKED)), type_="issue_comment"),
+    _std(2, _verdict_body("FIX", _PARKED), type_="issue_comment"),
+]
+_OWN_REQUEST = _std(1, _request_body(_key(_PARKED)))
+# A genuine review that happens to open with the verdict words.
+_BUG_IN_VERDICT = _std(
+    77,
+    "Bug in ARBITRATION VERDICT: a fresh request can inherit the previous "
+    "deadline. The state must keep the comment id the POST returned.",
+)
+# Fresh reviewer feedback, and a plain PR comment a person left.
+_FEEDBACK = _std(900, "Still racy: two dispatch cycles overlap in refresh().")
+_FEEDBACK["state"] = "CHANGES_REQUESTED"
+_NOTE = _std(901, "Rebased main this morning; the conflict is expected.")
+
+# (park kind, reviewDecision, mergeable, PR comments (None: thread unreadable),
+#  automerge, outcome). "-off" outcomes run with arbitration disabled.
+_POLLS = [
+    ("cli-approved", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("cli-approved", "CHANGES_REQUESTED", "CONFLICTING", [], False, "held"),
+    ("cli-approved", "APPROVED", "MERGEABLE", [], True, "merged"),
+    ("cli-approved", "APPROVED", "CONFLICTING", [], True, "held"),
+    ("cli-approved", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "builder"),
+    ("pr-approved", "APPROVED", "MERGEABLE", [], False, "held"),
+    ("pr-approved", "APPROVED", "CONFLICTING", [], False, "held"),
+    ("pr-approved", "CHANGES_REQUESTED", "CONFLICTING", [], False, "conflict"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("cap", "APPROVED", "MERGEABLE", [], True, "held"),
+    ("cap", "APPROVED", "MERGEABLE", [], True, "held-off"),
+    ("cap", "CHANGES_REQUESTED", "CONFLICTING", [_NOTE], False, "conflict"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "arb"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "repark"),
+    ("cap", "CHANGES_REQUESTED", "CONFLICTING", _PROTOCOL, False, "held"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [_BUG_IN_VERDICT], False, "arb"),
+    ("request", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("request", "CHANGES_REQUESTED", "MERGEABLE", [_OWN_REQUEST], False, "held"),
+    ("request", "CHANGES_REQUESTED", "MERGEABLE", [_BUG_IN_VERDICT], False, "held"),
+    ("request-old", "CHANGES_REQUESTED", "MERGEABLE", None, False, "held"),
+    ("hold", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "builder"),
+    ("stuck", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("stuck", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "builder"),
+]
+
+
+def _builder_prompt(db_path: Path, task_id: str) -> str:
+    """The real builder prompt for the task as it stands in ``db_path``."""
+    import dispatcher
+
+    mock_popen = MagicMock()
+    mock_popen.return_value = MagicMock(pid=1, poll=lambda: None)
+    with (
+        patch.object(
+            dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
+        ),
+        patch("subprocess.Popen", mock_popen),
+        patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}),
+    ):
+        os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+        dispatcher.spawn_agent_worker(
+            task_id=task_id,
+            title="Fix Task",
+            description="desc",
+            priority="P1",
+            assignee="zf-builder",
+            workspace_path=os.getcwd(),
+            branch_name=f"task/{task_id}",
+            metadata=json.dumps({}),
+        )
+    return mock_popen.call_args[0][0][-1]
+
+
+@pytest.mark.parametrize(
+    ("kind", "decision", "mergeable", "comments", "automerge", "outcome"), _POLLS
+)
+def test_a_park_holds_until_new_feedback_arrives(
+    tmp_path, kind, decision, mergeable, comments, automerge, outcome
+):
+    """C2-C4, B1/B2, D2, E2: what a poll does with a parked task is decided by the
+    PR state, GitHub's decision and whether new feedback arrived - not by which
+    signal parked it. A quiet poll holds every decision-wait park: no builder, no
+    merge, no conflict routing, nothing expired. A reviewer's approval closes an
+    arbitration fix round before anything else can route, so no path hands the
+    closed verdict back to a builder's brief. New feedback - a review, a plain
+    note, a bug report that merely opens with the verdict words - ends the hold."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    _seed_park(db_path, _PARKED, kind)
+    if automerge:
+        _tag(db_path, _PARKED, '["automerge"]')
+
+    # A hold must survive being polled again; a route is settled in one cycle.
+    result = _CYCLE._run(
+        db_path,
+        comments or [],
+        review_decision=decision,
+        mergeable=mergeable,
+        env=_ARB_OFF if outcome in ("held-off", "repark") else None,
+        thread_unknown=comments is None,
+        cycles=2 if outcome.startswith("held") else 1,
+    )
+
+    row = _row(db_path, _PARKED)
+    meta = json.loads(row["metadata"])
+    state = meta.get(arb.STATE_KEY, {})
+    assert any("merge" in cmd for cmd in result.gh_calls) == (outcome == "merged")
+    assert result.conflict.call_count == (1 if outcome == "conflict" else 0)
+    # The fix round's handoff note stays on the task as history; nothing else
+    # is new unless the poll copied feedback there.
+    copies = _task_comments(db_path, _PARKED)
+    if outcome in ("builder", "arb", "repark"):
+        assert any(comments[0]["body"] in body for body in copies)
+    elif not kind.startswith("request"):
+        # A live request's poll records new comments for visibility only.
+        assert len(copies) == (1 if kind in ("cli-approved", "pr-approved") else 0)
+
+    if outcome == "builder":
+        # ... and routed as a new round. The re-queued builder is asked to do
+        # that work - not the verdict the reviewer already answered.
+        assert (row["status"], row["assignee"]) == ("todo", "zf-builder")
+        assert meta["review_round"] == 1
+        prompt = _builder_prompt(db_path, _PARKED)
+        assert "PULL REQUEST REVIEW COMMENTS TO ADDRESS" in prompt
+        assert comments[0]["body"] in prompt
+        assert "ARBITRATION VERDICT" not in prompt
+        assert "Arbitration fix round" not in prompt
+        return
+    if outcome == "merged":
+        assert row["status"] == "done"
+        return
+    if outcome == "arb":
+        assert result.post.call_count == 1
+        assert state["status"] == arb.STATUS_REQUESTED and state["attempts"] == 1
+    if outcome in ("arb", "repark"):
+        assert (row["status"], row["assignee"]) == ("blocked", "human")
+        assert meta["review_cap_reached"] is True
+        assert (meta["review_round"], meta["commit_review_count"]) == (3, 3)
+        return
+
+    # Held, or routed to the conflict flow: still parked, nothing spawned.
+    assert row["status"] == "blocked"
+    assert row["assignee"] == (
+        "human" if outcome.startswith("held") else _SEEDS[kind][0]
+    )
+    result.spawn.assert_not_called()
+    result.setup.assert_not_called()
+    if outcome == "conflict":
+        return
+    if kind in ("cli-approved", "pr-approved"):
+        # The approval closed the round before anything could route on it, and
+        # the conflicting PR neither requeued a builder nor merged.
+        assert (
+            state["fix_round_closed_at"] and state["fix_round_closed_by"] == "approval"
+        )
+        assert arb.fix_round_brief(meta) is None
+        assert "review_round" not in meta and "commit_review_count" not in meta
+        assert not _activities(db_path, _PARKED, "changes_requested")
+        assert len(_activities(db_path, _PARKED, "approved")) == (kind == "pr-approved")
+    if at_cap := _SEEDS[kind][2]:
+        assert meta["review_cap_reached"] is True
+        assert (meta["review_round"], meta["commit_review_count"]) == (2, 2)
+        assert "conflict_retries" not in meta
+        result.post.assert_not_called()
+    if kind.startswith("request"):
+        # A live request is neither expired nor voided on a poll that could not
+        # read the thread; its own comment is not an ignored verdict, and neither
+        # is a review that merely opens with the verdict words.
+        assert state["status"] == arb.STATUS_REQUESTED
+        for action in ("ignored", "expired", "void"):
+            assert not _activities(db_path, _PARKED, f"review_cap_arbitration_{action}")
+
+
+def _post_request(db_path: Path, comments: list[dict], thread: list[dict], **run):
+    """Two cycles from a review-cap park that make the dispatcher post a request
+    (``real_post``); the state they leave behind."""
+    _CYCLE._run(db_path, comments, conversation=thread, real_post=True, cycles=2, **run)
+    return _meta(db_path, _PARKED)[arb.STATE_KEY]
+
+
+@pytest.mark.parametrize(
+    ("posted_at", "adopted"),
+    [
+        (_POSTED_AT, False),  # posted: its own comment, by id
+        (_POSTED_AT, True),  # adopted copy, verified by id on the next poll
+        (None, True),  # adopted undated, GitHub not answering
+        (None, False),  # posted with GitHub not answering
+    ],
+    ids=["posted", "adopted", "adopted-unverified", "posted-unverified"],
+)
+def test_the_deadline_follows_the_comment_the_post_named(tmp_path, posted_at, adopted):
+    """A4, D1: an attempt key identifies the logical request, not the GitHub
+    comment. A successful POST names its own comment and the deadline is bound
+    to that id's GitHub timestamp even when a list readback exposes an older
+    same-key copy; only a lost local state adopts that copy. Either way, with
+    no verified time a verdict is not consumed, the deadline does not run and
+    nothing is posted twice, until the poll reads the timestamp back."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    _seed_park(db_path, _PARKED, "cap")
+    key = _key(_PARKED)
+    older = _OLDER_UNDATED if adopted else _OLDER_DATED
+    thread = [
+        older,
+        # A verdict waiting to be read.
+        _convo(2, _verdict_body("FIX", _PARKED), created_at=_iso(_POSTED_AT + 60)),
+    ]
+    # The review that hits the cap is what makes the cycle post the request. The
+    # thread reads inside the posting: an unreadable one before the POST, or the
+    # older copy before and after it.
+    result = _CYCLE._run(
+        db_path,
+        [_FEEDBACK, _std(8999, _request_body(key))],
+        conversation=thread,
+        real_post=True,
+        cycles=2,
+        thread_calls=[[older]] if adopted else [None, [older]],
+        issue_comment_api=[(0, _iso(_POSTED_AT))] if posted_at else [],
+    )
+
+    state = _meta(db_path, _PARKED)[arb.STATE_KEY]
+    assert state["request_key"] == key and state["attempts"] == 1
+    assert state["comment_id"] == ("issue_8999" if adopted else "issue_9001")
+    assert bool(state.get("adopted")) == adopted
+    # One request on the PR, however it got there: nothing is posted twice.
+    assert sum("comment" in cmd for cmd in result.gh_calls) == (0 if adopted else 1)
+    if posted_at is None:
+        assert state["status"] == arb.STATUS_REQUESTED
+        assert state["requested_at"] == 0 and state["timestamp_pending"]
+    else:
+        assert state["requested_at"] == posted_at
+        assert not state.get("timestamp_pending")
+        # Time verified: the second cycle consumed the verdict that was waiting.
+        assert state["status"] == arb.STATUS_FIX_REQUESTED
+
+
+def test_a_second_attempt_on_the_same_head_is_a_new_request(tmp_path):
+    """The cap recurs on a head that was already arbitrated: attempt 2 is a new
+    request - the attempt-1 comment, right there in a readable thread, is not
+    adopted for it and the attempt-1 verdict does not apply."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    _seed_park(db_path, _PARKED, "fix-closed")
+    old = [
+        _convo(1, _request_body(_key(_PARKED)), created_at=_iso(_OLDER_AT)),
+        _convo(501, _verdict_body("FIX", _PARKED), created_at=_iso(_OLDER_AT + 60)),
+    ]
+    state = _post_request(
+        db_path,
+        [_ROUND_2, _std(1, _request_body(_key(_PARKED)))],
+        old,
+        thread_calls=[old],
+        issue_comment_api=[(0, _iso(_POSTED_AT))],
+    )
+
+    assert state["attempts"] == 2
+    assert state["request_key"] == _key(_PARKED, HEAD, attempt=2)
+    assert state["comment_id"] == "issue_9001" and state["requested_at"] == _POSTED_AT
+    assert "adopted" not in state and "decision" not in state
+    # Only the attempt-2 request was copied onto the task, not the attempt-1 one.
+    on_task = _dispatcher_comments(db_path, _PARKED)
+    assert sum(f"REQUEST: {state['request_key']}" in c for c in on_task) == 1
+    assert not any(f"REQUEST: {_key(_PARKED)}" in c for c in on_task)

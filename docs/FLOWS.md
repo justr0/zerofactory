@@ -236,8 +236,10 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
    - `MERGED` / `CLOSED` → stop worker, remove worktree, delete remote branch,
      status `done`.
    - `CONFLICTING` → conflict resolution flow (unless a builder already resolved and is
-     handing off — then fall through to packaging). A plain review-cap park is the exception:
-     with no new PR comment it holds (`cap_park_hold`), because it waits on a person, not on a merge.
+     handing off — then fall through to packaging). Parks are the exception: with no new PR comment
+     a plain review-cap park or a stuck park holds (`park_hold`), because it waits on a person, not on
+     a merge, and an approval that answered an arbitration fix round goes to the approval park instead
+     of a builder.
    - **`changes-requested` verdict (`blocked_reason_type`), `reviewDecision == CHANGES_REQUESTED`, or actionable PR review comments (`is_actionable_review_comment`)** → record comments (memory
      auto-extraction runs here), increment cumulative `review_round` across PR rework commits,
      remove worktree, clear `blocked_reason` / `blocked_reason_type`, route back to builder on Round 1: `todo` + `assignee=<PR author>` + review-comment
@@ -265,16 +267,19 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      equal to both the request head and the live PR head; anything else is logged and ignored. **FIX** re-opens
      one bounded fix round (fresh review budget; the verdict body is the builder's entire brief, earlier findings
      are deferred) and the round closes once the reviewer answers the fix commit — a recorded review round or an
-     approval — after which the verdict is no longer the brief and the closed protocol records (the recorded
-     verdict, the dispatcher's fix-round note) stay on the task as history but are excluded from the builder's
+     approval, closed on the poll that sees it, before any conflict routing — after which the verdict is no
+     longer the brief and the closed protocol records (the recorded verdict, the dispatcher's fix-round note)
+     stay on the task as history but are excluded from the builder's
      review-comment prompt; **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
      leaves it parked for the human. Before a verdict is consumed the dispatcher re-checks the flag and the
      human-review opt-outs (voiding the request into a plain park), and a reply is applied only inside
      `requested_at + ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` (default **24**), after which the request
      expires into the human park. `requested_at` is always GitHub's `created_at` for the request comment, never this
-     host's clock: when the thread cannot be read back after a successful POST, the comment is resolved by id, and
-     until its timestamp is verified (`timestamp_pending`) the request consumes nothing, expires nothing and is
-     never posted twice. Expiry is decided only by a poll that could read the PR conversation: when the
+     host's clock: a successful POST binds the request to the comment it names, resolved by id even when the
+     thread shows an older same-key copy; only without an id of its own (gh failed after GitHub accepted, or
+     the local state was lost) is the thread's copy taken by key, and until its timestamp is verified
+     (`timestamp_pending`) the request consumes nothing, expires nothing and is never posted twice.
+     Expiry is decided only by a poll that could read the PR conversation: when the
      fetch fails, the poll consumes nothing and expires nothing. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
      (default **2**); beyond that the cap parks for a human as before. Tasks already flagged for human review
      (`permanently_blocked`, `hitl` / `manual-review` tags, HITL-labelled external issues) are never arbitrated,
@@ -462,7 +467,7 @@ are recorded as content without triggering a reroute; substantive critique immed
 |---|---|
 | `blocked_reason_type == changes-requested`, `reviewDecision == CHANGES_REQUESTED` (not on an approval park), or actionable PR review comment(s) | `todo` + builder + 🚨 review-comment block (round counter++; unparks approved tasks) |
 | `blocked_reason_type == approved` or `reviewDecision == APPROVED` (no actionable comments) | `blocked` + `human` (awaiting merge; idempotent parking; a standing `CHANGES_REQUESTED` never auto-merges) |
-| `review_round >= 2` (cumulative per PR across rework commits) | escalate `blocked` + `human` + `review_cap_reached` (a quiet plain cap park holds through a PR conflict) |
+| `review_round >= 2` (cumulative per PR across rework commits) | escalate `blocked` + `human` + `review_cap_reached` (a quiet plain cap park holds, conflict or standing approval notwithstanding) |
 | Non-actionable comments only (approval notes, builder notes, automated bot messages) | record comments only; no reroute |
 | Arbitration protocol comments (the dispatcher's request, an arbiter's verdict line) | never feedback: ordinary routing neither records nor re-queues on them |
 
