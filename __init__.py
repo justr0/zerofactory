@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -194,15 +195,19 @@ except ImportError:
 try:
     from .dispatcher import (
         dispatcher_owned_elsewhere,
+        is_worker_or_child_process,
         run_dispatch_cycle,
         start_background_dispatcher,
     )
+    from .dispatcher.worker_handoff import resolve_worker_execution_id
 except ImportError:
     from dispatcher import (  # type: ignore
         dispatcher_owned_elsewhere,
+        is_worker_or_child_process,
         run_dispatch_cycle,
         start_background_dispatcher,
     )
+    from dispatcher.worker_handoff import resolve_worker_execution_id  # type: ignore
 
 try:
     from .dashboard.routes.cron import (
@@ -235,9 +240,13 @@ except ImportError:
     from profile_manager import ZF_PROFILES, ensure_zf_profiles  # type: ignore
 
 try:
-    from .issues import GitHubIssueClient, import_external_issue
+    from .issues import AI_REQUEST_LABELS, GitHubIssueClient, import_external_issue
 except ImportError:
-    from issues import GitHubIssueClient, import_external_issue  # type: ignore
+    from issues import (  # type: ignore
+        AI_REQUEST_LABELS,
+        GitHubIssueClient,
+        import_external_issue,
+    )
 
 try:
     from .paths import get_active_profile
@@ -259,11 +268,105 @@ except ImportError:
         ZEROFACTORY_ISSUES_URL = f"https://github.com/{ZEROFACTORY_REPO}/issues"
 
 
+def _is_one_off_cli_invocation() -> bool:
+    """True when this process is a one-shot ``hermes zerofactory <command>`` run.
+
+    Every plugin CLI command returns and exits (``dispatch`` runs a single
+    cycle itself). A background dispatcher started in such a process dies with
+    it, taking a private worker registry and leaving any worker it spawned
+    without a dispatcher that holds a handle for it.
+    """
+    return any(arg == "zerofactory" for arg in sys.argv[1:5])
+
+
+# Scripts and modules that are the gateway runtime itself: no ``gateway`` subcommand to read.
+_GATEWAY_ENTRYPOINTS = frozenset(
+    {"hermes-gateway", "hermes-gateway.exe", "gateway/run.py", "desktop-gateway.py"}
+)
+_PYTHON_EXE = re.compile(r"pythonw?(\d+(\.\d+)*)?(\.exe)?")
+# Options that consume the following token: ``hermes``'s profile selector and the
+# interpreter's value-taking flags.
+_OPTIONS_WITH_VALUE = frozenset({"-p", "--profile", "-X", "-W", "-Q"})
+
+
+def _gateway_subcommand(args: list[str]) -> Optional[str]:
+    """The ``hermes gateway`` action named by ``args`` (the tokens after
+    ``hermes``), or None when ``gateway`` is not the first subcommand."""
+    while args and args[0].startswith("-"):
+        args = args[2:] if args[0] in _OPTIONS_WITH_VALUE else args[1:]
+    if not args or args[0].lower() != "gateway" or {"-h", "--help"} & set(args[1:]):
+        return None
+    return next((arg for arg in args[1:] if not arg.startswith("-")), "run")
+
+
+def _gateway_action() -> Optional[str]:
+    """The ``hermes gateway`` action this process runs with (``"run"`` for a gateway
+    runtime), or None when this process is not a Hermes gateway.
+
+    ``gateway`` must be the first subcommand: a token that merely equals
+    ``"gateway"`` (a prompt, an option value) is not a gateway. Dedicated gateway
+    entrypoints and the interpreter spellings Hermes itself accepts are read the
+    same way, in both of their forms:
+
+    * inside the process (``sys.argv``): ``python -m hermes_cli.main gateway run``
+      and ``python …/hermes_cli/main.py gateway run`` both put the module file in
+      ``sys.argv[0]``, never the interpreter;
+    * as a command line seen from another process, where the interpreter is first.
+    """
+    argv = sys.argv
+    args = argv[1:]
+    exe = (Path(argv[0]).name if argv and argv[0] else "").lower()
+    if exe in _GATEWAY_ENTRYPOINTS:
+        return "run"
+    if _PYTHON_EXE.fullmatch(exe):
+        # python [flags] -m hermes_cli.main <args> | python [flags] …/hermes_cli/main.py <args>
+        skip_value = False
+        for i, arg in enumerate(args):
+            if skip_value:
+                skip_value = False
+                continue
+            if arg == "-m":
+                module = args[i + 1 : i + 2]
+                if module == ["hermes_cli.main"]:
+                    args = args[i + 2 :]
+                elif module == ["gateway.run"]:
+                    return "run"
+                else:
+                    return None
+                break
+            if arg.replace("\\", "/").endswith("hermes_cli/main.py"):
+                args = args[i + 1 :]
+                break
+            if arg in _OPTIONS_WITH_VALUE:
+                skip_value = True
+        else:
+            return None
+    elif exe not in ("hermes", "hermes.exe") and not (
+        argv and str(argv[0]).replace("\\", "/").lower().endswith("hermes_cli/main.py")
+    ):
+        return None
+    return _gateway_subcommand(args)
+
+
 def _should_auto_start_dispatcher() -> bool:
-    """Return True only when zerofactory.db exists and auto_start_dispatcher is enabled."""
+    """Return True only in the gateway runtime process when zerofactory.db exists
+    and auto_start_dispatcher is enabled.
+
+    The gateway is the dispatcher's one host. Any other long-lived process that
+    loads the plugin (``hermes dashboard``, a chat, a desktop bridge) would get its
+    own worker registry and its own polling loop, and would keep dispatching from
+    the code loaded at ITS start after the gateway has been restarted onto fixed
+    code. Those processes keep the dashboard's explicit "start dispatcher" control.
+    """
+    if _is_one_off_cli_invocation():
+        return False
+    if _gateway_action() != "run":
+        return False
     if os.environ.get("ZEROFACTORY_SKIP_DISPATCHER") or os.environ.get(
         "ZEROFACTORY_DISABLE_DISPATCHER"
     ):
+        return False
+    if is_worker_or_child_process():
         return False
     try:
         import sqlite3
@@ -464,8 +567,8 @@ def register(ctx: Any):
         )
         p_import_gh.add_argument(
             "--label",
-            default="zerofactory",
-            help="Required human request label for AI investigation (default: 'zerofactory')",
+            default=None,
+            help="Request label (default: zerofactory; sync without this option also recognizes ai-investigate and ai-triage)",
         )
         p_import_gh.add_argument(
             "--force",
@@ -542,6 +645,13 @@ def register(ctx: Any):
             "--actor",
             default=None,
             help="Actor executing move (defaults to HERMES_PROFILE or 'user')",
+        )
+        p_move.add_argument(
+            "--execution-id",
+            default=None,
+            help="Handoff token of the dispatch reporting (ZEROFACTORY_WORKER_EXECUTION_ID "
+            "in the worker prompt); defaults to the env variable, then to the token of "
+            "this session's latest dispatch",
         )
 
         # update
@@ -800,7 +910,7 @@ def register(ctx: Any):
         )
         p_bupdate = board_subs.add_parser(
             "update",
-            help="Update board configuration (description, target-branch, architecture)",
+            help="Update board configuration (description, target-branch, architecture, automerge)",
         )
         p_bupdate.add_argument("slug", help="Board slug to update")
         p_bupdate.add_argument(
@@ -813,6 +923,19 @@ def register(ctx: Any):
             "--architecture",
             default=None,
             help="Inter-service architecture and contracts",
+        )
+        p_bupdate.add_argument(
+            "--automerge",
+            dest="automerge",
+            action="store_true",
+            default=None,
+            help="Merge each PR automatically once its reviewer approves it",
+        )
+        p_bupdate.add_argument(
+            "--no-automerge",
+            dest="automerge",
+            action="store_false",
+            help="Keep approved PRs parked for a human merge decision",
         )
 
         p_bdelete = board_subs.add_parser(
@@ -963,6 +1086,9 @@ def register(ctx: Any):
 
             signal.signal(signal.SIGINT, _handle_stop)
             signal.signal(signal.SIGTERM, _handle_stop)
+            if hasattr(signal, "SIGBREAK"):
+                # Windows delivers no SIGTERM: Ctrl+Break is the graceful stop there.
+                signal.signal(signal.SIGBREAK, _handle_stop)
             print("Zero Factory dispatcher started (foreground). Press Ctrl+C to stop.")
             while not stop_requested:
                 time.sleep(1.0)
@@ -1056,7 +1182,8 @@ def register(ctx: Any):
         elif action == "import-gh-issue":
             client = GitHubIssueClient(default_repo=getattr(args, "repo", None))
             actor = getattr(args, "actor", None) or get_active_profile() or "user"
-            req_label = getattr(args, "label", "zerofactory")
+            selected_label = getattr(args, "label", None) or None
+            req_label = selected_label or "zerofactory"
             force = getattr(args, "force", False)
             sync_mode = getattr(args, "sync", False)
 
@@ -1077,14 +1204,21 @@ def register(ctx: Any):
                         )
                         sys.exit(1)
 
+                    labels_to_scan = (
+                        (selected_label,) if selected_label else AI_REQUEST_LABELS
+                    )
                     print(
-                        f"\nScanning {repo_to_sync} for open issues labeled '{req_label}'..."
+                        f"\nScanning {repo_to_sync} for open issues labeled "
+                        f"{', '.join(labels_to_scan)}..."
                     )
                     issues_to_import = client.fetch_investigation_issues(
-                        repo=repo_to_sync, label=req_label, state="open"
+                        repo=repo_to_sync, label=selected_label, state="open"
                     )
                     if not issues_to_import:
-                        print(f"No open issues found with label '{req_label}'.\n")
+                        print(
+                            "No open issues found with labels "
+                            f"{', '.join(labels_to_scan)}.\n"
+                        )
                         return
 
                     print(
@@ -1123,7 +1257,7 @@ def register(ctx: Any):
                     )
                     # Check human request label
                     if not force and not issue.has_ai_request_label(
-                        {req_label, "zerofactory", "ai-investigate", "ai-triage"}
+                        set(AI_REQUEST_LABELS) | {req_label}
                     ):
                         print(
                             f"\nError: GitHub issue #{issue.id} ('{issue.title}') lacks an explicit human AI investigation label "
@@ -1251,7 +1385,9 @@ def register(ctx: Any):
                 actor=actor,
                 reason=reason,
                 assignee=assignee,
-                worker_execution_id=os.environ.get("ZEROFACTORY_WORKER_EXECUTION_ID"),
+                worker_execution_id=resolve_worker_execution_id(
+                    getattr(args, "execution_id", None), actor=actor
+                ),
             )
             res = _move_task(args.task_id, req)
             if res.get("ignored"):
@@ -1561,8 +1697,19 @@ def register(ctx: Any):
                     up_kwargs["target_branch"] = args.target_branch
                 if getattr(args, "architecture", None) is not None:
                     up_kwargs["architecture"] = args.architecture
+                if getattr(args, "automerge", None) is not None:
+                    up_kwargs["automerge"] = args.automerge
                 res = _update_board(args.slug, _BoardUpdate(**up_kwargs))
                 print(f"✓ Updated board '{args.slug}'.")
+                if "automerge" in up_kwargs:
+                    print(
+                        "  Auto-merge: "
+                        + (
+                            "ON (a reviewer's approval merges the PR)"
+                            if args.automerge
+                            else "OFF (approved PRs wait for a human merge decision)"
+                        )
+                    )
             elif b_act == "delete":
                 res = _delete_board(args.slug)
                 print(

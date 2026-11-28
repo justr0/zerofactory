@@ -602,7 +602,7 @@ def test_blocked_assigns_human_except_changes_requested(
                 "title": title,
                 "board_slug": default_board,
                 "status": "todo",
-                "assignee": "zf-builder",
+                "assignee": "zf-reviewer",
             },
         ).json()["id"]
 
@@ -627,7 +627,8 @@ def test_blocked_assigns_human_except_changes_requested(
     )
     assert _assignee(t2) == "human"
 
-    # 3. 'changes-requested' is builder-bound feedback -> assignee unchanged
+    # 3. 'changes-requested' is builder-bound feedback -> the handler leaves the
+    #    assignee alone (the dispatcher routes the task to the builder)
     t3 = _new_task("Changes Requested Feedback")
     api_client.post(
         f"/api/plugins/zerofactory/tasks/{t3}/move",
@@ -637,7 +638,7 @@ def test_blocked_assigns_human_except_changes_requested(
             "reason": "changes-requested",
         },
     )
-    assert _assignee(t3) == "zf-builder"
+    assert _assignee(t3) == "zf-reviewer"
 
 
 def test_unknown_status_rejected(api_client: TestClient, default_board: str):
@@ -692,6 +693,8 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
     'done' is strictly terminal and 'blocked' is a human/reviewer gate — stale
     worker completions must be ignored for both, except the builder-bound
     'changes-requested' park where finishing the fix is the desired outcome.
+    (The reviewer parks its own task; a reviewer report on a builder-owned task
+    is stale and covered by the re-route test below.)
     """
     task_id = api_client.post(
         "/api/plugins/zerofactory/tasks",
@@ -699,7 +702,7 @@ def test_stale_agent_completion_cannot_clobber_parked_state(
             "title": "Stale completion guard",
             "board_slug": default_board,
             "status": "todo",
-            "assignee": "zf-builder",
+            "assignee": "zf-reviewer",
         },
     ).json()["id"]
 
@@ -1080,3 +1083,72 @@ def test_4_column_move_human_and_stage_derivation(
     assert t3["assignee"] == "zf-builder"
     assert t3["stage"] == "building"
     assert t3["ui_column"] == "todo"
+
+
+def test_late_report_from_earlier_stage_cannot_pull_rerouted_task_back(
+    api_client: TestClient, default_board: str
+):
+    """Regression (zf-jae-035201b6): a task re-routed builder -> reviewer was pulled
+    back to running/packaging by the builder whose terminate had been skipped, and
+    later gated a second time by a reviewer that outlived its own re-route. A `done`
+    or reviewer `blocked` report from the profile that no longer owns the task is
+    stale and changes nothing."""
+    task_id = api_client.post(
+        "/api/plugins/zerofactory/tasks",
+        json={
+            "title": "Stale stage report guard",
+            "board_slug": default_board,
+            "status": "todo",
+            "assignee": "zf-builder",
+        },
+    ).json()["id"]
+
+    # builder's stage: a reviewer's block belongs to a later stage
+    late_block = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={
+            "status": "blocked",
+            "actor": "zf-reviewer",
+            "reason": "changes-requested",
+        },
+    )
+    assert late_block.status_code == 200
+    assert late_block.json()["ignored"] is True
+    assert late_block.json()["status"] == "todo"
+
+    # handed to the reviewer: the builder's late completion is stale
+    move_res = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "todo", "assignee": "zf-reviewer", "actor": "user"},
+    )
+    assert move_res.status_code == 200
+    late_done = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={"status": "done", "actor": "zf-builder"},
+    )
+    assert late_done.status_code == 200
+    assert late_done.json()["ignored"] is True
+    assert late_done.json()["status"] == "todo"
+
+    detail = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()["task"]
+    assert detail["status"] == "todo"
+    assert detail["assignee"] == "zf-reviewer"
+    assert "awaiting_pr" not in str(detail.get("metadata"))
+
+    # the owner's own report still applies
+    own = api_client.post(
+        f"/api/plugins/zerofactory/tasks/{task_id}/move",
+        json={
+            "status": "blocked",
+            "actor": "zf-reviewer",
+            "reason": "changes-requested",
+        },
+    )
+    assert own.status_code == 200
+    assert not own.json().get("ignored")
+    assert own.json()["status"] == "blocked"
+    own_detail = api_client.get(f"/api/plugins/zerofactory/tasks/{task_id}").json()[
+        "task"
+    ]
+    # the handler parks it; routing to the builder is the dispatcher's job
+    assert own_detail["assignee"] == "zf-reviewer"

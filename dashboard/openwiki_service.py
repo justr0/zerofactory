@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -39,13 +40,12 @@ SETUP_OPENWIKI_TASK_DEDUP_KEY = "setup:openwiki"
 SETUP_OPENWIKI_TASK_TITLE_PREFIX = "chore(repo): setup OpenWiki"
 
 
-def get_board_linked_repos(
+def _get_board_repository_rows(
     board_slug: str, db_path: str | Path | None = None
 ) -> list[dict[str, Any]]:
-    """Retrieve all resolved repositories belonging to a board."""
+    """Read authoritative board membership rows; propagate lookup failures."""
     if not board_slug:
         return []
-    import os
     import sqlite3
 
     try:
@@ -55,62 +55,61 @@ def get_board_linked_repos(
 
     eff_db = Path(db_path or os.environ.get("ZEROFACTORY_DB") or get_db_path())
     if not eff_db.exists():
-        return []
+        raise FileNotFoundError(f"Zero Factory database not found: {eff_db}")
 
+    with closing(sqlite3.connect(str(eff_db), timeout=5.0)) as conn, conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, repo_alias, git_url, target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
+            (board_slug,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _resolve_board_repo_path(board_slug: str, repo: dict[str, Any]) -> Path | None:
+    """Resolve a linked repository locally without changing its DB membership."""
     resolver = get_repo_resolver()
-    linked_repos: list[dict[str, Any]] = []
+    if resolver:
+        try:
+            resolved = resolver(
+                {"git_url": repo["git_url"], "slug": repo["repo_alias"]}
+            )
+            if resolved and resolved.is_dir() and (resolved / ".git").exists():
+                return resolved.resolve()
+        except Exception:
+            pass
 
     try:
-        with sqlite3.connect(str(eff_db), timeout=5.0) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT repo_alias, git_url, target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",
-                (board_slug,),
-            )
-            rows = cursor.fetchall()
-            for r in rows:
-                alias = r["repo_alias"]
-                url = r["git_url"]
-                repo_path = None
-                if resolver:
-                    try:
-                        resolved = resolver({"git_url": url, "slug": alias})
-                        if (
-                            resolved
-                            and resolved.is_dir()
-                            and (resolved / ".git").exists()
-                        ):
-                            repo_path = resolved.resolve()
-                    except Exception:
-                        pass
-                if not repo_path:
-                    try:
-                        from paths import get_board_repos_dir  # type: ignore
-                    except Exception:
-                        try:
-                            from ..paths import get_board_repos_dir  # type: ignore
-                        except Exception:
-                            get_board_repos_dir = lambda b: (
-                                Path.home()
-                                / ".zerofactory"
-                                / "workspaces"
-                                / b
-                                / "repos"
-                            )  # type: ignore
-                    b_repo = get_board_repos_dir(board_slug) / alias
-                    if b_repo.is_dir() and (b_repo / ".git").exists():
-                        repo_path = b_repo.resolve()
-                if repo_path:
-                    linked_repos.append(
-                        {
-                            "alias": alias,
-                            "path": repo_path,
-                            "url": url,
-                        }
-                    )
+        from paths import get_board_repos_dir  # type: ignore
     except Exception:
-        pass
+        try:
+            from ..paths import get_board_repos_dir  # type: ignore
+        except Exception:
+            get_board_repos_dir = lambda b: (  # type: ignore
+                Path.home() / ".zerofactory" / "workspaces" / b / "repos"
+            )
+    board_repo = get_board_repos_dir(board_slug) / repo["repo_alias"]
+    if board_repo.is_dir() and (board_repo / ".git").exists():
+        return board_repo.resolve()
+    return None
+
+
+def get_board_linked_repos(
+    board_slug: str, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Retrieve locally resolved repositories belonging to a board."""
+    try:
+        rows = _get_board_repository_rows(board_slug, db_path=db_path)
+    except Exception:
+        return []
+
+    linked_repos = []
+    for repo in rows:
+        repo_path = _resolve_board_repo_path(board_slug, repo)
+        if repo_path:
+            linked_repos.append(
+                {"alias": repo["repo_alias"], "path": repo_path, "url": repo["git_url"]}
+            )
     return linked_repos
 
 
@@ -277,13 +276,32 @@ def sync_board_openwiki_workspace(
     import re
     import tempfile
 
-    linked_repos = get_board_linked_repos(board_slug, db_path=db_path)
-    if not linked_repos:
-        return {"status": "skipped", "reason": "No local repositories resolved"}
+    try:
+        repository_rows = _get_board_repository_rows(board_slug, db_path=db_path)
+    except Exception as e:
+        return {"status": "error", "error": f"Failed to read board repositories: {e}"}
+
+    linked_repos = []
+    unresolved_repos = []
+    for repo in repository_rows:
+        path = _resolve_board_repo_path(board_slug, repo)
+        if path:
+            linked_repos.append(
+                {
+                    "id": repo.get("id"),
+                    "alias": repo["repo_alias"],
+                    "path": path,
+                    "url": repo["git_url"],
+                }
+            )
+        else:
+            unresolved_repos.append(repo)
 
     openwiki_dir = get_openwiki_home_dir()
-    openwiki_dir.mkdir(parents=True, exist_ok=True)
     registry_file = openwiki_dir / WIKI_WORKSPACES_FILE
+
+    if not registry_file.exists() and not repository_rows:
+        return {"status": "removed", "board_slug": board_slug, "member_wikis": []}
 
     registry: dict[str, Any] = {
         "version": 1,
@@ -295,21 +313,61 @@ def sync_board_openwiki_workspace(
     if registry_file.exists():
         try:
             loaded = json.loads(registry_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict) and loaded.get("version") == 1:
-                registry = loaded
-        except Exception:
-            pass
+        except Exception as e:
+            return {"status": "error", "error": f"Failed to read registry: {e}"}
+        if not isinstance(loaded, dict) or loaded.get("version") != 1:
+            return {"status": "error", "error": "Unsupported OpenWiki registry format"}
+        registry = loaded
 
     existing_wikis: list[dict[str, Any]] = registry.setdefault("wikis", [])
     existing_workspaces: list[dict[str, Any]] = registry.setdefault("workspaces", [])
     existing_active: list[dict[str, Any]] = registry.setdefault("active", [])
+    if not all(
+        isinstance(items, list)
+        for items in (existing_wikis, existing_workspaces, existing_active)
+    ):
+        return {"status": "error", "error": "Invalid OpenWiki registry entries"}
 
     def _slugify(val: str, prefix: str = "item") -> str:
         s = re.sub(r"[^a-z0-9-]", "-", val.lower().strip()).strip("-")
         s = re.sub(r"-+", "-", s)
         return s[:63] if s else prefix
 
-    # 1. Register or update wikis
+    # The collision-resistant ID is the ownership boundary. Display names and
+    # legacy slug IDs are user-controlled and cannot prove board ownership.
+    ws_id = f"{_slugify(board_slug, 'workspace')[:63]}-{hashlib.sha256(board_slug.encode()).hexdigest()}"
+    matching_workspaces = [ws for ws in existing_workspaces if ws.get("id") == ws_id]
+    target_workspace_ids = {ws_id}
+    target_ws = next((ws for ws in matching_workspaces if ws.get("id") == ws_id), None)
+    if target_ws is None and matching_workspaces:
+        target_ws = matching_workspaces[0]
+    old_member_ids = {
+        wiki_id
+        for ws in matching_workspaces
+        for wiki_id in ws.get("wikis", [])
+        if isinstance(wiki_id, str)
+    }
+
+    def _repository_key(repo: dict[str, Any]) -> str:
+        repo_id = repo.get("id")
+        return f"id:{repo_id}" if repo_id is not None else f"alias:{repo['repo_alias']}"
+
+    repository_wikis = (
+        target_ws.get("repository_wikis", {})
+        if target_ws and isinstance(target_ws.get("repository_wikis", {}), dict)
+        else {}
+    )
+    current_repository_keys = {_repository_key(repo) for repo in repository_rows}
+    repo_wiki_ids = {
+        key: wiki_id
+        for key, wiki_id in repository_wikis.items()
+        if key in current_repository_keys
+        and isinstance(wiki_id, str)
+        and wiki_id in old_member_ids
+    }
+
+    # 1. Register or update resolved wikis, preserving a stable row-to-wiki
+    # identity for linked repositories whose local checkout is unavailable.
     root_to_wiki_id: dict[str, str] = {}
     used_wiki_ids: set[str] = {w.get("id") for w in existing_wikis if w.get("id")}
 
@@ -319,65 +377,156 @@ def sync_board_openwiki_workspace(
 
     for lr in linked_repos:
         r_str = str(lr["path"])
-        if r_str in root_to_wiki_id:
-            continue
-        base_id = _slugify(lr["alias"], "wiki")
-        wiki_id = base_id
-        counter = 1
-        while wiki_id in used_wiki_ids:
-            wiki_id = f"{base_id}-{counter}"
-            counter += 1
-        used_wiki_ids.add(wiki_id)
-        existing_wikis.append(
-            {
-                "id": wiki_id,
-                "name": lr["alias"],
-                "root": r_str,
-            }
+        wiki_id = root_to_wiki_id.get(r_str)
+        if wiki_id is None:
+            base_id = _slugify(lr["alias"], "wiki")
+            wiki_id = base_id
+            counter = 1
+            while wiki_id in used_wiki_ids:
+                wiki_id = f"{base_id}-{counter}"
+                counter += 1
+            used_wiki_ids.add(wiki_id)
+            existing_wikis.append(
+                {
+                    "id": wiki_id,
+                    "name": lr["alias"],
+                    "root": r_str,
+                }
+            )
+            root_to_wiki_id[r_str] = wiki_id
+        repo_wiki_ids[_repository_key({"id": lr["id"], "repo_alias": lr["alias"]})] = (
+            wiki_id
         )
-        root_to_wiki_id[r_str] = wiki_id
 
-    member_wiki_ids = [
-        root_to_wiki_id[str(lr["path"])]
-        for lr in linked_repos
-        if str(lr["path"]) in root_to_wiki_id
-    ]
+    # Keep prior membership for linked repositories whose local checkout is
+    # unavailable. Their persisted repository identity prevents aliases of the
+    # same checkout from being confused with detached repositories.
+    unresolved_member_ids = set()
+    unresolved_unmatched = False
+    for repo in unresolved_repos:
+        repo_key = _repository_key(repo)
+        if repo_key in repo_wiki_ids:
+            continue
+        matching_ids = []
+        for wiki in existing_wikis:
+            wiki_id = wiki.get("id")
+            if (
+                isinstance(wiki_id, str)
+                and wiki_id in old_member_ids
+                and (
+                    wiki.get("name") == repo["repo_alias"]
+                    or (
+                        wiki.get("root")
+                        and Path(wiki["root"]).name == repo["repo_alias"]
+                    )
+                )
+            ):
+                matching_ids.append(wiki_id)
+        if matching_ids:
+            repo_wiki_ids[repo_key] = matching_ids[0]
+        else:
+            unresolved_unmatched = True
+    if unresolved_unmatched:
+        unresolved_member_ids.update(old_member_ids)
+    member_wiki_ids = list(
+        dict.fromkeys(
+            [
+                *(
+                    repo_wiki_ids[key]
+                    for key in map(_repository_key, repository_rows)
+                    if key in repo_wiki_ids
+                ),
+                *unresolved_member_ids,
+            ]
+        )
+    )
 
-    # 2. Update or create workspace for board_slug
-    ws_id = f"{_slugify(board_slug, 'workspace')[:63]}-{hashlib.sha256(board_slug.encode()).hexdigest()}"
-    target_ws = None
-    for ws in existing_workspaces:
-        if ws.get("id") == ws_id or ws.get("name") == board_slug:
-            target_ws = ws
-            break
-
-    if target_ws:
-        merged_ids = list(dict.fromkeys(target_ws.get("wikis", []) + member_wiki_ids))
+    # 2. Reconcile board workspace membership, leaving same-name custom
+    # workspaces untouched.
+    if not repository_rows:
+        existing_workspaces[:] = [
+            ws for ws in existing_workspaces if ws.get("id") not in target_workspace_ids
+        ]
+    elif target_ws:
         target_ws["id"] = ws_id
-        target_ws["wikis"] = merged_ids
+        target_ws["wikis"] = member_wiki_ids
+        target_ws["repository_wikis"] = {
+            key: repo_wiki_ids[key]
+            for key in map(_repository_key, repository_rows)
+            if key in repo_wiki_ids
+        }
         target_ws["name"] = board_slug
+        existing_workspaces[:] = [
+            ws
+            for ws in existing_workspaces
+            if ws is target_ws or ws.get("id") not in target_workspace_ids
+        ]
     else:
         existing_workspaces.append(
             {
                 "id": ws_id,
                 "name": board_slug,
                 "wikis": member_wiki_ids,
+                "repository_wikis": {
+                    key: repo_wiki_ids[key]
+                    for key in map(_repository_key, repository_rows)
+                    if key in repo_wiki_ids
+                },
             }
         )
 
-    # 3. Update active selections
-    for wid in member_wiki_ids:
-        found = False
-        for act in existing_active:
-            if act.get("wiki") == wid:
+    def _replacement_workspace(wiki_id: str) -> dict[str, Any] | None:
+        return next(
+            (
+                ws
+                for ws in existing_workspaces
+                if ws.get("id") not in target_workspace_ids
+                and wiki_id in ws.get("wikis", [])
+            ),
+            None,
+        )
+
+    workspace_by_id = {ws.get("id"): ws for ws in existing_workspaces}
+    active_after_reconcile = []
+    for act in existing_active:
+        wiki_id = act.get("wiki")
+        selected_id = act.get("workspace")
+        if not isinstance(wiki_id, str):
+            continue
+        if selected_id in target_workspace_ids:
+            if wiki_id in member_wiki_ids and repository_rows:
                 act["workspace"] = ws_id
-                found = True
-                break
-        if not found:
-            existing_active.append({"wiki": wid, "workspace": ws_id})
+            else:
+                replacement = _replacement_workspace(wiki_id)
+                if replacement is None:
+                    continue
+                act["workspace"] = replacement["id"]
+        else:
+            selected_workspace = workspace_by_id.get(selected_id)
+            if selected_workspace and wiki_id in selected_workspace.get("wikis", []):
+                active_after_reconcile.append(act)
+                continue
+            if wiki_id in member_wiki_ids and repository_rows:
+                act["workspace"] = ws_id
+            else:
+                replacement = _replacement_workspace(wiki_id)
+                if replacement is None:
+                    continue
+                act["workspace"] = replacement["id"]
+        active_after_reconcile.append(act)
+    existing_active[:] = active_after_reconcile
+
+    # 3. Add active selections only for current members that have none.
+    active_wiki_ids = {act.get("wiki") for act in existing_active}
+    if repository_rows:
+        for wiki_id in member_wiki_ids:
+            if wiki_id not in active_wiki_ids:
+                existing_active.append({"wiki": wiki_id, "workspace": ws_id})
+                active_wiki_ids.add(wiki_id)
 
     # 4. Atomic write
     try:
+        openwiki_dir.mkdir(parents=True, exist_ok=True)
         temp_fd, temp_path = tempfile.mkstemp(
             dir=str(openwiki_dir), prefix="workspaces_", suffix=".tmp"
         )
@@ -387,7 +536,7 @@ def sync_board_openwiki_workspace(
             os.fsync(f.fileno())
         os.replace(temp_path, str(registry_file))
         return {
-            "status": "synced",
+            "status": "synced" if repository_rows else "removed",
             "workspace_id": ws_id,
             "board_slug": board_slug,
             "member_wikis": member_wiki_ids,

@@ -25,12 +25,8 @@
     };
     const healthPanel = document.querySelector('#health-panel');
     const healthData = document.querySelector('#health-data');
-    const healthRequest = async (path, options = {}) => {
-      const response = await fetch('/api/plugins/zerofactory' + path, options);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || data.error || response.statusText);
-      return data;
-    };
+    const healthRequest = (path, options = {}) =>
+      window.__HERMES_PLUGIN_SDK__.fetchJSON('/api/plugins/zerofactory' + path, options);
     const refreshHealth = async () => {
       try {
         const [status, stuck] = await Promise.all([

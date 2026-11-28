@@ -8,12 +8,9 @@ export function Header(props) {
     hasActiveAgents,
     sessionsList = [],
     agentsList = [],
-    loadSessions,
-    loadAgents,
-    loadMemories,
     boards = [],
     selectedBoard,
-    setSelectedBoard,
+    onSelectBoard,
     handleOpenEditBoard,
     handleOpenEditBoardModal,
     handleOpenNewBoardModal,
@@ -34,8 +31,7 @@ export function Header(props) {
     isTogglingDispatcher,
     handleStartDispatcher,
     handleStopDispatcher,
-    loadBoards,
-    loadTasksAndStats
+    loadBoards
   } = props;
 
   return React.createElement(
@@ -51,13 +47,7 @@ export function Header(props) {
               React.createElement(BoardSelector, {
                 boards,
                 selectedBoard,
-                onSelectBoard: (val) => {
-                  setSelectedBoard(val);
-                  loadTasksAndStats(val);
-                  loadMemories(val);
-                  loadSessions(val);
-                  loadAgents(val);
-                },
+                onSelectBoard,
                 onOpenNewBoard: handleOpenNewBoardModal,
                 onOpenEditBoard: handleOpenEditBoard || handleOpenEditBoardModal,
                 liveSessions: sessionsList
@@ -105,12 +95,7 @@ export function Header(props) {
                       (activeView === "sessions" || activeView === "agents"
                         ? "bg-indigo-600 text-white shadow-xs shadow-indigo-600/30"
                         : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"),
-                    onClick: () => {
-                      setActiveView("agents");
-                      loadSessions();
-                      loadAgents();
-                      loadMemories(selectedBoard);
-                    }
+                    onClick: () => setActiveView("agents")
                   },
                   "🤖 Agents",
                   (hasActiveAgents || sessionsList.some(s => s.status === "ongoing" || s.is_active) || agentsList.some(a => a.is_active)) &&

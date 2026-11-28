@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { fetchJSON } from "./sdk.js";
 import { API_BASE, COLUMNS, NEXT_STATUS_MAP, STAGE_META } from "./constants.js";
+import { computeGitSlug } from "./utils/formatters.js";
 import { Header } from "./components/Header.jsx";
 import { StatsBar } from "./components/StatsBar.jsx";
 import { FilterBar } from "./components/FilterBar.jsx";
@@ -1005,6 +1006,21 @@ export function ZeroFactoryKanbanApp() {
       }
     }, [fetchJSON]);
 
+    const loadBoardData = useCallback((boardSlug) => {
+      loadTasksAndStats(boardSlug);
+      loadMemories(boardSlug);
+      loadSessions(boardSlug);
+      loadAgents(boardSlug);
+    }, [loadTasksAndStats, loadMemories, loadSessions, loadAgents]);
+
+    const handleSelectBoard = useCallback((boardSlug) => {
+      if (boardSlug === selectedBoardRef.current) {
+        loadBoardData(boardSlug);
+      } else {
+        setSelectedBoard(boardSlug);
+      }
+    }, [loadBoardData]);
+
     const handleDeleteMemory = useCallback(async (memId) => {
       const ok = await confirmAction({
         title: "Delete Repository Memory",
@@ -1087,28 +1103,31 @@ export function ZeroFactoryKanbanApp() {
       if (prevSelectedBoard.current === selectedBoard) return;
       prevSelectedBoard.current = selectedBoard;
       if (selectedBoard) {
-        loadTasksAndStats(selectedBoard);
-        loadMemories(selectedBoard);
-        loadSessions(selectedBoard);
-        loadAgents(selectedBoard);
+        loadBoardData(selectedBoard);
       }
-    }, [selectedBoard, loadTasksAndStats, loadMemories, loadSessions, loadAgents]);
+    }, [selectedBoard, loadBoardData]);
 
     // Fetch activities on view switch or filter changes
     useEffect(() => {
       if (activeView === "activities") {
         loadActivities();
-      } else if (activeView === "sessions" || activeView === "agents") {
-        loadSessions(selectedBoard);
-        loadAgents(selectedBoard);
-        loadMemories(selectedBoard);
-        const sTimer = setInterval(() => {
-          loadSessions(selectedBoard);
-          loadAgents(selectedBoard);
-        }, 3500);
-        return () => clearInterval(sTimer);
       }
-    }, [activeView, activityActorFilter, activityActionFilter, activityBoardFilter, activityPage, loadActivities, loadSessions, loadAgents, loadMemories, selectedBoard]);
+    }, [activeView, activityActorFilter, activityActionFilter, activityBoardFilter, activityPage, loadActivities]);
+
+    // Load session/agent data when entering the view; board changes are handled above.
+    useEffect(() => {
+      if (activeView !== "sessions" && activeView !== "agents") return;
+      const boardSlug = selectedBoardRef.current;
+      loadSessions(boardSlug);
+      loadAgents(boardSlug);
+      loadMemories(boardSlug);
+      const sTimer = setInterval(() => {
+        const currentBoard = selectedBoardRef.current;
+        loadSessions(currentBoard);
+        loadAgents(currentBoard);
+      }, 3500);
+      return () => clearInterval(sTimer);
+    }, [activeView, loadSessions, loadAgents, loadMemories]);
 
     // Auto-refresh interval
     useEffect(() => {
@@ -1511,32 +1530,6 @@ export function ZeroFactoryKanbanApp() {
       }
     };
 
-    const computeGitSlug = (gitUrl) => {
-      if (!gitUrl) return "";
-      let cleaned = gitUrl.trim().replace(/\.git$/, "").replace(/\/+$/, "");
-      cleaned = cleaned.replace(/^[a-zA-Z]+:\/\//, "");
-      if (cleaned.includes("@")) {
-        cleaned = cleaned.split("@")[1];
-        if (cleaned.includes(":")) cleaned = cleaned.split(":")[1];
-        else if (cleaned.includes("/")) cleaned = cleaned.split("/").slice(1).join("/");
-      } else if (cleaned.includes("/")) {
-        const first = cleaned.split("/")[0];
-        if (first.includes(".") || first.includes(":")) {
-          cleaned = cleaned.split("/").slice(1).join("/");
-        }
-      }
-      const parts = cleaned.split("/").filter(Boolean);
-      let repo = parts.length >= 1 ? parts[parts.length - 1].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-      let owner = parts.length >= 2 ? parts[parts.length - 2].replace(/[^a-zA-Z0-9_\-.]/g, "") : "";
-      if (owner && repo) {
-        return (owner + "-" + repo).toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-      }
-      if (repo) {
-        return repo.toLowerCase().replace(/[^a-zA-Z0-9_\-]/g, "-").replace(/^-+|-+$/g, "");
-      }
-      return "";
-    };
-
     // Create Board
     const handleCreateBoardSubmit = async (e) => {
       e.preventDefault();
@@ -1922,12 +1915,9 @@ export function ZeroFactoryKanbanApp() {
         hasActiveAgents,
         sessionsList,
         agentsList,
-        loadSessions,
-        loadAgents,
-        loadMemories,
         boards,
         selectedBoard,
-        setSelectedBoard,
+        onSelectBoard: handleSelectBoard,
         handleOpenEditBoard,
         handleOpenNewBoardModal,
         setShowCronModal,
@@ -1944,8 +1934,7 @@ export function ZeroFactoryKanbanApp() {
         isTogglingDispatcher,
         handleStartDispatcher,
         handleStopDispatcher,
-        loadBoards,
-        loadTasksAndStats
+        loadBoards
       }),
       activeView === "activities"
         ? React.createElement(ActivitiesView, {

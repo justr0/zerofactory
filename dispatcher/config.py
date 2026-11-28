@@ -124,7 +124,7 @@ def get_dispatcher_lock_path() -> Path:
 
 
 def is_worker_or_child_process() -> bool:
-    """Return True if current process is a worker, cron runner, or child CLI process."""
+    """Return True for workers, child CLI processes, or any ``zf-*`` profile."""
     if (
         os.environ.get("ZEROFACTORY_DISABLE_DISPATCHER") == "1"
         or os.environ.get("ZEROFACTORY_SKIP_DISPATCHER") == "1"
@@ -133,7 +133,7 @@ def is_worker_or_child_process() -> bool:
     from paths import get_active_profile
 
     profile = get_active_profile() or ""
-    if profile in ("zf-builder", "zf-reviewer", "zf-orchestrator", "zf-goldfish"):
+    if profile.startswith("zf-"):
         return True
     if os.environ.get("ZEROFACTORY_IDLE_SCAN") == "1":
         return True

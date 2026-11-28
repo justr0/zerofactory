@@ -10,7 +10,6 @@ import subprocess
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any
 
 from .config import (
     _active_workers,
@@ -23,12 +22,38 @@ from .config import (
     resolve_profile_state_db,
 )
 from .process_manager import build_shell_wrapper, cleanup_process_artifacts
+from .worker_handoff import with_execution_token
 from . import review_cap_arbitration as _cap_arb
 
 try:
     from zf_wincompat import detached_popen_kwargs, resolve_hermes_bin
 except ImportError:  # package-mode import without plugin root on sys.path
     from ..zf_wincompat import detached_popen_kwargs, resolve_hermes_bin  # type: ignore
+
+
+def _task_comments_context(task_id: str, role: str, heading: str) -> str:
+    """Format prior task discussion for triage prompt context."""
+    try:
+        db_path = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
+        if not db_path.exists():
+            return ""
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT author, body, created_at FROM task_comments "
+                "WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+        if not rows:
+            return ""
+        comment_blocks = [
+            f"### Comment #{idx} (by @{row['author']}):\n{row['body']}"
+            for idx, row in enumerate(rows, 1)
+        ]
+        return f"{heading}\n" + "\n\n".join(comment_blocks) + "\n\n"
+    except Exception as exc:
+        _log.debug(f"Could not inspect task_comments for {role} prompt: %s", exc)
+        return ""
 
 
 def build_worker_command(
@@ -112,7 +137,7 @@ def is_unattended_approvals_enabled() -> bool:
     try:
         db_path = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if db_path.exists():
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 return bool(
                     load_settings(conn).get("allow_unattended_approvals", False)
@@ -120,48 +145,6 @@ def is_unattended_approvals_enabled() -> bool:
     except Exception:
         pass
     return False
-
-
-def _inject_langfuse_env(env: dict[str, str], conn_or_cursor: Any = None) -> None:
-    """Inject active Langfuse credentials and configuration into worker subprocess environment."""
-    try:
-        if conn_or_cursor is None:
-            try:
-                from ..dashboard.plugin_api import get_db_conn
-            except (ImportError, ValueError):
-                from dashboard.plugin_api import get_db_conn
-            with get_db_conn() as conn:
-                settings = load_settings(conn)
-        else:
-            settings = load_settings(conn_or_cursor)
-
-        if settings.get("langfuse_enabled"):
-            env["HERMES_LANGFUSE_PUBLIC_KEY"] = str(
-                settings.get("langfuse_public_key") or ""
-            ).strip()
-            env["HERMES_LANGFUSE_SECRET_KEY"] = str(
-                settings.get("langfuse_secret_key") or ""
-            ).strip()
-            env["HERMES_LANGFUSE_BASE_URL"] = str(
-                settings.get("langfuse_base_url") or "https://cloud.langfuse.com"
-            ).strip()
-            env["HERMES_LANGFUSE_CAPTURE"] = str(
-                settings.get("langfuse_capture_mode") or "sanitized"
-            ).strip()
-            env["HERMES_LANGFUSE_ENV"] = str(
-                settings.get("langfuse_env") or "zerofactory"
-            ).strip()
-        else:
-            for k in (
-                "HERMES_LANGFUSE_PUBLIC_KEY",
-                "HERMES_LANGFUSE_SECRET_KEY",
-                "HERMES_LANGFUSE_BASE_URL",
-                "HERMES_LANGFUSE_CAPTURE",
-                "HERMES_LANGFUSE_ENV",
-            ):
-                env.pop(k, None)
-    except Exception as e:
-        _log.debug("Could not inject Langfuse env: %s", e)
 
 
 def spawn_agent_worker(
@@ -213,7 +196,7 @@ def spawn_agent_worker(
         try:
             _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
             if _db.exists():
-                with sqlite3.connect(str(_db), timeout=2.0) as _c:
+                with closing(sqlite3.connect(str(_db), timeout=2.0)) as _c, _c:
                     _c.row_factory = sqlite3.Row
                     _r = _c.execute(
                         "SELECT repo_alias FROM tasks WHERE id = ?", (task_id,)
@@ -242,7 +225,7 @@ def spawn_agent_worker(
     try:
         _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if _db.exists():
-            with sqlite3.connect(str(_db), timeout=2.0) as _c:
+            with closing(sqlite3.connect(str(_db), timeout=2.0)) as _c, _c:
                 _c.row_factory = sqlite3.Row
                 _task_r = _c.execute(
                     "SELECT tags, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -312,7 +295,6 @@ def spawn_agent_worker(
         skip_untested = bool(task_meta.get("skip_untested_check"))
         pre_digested_git = _d().digest_reviewer_git_context(
             Path(workdir),
-            branch_name,
             target_branch=target_branch or None,
             spec_text=spec_text,
             skip_untested_check=skip_untested,
@@ -363,38 +345,19 @@ def spawn_agent_worker(
             f"   - If you catch a recurring mistake, testing gotcha, or project convention that future tasks should follow, record it!\n"
             f"   - In your review comment or summary, include a line: `GOTCHA: <rule>` or `CONVENTION: <rule>` (the system will auto-record it).\n"
             f'   - Or run: `hermes zerofactory memory add --board {board_slug or "default"} "<rule>" --category <gotcha|convention>`.\n'
-            f"6. When finished:\n"
-            f"   - If approved: {reviewer_approved_action}\n"
-            f"   - If changes are requested (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` when defects remain; the dispatcher routes Round 1 back to the builder and escalates Round {max_review_rounds} to Human blocked).\n"
+            f"6. When finished, record ONE verdict with `hermes zerofactory block {task_id} --reason ...`:\n"
+            f"   - Defects remain (in ANY round, including Round {max_review_rounds}): run `hermes zerofactory block {task_id} --reason 'changes-requested'` (never use `--reason 'approved'` while defects remain). The dispatcher owns the round budget: it routes Round 1 back to the builder and, at Round {max_review_rounds}, hands the merge decision to the review-cap arbiter, or parks the task Human blocked when arbitration is off. Never hand a defect to a human yourself.\n"
+            f"   - Code passes: {reviewer_approved_action}\n"
+            f"   - Code passes, but the repository requires a human's explicit merge authorization (check its AGENTS.md): do not record 'approved'. Post your comment with the sentence `No code changes requested.` and run `hermes zerofactory block {task_id} --reason 'human-gate'`. The task then waits for the human merge decision instead of going back to the builder.\n"
+            f"   - The `Review Round` header above is the only round count that applies. Earlier comments on this PR may say 'Round 2 of 2' or 'cap reached'; they were written under an older budget and are superseded.\n"
             f"7. Provide a clear review summary.\n"
         )
     elif assignee == "zf-orchestrator":
-        # Extract task comments and human replies for orchestrator context
-        task_comments_context = ""
-        try:
-            _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
-            if _db.exists():
-                with sqlite3.connect(str(_db)) as _c:
-                    _c.row_factory = sqlite3.Row
-                    _cur = _c.cursor()
-                    _cur.execute(
-                        "SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
-                        (task_id,),
-                    )
-                    _cmt_rows = _cur.fetchall()
-                    if _cmt_rows:
-                        _cmt_blocks = []
-                        for idx, r in enumerate(_cmt_rows, 1):
-                            _cmt_blocks.append(
-                                f"### Comment #{idx} (by @{r['author']}):\n{r['body']}"
-                            )
-                        task_comments_context = (
-                            "### 💬 Previous Discussion & Human Responses:\n"
-                            + "\n\n".join(_cmt_blocks)
-                            + "\n\n"
-                        )
-        except Exception as e:
-            _log.debug("Could not inspect task_comments for orchestrator prompt: %s", e)
+        task_comments_context = _task_comments_context(
+            task_id,
+            "orchestrator",
+            "### 💬 Previous Discussion & Human Responses:",
+        )
 
         openwiki_info = ""
         wiki_dir = Path(workdir) / "openwiki"
@@ -539,31 +502,11 @@ def spawn_agent_worker(
         )
         revision_count = int(task_meta.get("revision_count", 0))
 
-        task_comments_context = ""
-        try:
-            _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
-            if _db.exists():
-                with sqlite3.connect(str(_db)) as _c:
-                    _c.row_factory = sqlite3.Row
-                    _cur = _c.cursor()
-                    _cur.execute(
-                        "SELECT author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
-                        (task_id,),
-                    )
-                    _cmt_rows = _cur.fetchall()
-                    if _cmt_rows:
-                        _cmt_blocks = []
-                        for idx, r in enumerate(_cmt_rows, 1):
-                            _cmt_blocks.append(
-                                f"### Comment #{idx} (by @{r['author']}):\n{r['body']}"
-                            )
-                        task_comments_context = (
-                            "### 💬 Previous Discussion & Revision History:\n"
-                            + "\n\n".join(_cmt_blocks)
-                            + "\n\n"
-                        )
-        except Exception as e:
-            _log.debug("Could not inspect task_comments for goldfish prompt: %s", e)
+        task_comments_context = _task_comments_context(
+            task_id,
+            "goldfish",
+            "### 💬 Previous Discussion & Revision History:",
+        )
 
         goal_instructions = (
             f"Your role as Spec Auditor (zf-goldfish):\n"
@@ -684,7 +627,7 @@ def spawn_agent_worker(
             try:
                 _db = Path(os.environ.get("ZEROFACTORY_DB") or get_db_path())
                 if _db.exists():
-                    with sqlite3.connect(str(_db)) as _c:
+                    with closing(sqlite3.connect(str(_db))) as _c, _c:
                         _c.row_factory = sqlite3.Row
                         _cur = _c.cursor()
                         _cur.execute(
@@ -692,13 +635,21 @@ def spawn_agent_worker(
                             (task_id,),
                         )
                         _rows = _cur.fetchall()
+                        # Arbitration protocol records (the request, a recorded
+                        # verdict, the dispatcher's fix-round note) are history,
+                        # not review work: once the round they belong to is
+                        # closed they must not come back as mandatory feedback.
+                        # A live verdict reaches the builder as the brief below.
                         _rev_rows = [
                             r
                             for r in _rows
-                            if "[github review" in r["body"].lower()
-                            or "[github pr" in r["body"].lower()
-                            or r["author"] == "zf-reviewer"
-                            or r["author"] != assignee
+                            if (
+                                "[github review" in r["body"].lower()
+                                or "[github pr" in r["body"].lower()
+                                or r["author"] == "zf-reviewer"
+                                or r["author"] != assignee
+                            )
+                            and not _cap_arb.is_protocol_record(r["author"], r["body"])
                         ]
                         if _rev_rows:
                             _cmt_blocks = []
@@ -834,6 +785,16 @@ def spawn_agent_worker(
 
     from paths import get_hermes_home
 
+    try:
+        execution_id = json.loads(metadata or "{}").get("worker_execution_id")
+    except (AttributeError, TypeError, ValueError):
+        execution_id = None
+    # The prompt carries the token as well as the env below: a worker's shell commands
+    # run in the Hermes gateway process, which never sees the worker's own environment
+    # (dispatcher.worker_handoff). A zombie from an earlier dispatch holds an earlier
+    # prompt, so an earlier token.
+    prompt = with_execution_token(prompt, execution_id)
+
     cmd = build_worker_command(prompt, task_id, str(workdir), assignee)
     if cmd is None:
         hermes_bin = resolve_hermes_bin()
@@ -854,10 +815,6 @@ def spawn_agent_worker(
             **({} if worker_command else {"HERMES_PROFILE": assignee}),
         }
     )
-    try:
-        execution_id = json.loads(metadata or "{}").get("worker_execution_id")
-    except (AttributeError, TypeError, ValueError):
-        execution_id = None
     env.pop("ZEROFACTORY_WORKER_EXECUTION_ID", None)
     if execution_id:
         env["ZEROFACTORY_WORKER_EXECUTION_ID"] = str(execution_id)

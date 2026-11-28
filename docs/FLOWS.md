@@ -60,6 +60,17 @@ flowchart TD
 | 7 | Exactly one status reply is posted to a source GitHub issue, only at PR-open time | `scheduler.post_issue_pr_comment` |
 | 8 | Nothing runs unbounded: worker timeout 3600s, retries capped, review rounds capped | reaper + `_handle_precommit_failure` + review cap |
 
+### Standalone Dashboard Request Boundary
+
+The optional `dashboard.standalone` server binds only to a loopback IP. For
+state-changing browser requests, it rejects cross-site/same-site Fetch Metadata,
+validates the HTTP Host as `localhost` or a loopback IP (including `::1`), and
+requires any supplied `Origin` to be valid and match the request scheme, host, and
+port. Headerless non-browser API clients remain supported; this is a CSRF check,
+not authentication, so do not expose the standalone API through a non-loopback
+proxy. GitHub issue synchronization is POST-only so its importer cannot be invoked
+by a cross-origin GET.
+
 ---
 
 ## 2. Board & Task Model
@@ -197,15 +208,17 @@ flowchart TD
 
 ### Step 1 — Dependency unblock
 `task_links` DAG: any `blocked` task whose parents are **all** `done` becomes `todo`
-(activity `unblock`).
+(activity `unblock`). A review-cap park (`review_cap_reached`, arbitrated or plain) is the
+exception: it waits on an arbitration verdict, the request timeout, a merged or closed PR or an
+operator, never on its parents, so the sweep leaves it `blocked`.
 
 ### Step 2 — Reap, then claim
 - **Reap** first (see §4). Then select claim candidates:
   `status = 'todo' OR (status='triage' AND assignee='zf-orchestrator')`,
   ordered by priority (`P0`→`P3`) then age.
-- **Capacity guards** (all must pass): global `max_active_tasks`, global
-  `max_concurrent_llm_workers` (counts running tasks + active scanners + in-flight LLM cron jobs),
-  per-board `max_concurrent_running` (default 1).
+- **Capacity guards** (all must pass): global `max_active_tasks` (all running tasks, including packaging),
+  global `max_concurrent_llm_workers` (agent-running stages, excluding deterministic packaging, + active scanners + in-flight LLM cron jobs),
+  per-board `max_concurrent_running` (default 1; all running tasks, including packaging).
 - **Pre-flight (git boards)**: `check_unresolved_conflicts_safe` + `pull_and_merge_main` —
   conflicts route the task to the conflict handler **before** any worker burns tokens
   (fail-closed: unverifiable state → skip claim).
@@ -223,18 +236,29 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
    - `MERGED` / `CLOSED` → stop worker, remove worktree, delete remote branch,
      status `done`.
    - `CONFLICTING` → conflict resolution flow (unless a builder already resolved and is
-     handing off — then fall through to packaging).
+     handing off — then fall through to packaging). Parks are the exception: with no new PR comment
+     a plain review-cap park or a stuck park holds (`park_hold`), because it waits on a person, not on
+     a merge, and an approval that answered an arbitration fix round goes to the approval park instead
+     of a builder.
    - **`changes-requested` verdict (`blocked_reason_type`), `reviewDecision == CHANGES_REQUESTED`, or actionable PR review comments (`is_actionable_review_comment`)** → record comments (memory
      auto-extraction runs here), increment cumulative `review_round` across PR rework commits,
      remove worktree, clear `blocked_reason` / `blocked_reason_type`, route back to builder on Round 1: `todo` + `assignee=<PR author>` + review-comment
-     prompt block. Actionable review feedback from reviewers/humans overrides any prior `approved` status and unparks tasks back to `todo`. When `review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**)
+     prompt block. Actionable review feedback from reviewers/humans overrides any prior `approved` status and unparks tasks back to `todo`. A standing
+     `reviewDecision == CHANGES_REQUESTED` is fresh feedback everywhere except on an approval park (`blocked_reason_type == approved`): there the
+     reviewer has already answered the fix commit, and GitHub keeps reporting the decision until the account that requested changes dismisses or
+     re-reviews, so the park holds until a new review or comment (an unprocessed comment id) arrives. The dispatcher's own arbitration requests and
+     arbiter verdicts are protocol, never feedback: they are not copied onto the task and do not re-queue a builder. When `review_round >= ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**)
      → escalate: `blocked` + `assignee=human` + `review_cap_reached` (short-circuiting idempotently on subsequent poll cycles until recovered).
-     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **1**; `0` restores the plain human park)
+     With arbitration on (`ZEROFACTORY_REVIEW_CAP_ARBITRATION`, default **0**: off, and the cap parks the task for a human as before; `1` enables it and needs a `zf-gatekeeper` profile)
      the cap also posts exactly one `[AI:zf-dispatcher] ARBITRATION REQUEST` conversation comment on the PR —
-     carrying the request key `arbitration:<task_id>:<full_head_sha>` and the full head SHA — and parks the task
+     carrying the request key `arbitration:<task_id>:<full_head_sha>:<attempt>` and the full head SHA — and parks the task
      (`blocked` + `assignee=human`) for the arbiter profile (`ZEROFACTORY_REVIEW_CAP_ARBITER`, default
-     `zf-gatekeeper`) instead of the human. While parked (request open or settled) the task is excluded from
-     conflict handling, ordinary review-comment routing and auto-merge; only a bound verdict, the request
+     `zf-gatekeeper`) instead of the human. Each attempt is its own request: when the cap recurs on a head that
+     was already arbitrated, the new request gets a new key, so the earlier request comment is never adopted for
+     it and the verdict that answered the earlier attempt does not apply. `attempts` on an earlier request that is negative,
+     non-numeric or missing reads as 0, so the next request is a valid attempt 1 keyed on it. While parked (request open or settled)
+     the task is excluded from the Step 1 dependency unblock, conflict handling, ordinary review-comment
+     routing and auto-merge; only a bound verdict, the request
      timeout, a merged/closed PR or an operator recovery moves it. A verdict counts only when the **first line**
      of a PR conversation comment (never an inline review body or review summary) is exactly
      `[AI:<arbiter>] ARBITRATION VERDICT: <FIX|MERGE|ESCALATE> | REQUEST: <key> | HEAD: <full sha>`, posted by an
@@ -242,16 +266,27 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      authenticated as plus the repository owner), with `REQUEST` equal to the task's open request key and `HEAD`
      equal to both the request head and the live PR head; anything else is logged and ignored. **FIX** re-opens
      one bounded fix round (fresh review budget; the verdict body is the builder's entire brief, earlier findings
-     are deferred), **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
+     are deferred) and the round closes once the reviewer answers the fix commit — a recorded review round or an
+     approval whose review is on the fix commit (never one standing on the pre-fix head, and only once the
+     builder has handed the fix over), closed on the poll that sees it, before any conflict routing — after which the verdict is no
+     longer the brief and the closed protocol records (the recorded verdict, the dispatcher's fix-round note)
+     stay on the task as history but are excluded from the builder's
+     review-comment prompt; **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**
      leaves it parked for the human. Before a verdict is consumed the dispatcher re-checks the flag and the
      human-review opt-outs (voiding the request into a plain park), and a reply is applied only inside
      `requested_at + ZEROFACTORY_REVIEW_CAP_ARBITRATION_TIMEOUT_HOURS` (default **24**), after which the request
-     expires into the human park. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
+     expires into the human park. `requested_at` is always GitHub's `created_at` for the request comment, never this
+     host's clock: a successful POST binds the request to the comment it names, resolved by id even when the
+     thread shows an older same-key copy; only without an id of its own (gh failed after GitHub accepted, or
+     the local state was lost) is the thread's copy taken by key, and until its timestamp is verified
+     (`timestamp_pending`) the request consumes nothing, expires nothing and is never posted twice.
+     Expiry is decided only by a poll that could read the PR conversation: when the
+     fetch fails, the poll consumes nothing and expires nothing. At most `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` arbitrations per task
      (default **2**); beyond that the cap parks for a human as before. Tasks already flagged for human review
      (`permanently_blocked`, `hitl` / `manual-review` tags, HITL-labelled external issues) are never arbitrated,
      and without the arbiter profile on the host the request is not posted.
    - **`approved` verdict or `reviewDecision == APPROVED` (with no actionable comments)** → `blocked` +
-     `assignee=human` ("Reviewer approved; awaiting human merge"). If late non-actionable comments arrive while already parked, they are forwarded to task comments idempotently without re-parking side effects.
+     `assignee=human` ("Reviewer approved; awaiting human merge"). If late non-actionable comments arrive while already parked, they are forwarded to task comments idempotently without re-parking side effects. Auto-merge never runs while a review still stands as `CHANGES_REQUESTED`: a park is not a merge clearance.
 3. **Packaging fallback** (no PR yet, or `done`/`blocked` handoff): deterministic
    **precommit gate** on the target repository (`repo_alias`) (§6) → conflict checks against the repository's configured `target_branch` → commit (conventional message) → merge latest
    target branch → push `task/<id>` → `gh pr create` (body carries `Fixes #N` / Jira link, reviewer assigned from repository's trusted list) →
@@ -287,8 +322,8 @@ flowchart TD
 ```
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
-  with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`.
-- Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
+  with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`. The same token is the first two lines of the prompt (`dispatcher/worker_handoff.py`: instruction line + `ZEROFACTORY_WORKER_EXECUTION_ID=<uuid4 hex>`, then the task header) — the prompt is the channel that actually reaches the worker, because its shell commands run in the Hermes gateway process and never see the worker's env.
+- Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. The CLI resolves the reported ID as `--execution-id` > `ZEROFACTORY_WORKER_EXECUTION_ID` > the newest complete dispatch header among the reporting session's user messages (`HERMES_SESSION_ID`, read-only from the actor profile's own `state.db`; `human`, `unassigned` and unknown actors resolve nothing before any file is probed, and the scan pages past malformed header candidates). Only a header at the very top of a user message counts. The session id is the caller's own context, not an authenticated identity — what gates the report is the token match plus the route's ownership checks. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
 - Workerless `running` rows, including `awaiting_pr` packaging rows, recover after `ZEROFACTORY_SPAWN_GRACE_SECONDS` (default **180s**) if no process, live PID, or ongoing session exists. Stalled packaging therefore releases its running slot; healthy deterministic packaging gets that grace window to proceed.
 - A recovered reviewer stays queued for PR polling instead of being respawned. Polling happens before any reviewer restart and the orphan marker persists through polls with no verdict until feedback routes the task or ownership changes.
 - Stuck detection: `running > 3600s` (`ZEROFACTORY_TASK_TIMEOUT_SECONDS`) **or**
@@ -431,10 +466,11 @@ are recorded as content without triggering a reroute; substantive critique immed
 
 | Signal detected in step 3 | Route |
 |---|---|
-| `blocked_reason_type == changes-requested`, `reviewDecision == CHANGES_REQUESTED`, or actionable PR review comment(s) | `todo` + builder + 🚨 review-comment block (round counter++; unparks approved tasks) |
-| `blocked_reason_type == approved` or `reviewDecision == APPROVED` (no actionable comments) | `blocked` + `human` (awaiting merge; idempotent parking) |
-| `review_round >= 2` (cumulative per PR across rework commits) | escalate `blocked` + `human` + `review_cap_reached` |
+| `blocked_reason_type == changes-requested`, `reviewDecision == CHANGES_REQUESTED` (not on an approval park), or actionable PR review comment(s) | `todo` + builder + 🚨 review-comment block (round counter++; unparks approved tasks) |
+| `blocked_reason_type == approved` or `reviewDecision == APPROVED` (no actionable comments) | `blocked` + `human` (awaiting merge; idempotent parking; a standing `CHANGES_REQUESTED` never auto-merges) |
+| `review_round >= 2` (cumulative per PR across rework commits) | escalate `blocked` + `human` + `review_cap_reached` (a quiet plain cap park holds, conflict or standing approval notwithstanding) |
 | Non-actionable comments only (approval notes, builder notes, automated bot messages) | record comments only; no reroute |
+| Arbitration protocol comments (the dispatcher's request, an arbiter's verdict line) | never feedback: ordinary routing neither records nor re-queues on them |
 
 Review rounds are **themed** (round 1: correctness/tests/security/Ponytail gatekeeping;
 round 2: verification & polish) and hard-capped — the dispatcher is the enforcement point,
@@ -484,6 +520,10 @@ flowchart LR
 
 Entry points: dashboard **Sync GitHub Issues**, `import-gh-issue` endpoint/CLI,
 and the queue watchdog's rate-limited auto-sync (15-min per-repo cooldown).
+Batch sync without a label scans the supported request labels
+`zerofactory`, `ai-investigate`, and `ai-triage`, deduplicating issues returned
+by more than one label; an explicit `--label` (CLI) or `label` query parameter
+(dashboard) limits the sync to that label.
 
 ### Outbound (PR → source issue reply, "Option B")
 
@@ -521,7 +561,9 @@ flowchart TD
 | `zero-factory-openwiki-update-{slug}` | daily | **no-agent** (0 tokens) | docs fresh across all repos / task already queued | exactly **1 job per board** runs `scripts/zf_openwiki_gate.py` to synchronize the OpenWiki workspace, evaluate repositories, and file targeted refresh tasks |
 
 Global LLM capacity (`max_concurrent_llm_workers`) counts scanners and cron LLM jobs together
-with running tasks — busy boards suppress scans automatically. Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.
+with agent-running stages, excluding deterministic packaging (`running` + `awaiting_pr`). Packaging
+still counts toward task WIP and per-board running limits; busy boards suppress scans automatically.
+Sibling repositories on a multi-repo board are registered as members of an OpenWiki workspace (`id={board_slug}`), enabling cross-service contract querying via `openwiki_search`.
 
 ---
 
@@ -563,6 +605,13 @@ the pinned test stack — the dispatcher's bare `python3` may lack project depen
 
 ## 14. Agentic Roles (summary)
 
+`hermes zerofactory sync-profiles` refreshes profile prompts and bundled skill
+copies; profile setup also synchronizes skills while initializing missing
+profiles. Fallback copies update only changed files and remove only tracked files
+deleted upstream while preserving user-added files. Setup status reports stale
+copies and broken skill links; existing live skill symlinks, including noncanonical
+links, are preserved as configured.
+
 | Profile | Does | Never does | Config highlights |
 |---|---|---|---|
 | `zf-orchestrator` | triage, decomposition, grill-with-docs interviews, improvement scans | write/review code, mark tasks done | temp 0.0, 120 turns |
@@ -587,7 +636,7 @@ runtime → installed deps → simple functions → minimum viable diff) via bun
 | `ZEROFACTORY_PRECOMMIT_TIMEOUT_SECONDS` | `300` | gate hard timeout |
 | `ZEROFACTORY_MAX_PRECOMMIT_RETRIES` | `3` | self-heal retries before blocking |
 | `ZEROFACTORY_MAX_REVIEW_ROUNDS` | `2` | cumulative per-PR review rounds before escalation |
-| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `1` | at the review cap, ask an arbiter profile instead of parking for a human (`0`: plain human park) |
+| `ZEROFACTORY_REVIEW_CAP_ARBITRATION` | `0` | at the review cap, ask an arbiter profile instead of parking for a human (`1` opts in and needs a `zf-gatekeeper` profile; `0`: plain human park) |
 | `ZEROFACTORY_REVIEW_CAP_ARBITER` | `zf-gatekeeper` | arbiter profile (role tag on the verdict comment) |
 | `ZEROFACTORY_REVIEW_CAP_ARBITER_GITHUB_LOGINS` | `gh` login + repo owner | comma-separated GitHub accounts whose verdict comment counts |
 | `ZEROFACTORY_REVIEW_CAP_MAX_ARBITRATIONS` | `2` | arbitrations per task before falling back to the human |

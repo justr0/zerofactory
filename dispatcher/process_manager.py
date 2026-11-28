@@ -20,10 +20,10 @@ from paths import get_hermes_home
 from .config import _active_workers, _log
 
 try:
-    from zf_wincompat import IS_WINDOWS, kill_tree
+    from zf_wincompat import IS_WINDOWS, kill_tree, parent_pid_map
     from zf_wincompat import is_pid_alive as _win_pid_alive
 except ImportError:  # package-mode import without plugin root on sys.path
-    from ..zf_wincompat import IS_WINDOWS, kill_tree  # type: ignore
+    from ..zf_wincompat import IS_WINDOWS, kill_tree, parent_pid_map  # type: ignore
     from ..zf_wincompat import is_pid_alive as _win_pid_alive  # type: ignore
 
 
@@ -147,12 +147,29 @@ def _pid_is_ancestor(pid: int) -> bool:
     the ``getpgrp`` guard does not see the relationship; the command then
     SIGTERMed its own worker mid-command and the reaper booked the stop as a
     crash.  Walking the parent chain catches that case.
+
+    Windows has no ``/proc``: the same walk follows the parent PIDs recorded
+    in a tool-help process snapshot.
     """
     if pid <= 1:
         return False
     my_pid = os.getpid()
     if pid in (my_pid, os.getppid()):
         return True
+    if IS_WINDOWS:
+        parents = parent_pid_map()
+        if parents is None:
+            # An unreadable snapshot establishes nothing: not "no ancestor".
+            return False
+        current = my_pid
+        for _ in range(64):
+            ppid = parents.get(current, 0)
+            if ppid <= 1:
+                return False
+            if ppid == pid:
+                return True
+            current = ppid
+        return False
     if not Path("/proc/self/stat").exists():
         return False
     current = my_pid
@@ -171,7 +188,11 @@ def _pid_is_ancestor(pid: int) -> bool:
 
 
 def build_shell_wrapper(cmd: list[str], exit_prefix: Path | str) -> list[str]:
-    """Wrap command in a POSIX shell invocation that atomically writes integer exit code on exit/signal."""
+    """Wrap command so an integer exit code is written atomically to ``<exit_prefix>.exit`` on exit.
+
+    POSIX runs a shell script with an EXIT trap. Windows runs the ``_worker_wrapper.py`` helper
+    next to this module, because there is no POSIX shell there to trap signals.
+    """
     if IS_WINDOWS:
         wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
         return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
@@ -237,28 +258,51 @@ def is_pid_alive(pid: int | None) -> bool:
     return True
 
 
-def process_matches_identity(pid: int, task_id: str) -> bool:
-    """Check whether a live process still belongs to the given worker task."""
+def _windows_command_line(pid: int) -> str | None:
+    """Command line of ``pid`` per WMI; ``None`` when this caller cannot read it."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        # The query itself failed (no PowerShell, slow start, timeout).
+        return None
+    if result.returncode != 0:
+        return None
+    # Alive, but its command line is not readable by this caller.
+    return result.stdout.strip() or None
+
+
+def inspect_process_identity(pid: int, task_id: str) -> bool | None:
+    """Inspect the live PID and report how it relates to the given worker task.
+
+    Returns ``True`` when the command line proves the PID is this task's worker,
+    ``False`` when it proves the PID is something else, and ``None`` when the
+    command line could not be read.
+
+    ``None`` is a third answer, not a softer ``False``: a failed query says
+    nothing about the PID, and each caller decides what to do without the
+    evidence. A liveness check must not call a live worker stale (it would
+    start a duplicate); a stop must not signal a PID it cannot identify.
+    :func:`process_matches_identity` applies the liveness policy.
+    """
     if not isinstance(pid, int) or pid <= 0 or not task_id:
         return False
     try:
         if IS_WINDOWS:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.returncode != 0:
-                return False
-            cmd_data = result.stdout
+            cmd_data = _windows_command_line(pid)
+            if cmd_data is None:
+                return None
         else:
             procfs_path = Path("/proc")
             try:
@@ -267,14 +311,16 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
                 # Keep best-effort behavior only when procfs is confirmed absent.
                 return True
             except OSError:
-                # An inaccessible procfs does not establish that it is absent.
-                return False
+                # An inaccessible procfs does not establish that it is absent,
+                # and says nothing about this PID.
+                return None
             if not stat.S_ISDIR(procfs_mode):
-                return False
+                return None
             cmdline_path = Path(f"/proc/{pid}/cmdline")
             cmd_data = cmdline_path.read_bytes()
             if not cmd_data:
-                return False
+                # Kernel thread, zombie, or not populated yet: not identified.
+                return None
         if isinstance(cmd_data, bytes):
             args = [os.fsdecode(arg) for arg in cmd_data.split(b"\0") if arg]
         else:
@@ -303,7 +349,52 @@ def process_matches_identity(pid: int, task_id: str) -> bool:
             and is_exit_prefix(args[2])
         )
     except Exception:
-        # Fail closed if procfs exists but this PID's command line is unavailable.
+        # The command line could not be read or parsed: the PID was not inspected.
+        return None
+
+
+def process_matches_identity(pid: int, task_id: str) -> bool:
+    """Check whether a live process still belongs to the given worker task.
+
+    True unless the PID is proven not to be this task's worker. An unreadable
+    command line does not count as a mismatch: a scanner PID record must not be
+    declared stale for the same reason, or a duplicate worker gets started.
+    This is the liveness policy; code that signals a PID wants the proof itself
+    and calls :func:`inspect_process_identity`.
+    """
+    verdict = inspect_process_identity(pid, task_id)
+    if verdict is not None:
+        return verdict
+    # The command line could not be read. On Windows it comes from a PowerShell
+    # query that can fail or time out, and booking that as a mismatch is how a
+    # live worker got a duplicate. On POSIX an unreadable entry is an exiting or
+    # zombie process, so there the long-standing rule stands: treat it as gone.
+    return bool(IS_WINDOWS)
+
+
+def describe_process_cmdline(pid: int) -> str:
+    """Command line of ``pid`` for a log line; empty when it cannot be read."""
+    if IS_WINDOWS:
+        return _windows_command_line(pid) or ""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (OSError, ValueError):
+        return ""
+    return os.fsdecode(raw).replace("\0", " ").strip()
+
+
+def _handle_covers_pid(proc: subprocess.Popen | None, pid: int | None) -> bool:
+    """Whether ``proc`` is a live handle this process holds for exactly ``pid``.
+
+    A handle we spawned pins its own process: the OS cannot have recycled that
+    PID for something else while the handle is open and the process has not
+    exited, so the command line does not need to be inspected.
+    """
+    if proc is None or pid is None:
+        return False
+    try:
+        return proc.pid == pid and proc.poll() is None
+    except Exception:
         return False
 
 
@@ -483,26 +574,35 @@ def terminate_worker_process(
     belong to that worker before signaling: worker PIDs recorded in the DB can
     go stale and be recycled by the OS for an unrelated process, and
     signaling that PID kills an innocent process — a suspected contributor to
-    the worker-loss churn. Mismatched PIDs are skipped and logged instead.
+    the worker-loss churn. A PID that is not proven to be the worker, a live
+    ``proc`` handle counting as proof, is skipped and logged instead.
     """
+    handle_proves_pid = _handle_covers_pid(proc, pid)
     if (
         pid
         and is_pid_alive(pid)
         and task_id
-        and not process_matches_identity(pid, task_id)
+        and not handle_proves_pid
+        and inspect_process_identity(pid, task_id) is not True
     ):
         _log.warning(
             "terminate_worker_process: PID %s no longer matches task %s; "
-            "skipping signal to avoid killing an unrelated recycled process",
+            "skipping signal to avoid killing an unrelated recycled process "
+            "(cmdline: %.120s)",
             pid,
             task_id,
+            describe_process_cmdline(pid),
         )
         return
     # Register before signalling: the reaper runs on another thread and can
     # observe the death before this call returns.
     mark_deliberate_stop(task_id, pid)
     try:
-        if not terminate_process_group(proc, pid):
+        # A handle steers the signal only for the PID it was spawned as. A stale
+        # registry handle belongs to an earlier worker's process group.
+        if not terminate_process_group(
+            proc if getattr(proc, "pid", None) == pid else None, pid
+        ):
             forget_deliberate_stop(task_id, pid)
     except Exception as e:
         _log.debug("terminate_worker_process: group termination raised: %s", e)
@@ -510,19 +610,25 @@ def terminate_worker_process(
 
 def terminate_task_worker(task_id: str, pid: int | None) -> None:
     """Safely terminate any active worker process group for a task and clean up artifacts."""
-    _active_workers.pop(task_id, None)
-    if pid and is_pid_alive(pid):
-        if not process_matches_identity(pid, task_id):
-            _log.warning(
-                "terminate_task_worker: PID %s no longer matches task %s; skipping signal (stale/recycled PID)",
-                pid,
-                task_id,
-            )
-            cleanup_process_artifacts(task_id)
-            return
-        mark_deliberate_stop(task_id, pid)
-        if not terminate_process_group(None, pid):
-            forget_deliberate_stop(task_id, pid)
+    proc = _active_workers.pop(task_id, None)
+    if (
+        pid
+        and is_pid_alive(pid)
+        and not _handle_covers_pid(proc, pid)
+        and inspect_process_identity(pid, task_id) is not True
+    ):
+        _log.warning(
+            "terminate_task_worker: PID %s no longer matches task %s; skipping signal "
+            "(stale/recycled PID) (cmdline: %.120s)",
+            pid,
+            task_id,
+            describe_process_cmdline(pid),
+        )
+        cleanup_process_artifacts(task_id)
+        return
+    mark_deliberate_stop(task_id, pid)
+    if not terminate_process_group(None, pid):
+        forget_deliberate_stop(task_id, pid)
     cleanup_process_artifacts(task_id)
 
 

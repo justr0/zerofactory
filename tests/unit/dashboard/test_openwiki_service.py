@@ -183,14 +183,21 @@ def test_openwiki_workspace_ids_do_not_collide_for_normalized_board_slugs(
         openwiki_service, "get_openwiki_home_dir", lambda: openwiki_home
     )
     repos = {}
+    rows = {}
     for board, alias in (("ops_team", "team-repo"), ("ops-team", "service-repo")):
         repo = tmp_path / board
         repo.mkdir()
         repos[board] = [{"path": repo, "alias": alias}]
+        rows[board] = [{"repo_alias": alias, "git_url": f"https://example/{alias}.git"}]
     monkeypatch.setattr(
         openwiki_service,
-        "get_board_linked_repos",
-        lambda board_slug, db_path=None: repos[board_slug],
+        "_get_board_repository_rows",
+        lambda board_slug, db_path=None: rows[board_slug],
+    )
+    monkeypatch.setattr(
+        openwiki_service,
+        "_resolve_board_repo_path",
+        lambda board_slug, repo: repos[board_slug][0]["path"],
     )
 
     team_result = sync_board_openwiki_workspace("ops_team")

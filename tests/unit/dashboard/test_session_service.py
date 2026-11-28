@@ -9,6 +9,8 @@ for large logs.
 from __future__ import annotations
 
 import builtins
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -44,9 +46,7 @@ def hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def no_sessions(monkeypatch: pytest.MonkeyPatch):
     """Short-circuit session discovery so the test only exercises log tailing."""
-    monkeypatch.setattr(
-        session_service, "resolve_task_all_sessions", lambda task, backfill=True: []
-    )
+    monkeypatch.setattr(session_service, "resolve_task_all_sessions", lambda task: [])
 
 
 def _call_progress(task_id: str) -> dict:
@@ -107,3 +107,130 @@ def test_log_tail_large_file_does_not_read_full_file(
 
 def test_log_tail_missing_file(hermes_home: Path, no_sessions):
     assert _call_progress("t-missing")["log_tail"] == ""
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_session_id"),
+    [
+        ({"session_id": "dict-session"}, "dict-session"),
+        ('{"session_id":"json-session"}', "json-session"),
+        ("{", None),
+        ("[]", None),
+        ("null", None),
+        ('"scalar"', None),
+        ("42", None),
+        ("true", None),
+    ],
+)
+def test_session_telemetry_coerces_task_metadata(
+    hermes_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata,
+    expected_session_id: str | None,
+):
+    monkeypatch.setattr(session_service, "AGENT_ROLES", [])
+    task = {"id": "metadata-coercion", "status": "done", "metadata": metadata}
+
+    progress = session_service.resolve_task_session_progress(task, backfill=False)
+
+    assert progress["session_id"] == expected_session_id
+
+
+@pytest.mark.parametrize("backfill", [False, True])
+def test_discovered_session_backfill_respects_flag(
+    hermes_home: Path,
+    initialized_db: Path,
+    default_board: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    backfill: bool,
+):
+    task_id = "zf-session-backfill"
+    initial_metadata = {"session_id": "stored-session", "other": "preserved"}
+    with sqlite3.connect(initialized_db) as conn:
+        conn.execute(
+            """INSERT INTO tasks (id, board_slug, title, status, metadata, created_at, updated_at)
+               VALUES (?, ?, ?, 'done', ?, 1, 1)""",
+            (
+                task_id,
+                default_board,
+                "Backfill session metadata",
+                json.dumps(initial_metadata),
+            ),
+        )
+
+    state_db = tmp_path / "profile-state.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute(
+            """CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, model TEXT, started_at REAL, ended_at REAL,
+                last_activity_at REAL, last_activity_description TEXT,
+                message_count INTEGER, tool_call_count INTEGER, cwd TEXT, title TEXT,
+                profile_name TEXT
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO sessions VALUES (
+                'discovered-session', 'test-model', 100, 200, 200, NULL,
+                0, 0, ?, 'Backfill session metadata', 'zf-builder'
+            )""",
+            (f"/workspace/{task_id}",),
+        )
+
+    monkeypatch.setattr(session_service, "AGENT_ROLES", ["zf-builder"])
+    monkeypatch.setattr(
+        session_service,
+        "_resolve_profile_state_db_dyn",
+        lambda role: state_db if role == "zf-builder" else None,
+    )
+    task = {
+        "id": task_id,
+        "title": "Backfill session metadata",
+        "status": "done",
+        "metadata": initial_metadata,
+    }
+
+    progress = session_service.resolve_task_session_progress(task, backfill=backfill)
+
+    assert progress["session_id"] == "discovered-session"
+    with sqlite3.connect(initialized_db) as conn:
+        stored_metadata = json.loads(
+            conn.execute(
+                "SELECT metadata FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()[0]
+        )
+    expected_metadata = {**initial_metadata}
+    if backfill:
+        expected_metadata["session_id"] = "discovered-session"
+    assert stored_metadata == expected_metadata
+
+
+def test_running_telemetry_uses_metadata_start_or_task_timestamp(
+    hermes_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(session_service, "AGENT_ROLES", [])
+    monkeypatch.setattr(session_service.time, "time", lambda: 1000)
+    metadata_task = {
+        "id": "metadata-start-time",
+        "status": "running",
+        "metadata": {"started_at": 975},
+        "updated_at": 700,
+        "created_at": 600,
+    }
+    empty_metadata_task = {
+        "id": "task-start-time",
+        "status": "running",
+        "metadata": {},
+        "updated_at": 900,
+        "created_at": 800,
+    }
+
+    metadata_progress = session_service.resolve_task_session_progress(
+        metadata_task, backfill=False
+    )
+    fallback_progress = session_service.resolve_task_session_progress(
+        empty_metadata_task, backfill=False
+    )
+
+    assert metadata_progress["running_seconds"] == 25
+    assert fallback_progress["running_seconds"] == 100

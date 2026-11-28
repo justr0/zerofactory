@@ -55,7 +55,7 @@ graph TD
 | **Plugin-First Architecture** | Self-contained Hermes plugin with zero external Node.js or `hermes-profile-manager` dependencies. |
 | **Isolated Profiles** | Profiles are cleanly namespaced (`zf-orchestrator`, `zf-goldfish`, `zf-builder`, `zf-reviewer`) in `~/.hermes/profiles/` and never clash with personal user profiles. |
 | **Isolated Git Worktrees** | Every task runs in its own dedicated Git worktree (`~/.zerofactory/workspaces/<board>/worktrees/<task_id>`). Sibling repositories on the board check out side-by-side. Agents never touch `main` directly. |
-| **Thematic Continuous Review** | Layered code review capping at 2 focused rounds (Correctness & Tests → Verification & Polish), then arbitration by the gatekeeper profile (fix / merge / escalate) before handing off to human merge. |
+| **Thematic Continuous Review** | Layered code review capping at 2 focused rounds (Correctness & Tests → Verification & Polish), then, only with `ZEROFACTORY_REVIEW_CAP_ARBITRATION=1` and a `zf-gatekeeper` profile installed, arbitration by the gatekeeper (fix / merge / escalate) before handing off to human merge. A park at the cap waits on a person: it holds through PR conflicts and stale GitHub review state, a reviewer approval parks the task for human merge even while an earlier request-changes review still stands, and the request deadline is measured from GitHub's timestamp for the request comment, never the host clock. |
 | **Deterministic Precommit Gate** | Standardized format ➔ build ➔ test pipeline (`.zerofactory/precommit.sh`) ensuring zero broken builds or lint errors before PRs. |
 | **Self-Healing & Autonomous Recovery** | 3-tier fault tolerance: deterministic process reaper recovers dead/orphaned tasks (0 tokens), `zf-orchestrator` diagnoses failure logs to auto-recover with advice (strictly capped at 1 attempt), and human operators retain full override control via CLI and web UI. |
 | **OpenWiki Context Optimization** | Machine-readable architecture wiki (`openwiki/`) that slashes agent context bloat and exploratory tool calls by 30–40%. |
@@ -104,7 +104,7 @@ npm ci
 The active Python environment may be uv-managed and have no `pip` module, so use `uv pip` rather than `pip install`. The precommit test phase checks these requirements and prints remediation commands when they are missing; missing UI dependencies warn but do not fail environments that intentionally skip browser tests.
 
 ### 3. Start the Dispatcher & Open the Kanban Dashboard
-The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal (or enable `auto_start_dispatcher` in Settings):
+The dispatcher is opt-in (disabled by default on plugin load). Start it explicitly in a terminal, or enable `auto_start_dispatcher` in Settings: the gateway process then starts it when it loads the plugin. No other process starts it on its own, the dashboard included — it keeps its explicit "start dispatcher" control:
 ```bash
 hermes zerofactory start
 ```
@@ -121,7 +121,13 @@ The API and a lightweight task dashboard can run without the Hermes dashboard:
 FastAPI and Uvicorn runtime dependencies). The standalone page is available at `/`
 and the REST API at `/api/plugins/zerofactory`. Standalone mode only binds to a
 loopback IP address; non-loopback `--host` values are rejected because the API
-does not provide authentication.
+does not provide authentication. For state-changing browser requests, standalone
+mode rejects cross-site/same-site Fetch Metadata, validates the HTTP Host as
+`localhost` or a loopback IP, and requires any supplied `Origin` to be a valid
+origin matching the request scheme, host, and port. Headerless non-browser API
+clients remain supported, so this is a browser CSRF boundary, not authentication.
+GitHub issue sync is POST-only (`/boards/{slug}/sync-gh-issues`); the legacy GET
+form is no longer available.
 
 Workers default to Hermes. To use an external foreground worker, set
 `ZEROFACTORY_WORKER_COMMAND` to its executable and `ZEROFACTORY_WORKER_ARGS` to a
@@ -143,7 +149,7 @@ Zero Factory provides rich CLI commands under `hermes zerofactory`:
 ```bash
 # Profile management
 hermes zerofactory setup                          # Check or initialize zf-* profiles
-hermes zerofactory sync-profiles                  # Update system prompts from plugin templates
+hermes zerofactory sync-profiles                  # Sync profile prompts and bundled skills
 
 # Task management
 hermes zerofactory list                           # List all tasks
@@ -155,7 +161,9 @@ hermes zerofactory approve <task_id> [--split]    # Approve triage specification
 hermes zerofactory reject <task_id> --feedback "..." # Request spec revision back to zf-orchestrator
 hermes zerofactory split <task_id> [--repos api,web]       # Decompose multi-repo triage into Todo tasks
 hermes zerofactory import-gh-issue 42             # Deterministically import GitHub issue #42
-hermes zerofactory move <task_id> running          # Transition task status
+hermes zerofactory import-gh-issue --sync         # Sync open issues with zerofactory, ai-investigate, or ai-triage labels
+hermes zerofactory import-gh-issue --sync --label custom # Sync open issues with a specific request label
+hermes zerofactory move <task_id> running          # Transition task status (agents: `move done` carries the dispatch token, see below)
 hermes zerofactory recover <task_id> [--guidance "..."] # Recover stuck task to Todo with builder advice
 hermes zerofactory report-bug --task <task_id> --title "..." # Report internal Zero Factory defect to GitHub issues
 hermes zerofactory block <task_id> --reason "..." # Block a task
@@ -177,6 +185,12 @@ hermes zerofactory cron list                      # View active periodic health 
 hermes zerofactory cron sync                      # Sync cron jobs with Hermes scheduler
 hermes zerofactory cron run <job_id>              # Run a cron scanner immediately
 ```
+
+`sync-profiles` refreshes profile prompts and bundled skill copies; profile setup
+also synchronizes skills while initializing missing profiles. Fallback copies
+update changed files, remove only files tracked as managed when deleted upstream,
+and preserve user-added files. Setup status reports stale copies and broken skill
+links; existing live skill symlinks, including noncanonical links, are left unchanged.
 
 ---
 
@@ -226,8 +240,8 @@ Zero Factory organizes the Kanban dashboard into **4 Actor-Based Columns** (`Hum
    - **Goldfish Spec Audit (`zf-goldfish`)**: Performs an adversarial, zero-context review enforcing the Ponytail 7-Rung Ladder of Laziness, reuse/negative-scope boundaries, and concrete testability criteria.
    - **Human Release Gate (`spec_approval`)**: A human operator approves the spec via web UI or CLI (`hermes zerofactory approve <task_id>`), promoting single-repo tasks directly to `Todo` (`building`, `zf-builder`) or atomically decomposing multi-repo epics into sibling sub-tasks. Rejecting a spec (`reject`) or requesting changes on a PR automatically records the human feedback as a deduplicated `rejected_path` board memory so future runs avoid repeating the same mistake.
 3. **Autonomous Execution (`Running`)**: The dispatcher validates dependencies, enforces valid `(status, assignee)` invariants (`resolve_status_assignee()`), provisions an isolated Git worktree, and launches the stage's owning agent.
-   - **Global LLM capacity**: Settings → Global Max Concurrent LLM Workers caps running task agents and in-flight improvement scanners across all boards. For example, with a cap of 3, two running tasks on one board and one on another leave no slot for further tasks or scanners. The per-board running limits and Max Active Tasks (task WIP) apply independently. No-Agent queue checks do not consume LLM capacity.
-   - Each dispatch gets a unique worker execution identity passed to the worker CLI. Agent `move running` / `move done` reports require that current identity and matching task ownership; assignment-role equality alone is insufficient, and the API serializes this ownership check with dispatcher claims/recovery. Late or untracked workers cannot claim or complete a task.
+   - **Global LLM capacity**: Settings → Global Max Concurrent LLM Workers caps agent-running tasks and in-flight improvement scanners across all boards. Deterministic `packaging` (`running` + `awaiting_pr`) consumes no LLM slot, but still counts toward Max Active Tasks (task WIP) and per-board running limits. For example, with a cap of 3, two agent-running tasks and one scanner leave no slot for further tasks or scanners. No-Agent queue checks do not consume LLM capacity.
+   - Each dispatch gets a unique worker execution identity, written as a two-line header at the top of the worker prompt (and exported to the worker process as `ZEROFACTORY_WORKER_EXECUTION_ID`, which a Hermes session's shell commands do not inherit). Agent `move running` / `move done` reports require that current identity and matching task ownership; assignment-role equality alone is insufficient, and the API serializes this ownership check with dispatcher claims/recovery. Late or untracked workers cannot claim or complete a task. The CLI resolves the identity in this order: `--execution-id`, then `ZEROFACTORY_WORKER_EXECUTION_ID`, then the newest dispatch header in the reporting agent's own session transcript (`HERMES_SESSION_ID`, read from the agent profile's `state.db` — never another profile's or the global one). A worker whose session holds a stale dispatch must pass `--execution-id` explicitly. Missing or stale identity is recorded as `move_rejected` (`Completion ignored: no matching dispatcher-tracked worker execution`).
 4. **Deterministic Precommit, Anti-Slop Gate & PR Creation (`packaging` ➔ `review`)**: When `zf-builder` finishes, the task enters `packaging` (`status="running"`, `awaiting_pr=True`) while the dispatcher executes `.zerofactory/precommit.sh` in the worktree (format ➔ build ➔ tests) followed by the zero-token **Deterministic Anti-Slop Gate** (`dispatcher/slop_gate.py`, blocking leftover debuggers, unresolved placeholder comments, skipped tests, assertion-free new tests, untested production code diffs `> 20` net lines, spec `Do Not Touch` file violations, and a default 800-line `ZEROFACTORY_MAX_DIFF_LINES` cap). Auto-formatted changes are staged, and if precommit or the slop gate fails, the builder receives exact error logs to auto-fix (up to 3 retries). Once clean, the dispatcher commits, merges with latest main, pushes, opens a GitHub Pull Request, and routes it to `zf-reviewer` with a pre-digested **Diff Hygiene Scorecard** (including `mock_heavy_test`, suppressor, and silent-except warnings) for thematic review (Correctness & Tests ➔ Verification & Polish, capped at 2 cumulative rounds per PR; unresolved Round 2 reviews escalate to `Human: blocked`). Workerless running rows, including stalled `awaiting_pr` packaging handoffs, recover after the configured spawn grace (default 180s); active packaging is allowed that grace to proceed.
 5. **Self-Healing & Autonomous Recovery (`recovery` stage)**:
    - **Deterministic Orphan Reaping (0 Tokens)**: If a worker process exits abruptly or an active session is lost, the dispatcher reaper immediately reaps the dead subprocess and recovers the task to `Todo` (`worker_recovered`). Workerless `running` rows are recovered after the spawn grace whether or not `awaiting_pr` is set; stalled packaging therefore releases its running slot, while fresh packaging is allowed to proceed during the grace. A recovered reviewer stays in Todo for PR polling across polls with no verdict and is not respawned; feedback routes it to the builder or approval path, and changed ownership ends the polling exception.

@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -80,6 +81,15 @@ class TestOpenWikiGate(unittest.TestCase):
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, status TEXT, created_at REAL)"
             )
+
+    def _make_checkout(self, repo_dir: Path, origin_url: str) -> None:
+        repo_dir.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", origin_url],
+            cwd=repo_dir,
+            check=True,
+        )
 
     def test_missing_git_directory(self):
         wake, reason = self.gate.check_openwiki_gate(self.tmp, board_slug="test-board")
@@ -328,7 +338,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, tags TEXT, created_at REAL, updated_at REAL)"
             )
@@ -387,7 +397,7 @@ class TestOpenWikiGate(unittest.TestCase):
 
     def test_api_task_creation_failure_does_not_use_sqlite_fallback(self):
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
             )
@@ -400,14 +410,14 @@ class TestOpenWikiGate(unittest.TestCase):
                 task = self.gate.create_openwiki_task("stale-board", "changes")
 
         self.assertIsNone(task)
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0
             )
 
     def test_sqlite_fallback_is_used_when_plugin_api_cannot_be_imported(self):
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
             )
@@ -417,7 +427,7 @@ class TestOpenWikiGate(unittest.TestCase):
                 task = self.gate.create_openwiki_task("test-board", "changes")
 
         self.assertIsNotNone(task)
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             row = conn.execute("SELECT board_slug, status FROM tasks").fetchone()
         self.assertEqual(row, ("test-board", "todo"))
 
@@ -426,7 +436,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, tags TEXT, created_at REAL, updated_at REAL)"
             )
@@ -471,7 +481,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, status TEXT, created_at REAL)"
             )
@@ -492,7 +502,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, status TEXT, created_at REAL)"
             )
@@ -509,7 +519,7 @@ class TestOpenWikiGate(unittest.TestCase):
             self.assertIn("status 'running'", reason)
 
             # Change to blocked
-            with sqlite3.connect(str(db_file)) as conn:
+            with closing(sqlite3.connect(str(db_file))) as conn, conn:
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked' WHERE id = 'task-run'"
                 )
@@ -525,7 +535,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
             )
@@ -574,6 +584,172 @@ class TestOpenWikiGate(unittest.TestCase):
             )
         self.assertEqual(resolved, repo_dir.resolve())
 
+    def test_resolve_board_slug_uses_exact_repository_identity_without_argument(self):
+        repo_dir = self.tmp / "payments-api"
+        remote_url = "https://github.com/example/payments-api.git"
+        self._make_checkout(repo_dir, remote_url)
+        db_file = self.tmp / "zerofactory.db"
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
+            )
+            conn.execute("INSERT INTO boards (slug) VALUES ('api')")
+            conn.execute("INSERT INTO boards (slug) VALUES ('payments')")
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                ("api", "https://github.com/example/another-api.git"),
+            )
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                ("payments", "https://github.com/example/payments-api.git"),
+            )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+        ):
+            slug = self.gate.resolve_board_slug(repo_dir)
+
+        self.assertEqual(slug, "payments")
+
+    def test_no_slug_uses_first_fetch_url_for_multi_url_origin(self):
+        repo_dir = self.tmp / "payments-api"
+        payments_url = "https://github.com/example/payments-api.git"
+        billing_url = "https://github.com/example/billing-api.git"
+        self._make_checkout(repo_dir, payments_url)
+        subprocess.run(
+            ["git", "remote", "set-url", "--add", "origin", billing_url],
+            cwd=repo_dir,
+            check=True,
+        )
+        (repo_dir / "openwiki").mkdir()
+        db_file = self.tmp / "zerofactory.db"
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, git_url TEXT)"
+            )
+            for slug, repo_alias, git_url in (
+                ("payments", "payments-api", payments_url),
+                ("billing", "billing-api", billing_url),
+            ):
+                conn.execute("INSERT INTO boards (slug) VALUES (?)", (slug,))
+                conn.execute(
+                    "INSERT INTO board_repositories (board_slug, repo_alias, git_url) VALUES (?, ?, ?)",
+                    (slug, repo_alias, git_url),
+                )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(os.environ, {"ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "1"}),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
+            wake, reason = self.gate.check_openwiki_gate(repo_dir)
+
+        self.assertFalse(wake)
+        self.assertIn("created task 'task-1'", reason)
+        create_task.assert_called_once()
+        self.assertEqual(create_task.call_args.args[0].board_slug, "payments")
+
+    def test_ambiguous_exact_repository_identity_does_not_file_task(self):
+        repo_dir = self.tmp / "payments-api"
+        remote_url = "https://github.com/example/payments-api.git"
+        self._make_checkout(repo_dir, remote_url)
+        db_file = self.tmp / "zerofactory.db"
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
+            )
+            for slug in ("payments", "billing"):
+                conn.execute("INSERT INTO boards (slug) VALUES (?)", (slug,))
+                conn.execute(
+                    "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                    (slug, remote_url),
+                )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(os.environ, {"ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "1"}),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
+            wake, reason = self.gate.check_openwiki_gate(repo_dir)
+
+        self.assertFalse(wake)
+        self.assertIn("Unable to unambiguously resolve a board", reason)
+        create_task.assert_not_called()
+
+    def test_case_mismatched_remote_does_not_file_task(self):
+        repo_dir = self.tmp / "payments-checkout"
+        self._make_checkout(repo_dir, "https://github.com/example/team/payments.git")
+        db_file = self.tmp / "zerofactory.db"
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
+            )
+            conn.execute("INSERT INTO boards (slug) VALUES ('payments')")
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                ("payments", "https://github.com/example/team/Payments.git"),
+            )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(os.environ, {"ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "1"}),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
+            wake, reason = self.gate.check_openwiki_gate(repo_dir)
+
+        self.assertFalse(wake)
+        self.assertIn("Unable to unambiguously resolve a board", reason)
+        create_task.assert_not_called()
+
+    def test_local_remote_with_git_suffix_does_not_match_another_path(self):
+        remote_repo = self.tmp / "archive.git"
+        remote_repo.mkdir()
+        subprocess.run(["git", "init", "--bare", "-q"], cwd=remote_repo, check=True)
+        registered_repo = self.tmp / "archive"
+        registered_repo.mkdir()
+        subprocess.run(["git", "init", "--bare", "-q"], cwd=registered_repo, check=True)
+        repo_dir = self.tmp / "checkout"
+        self._make_checkout(repo_dir, str(remote_repo))
+        db_file = self.tmp / "zerofactory.db"
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
+            conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
+            )
+            conn.execute("INSERT INTO boards (slug) VALUES ('archive-board')")
+            conn.execute(
+                "INSERT INTO board_repositories (board_slug, git_url) VALUES (?, ?)",
+                ("archive-board", str(registered_repo)),
+            )
+
+        with (
+            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(os.environ, {"ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "1"}),
+            patch.object(self.gate.sys, "argv", ["zf_openwiki_gate.py"]),
+            patch(
+                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
+            ) as create_task,
+        ):
+            wake, reason = self.gate.check_openwiki_gate(repo_dir)
+
+        self.assertFalse(wake)
+        self.assertIn("Unable to unambiguously resolve a board", reason)
+        create_task.assert_not_called()
+
     def test_multi_repo_openwiki_gate_evaluates_all_repos(self):
         repo_api = self.tmp / "api"
         repo_worker = self.tmp / "worker"
@@ -583,7 +759,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (repo_worker / "openwiki").mkdir(parents=True)
 
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (id INTEGER PRIMARY KEY AUTOINCREMENT, board_slug TEXT, repo_alias TEXT, git_url TEXT, target_branch TEXT)"

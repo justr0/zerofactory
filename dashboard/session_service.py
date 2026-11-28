@@ -23,12 +23,14 @@ if _DASHBOARD_ROOT not in sys.path:
 try:
     from ..paths import (  # type: ignore
         AGENT_ROLES,
+        _coerce_task_metadata,
         normalize_assignee,
         resolve_profile_state_db,
     )
 except (ImportError, ValueError):
     from paths import (  # type: ignore
         AGENT_ROLES,
+        _coerce_task_metadata,
         normalize_assignee,
         resolve_profile_state_db,
     )
@@ -76,18 +78,12 @@ def _compute_stuck_status(
     task: dict[str, Any],
     is_alive: bool,
     worker_pid: int | None,
-    started_at: float | None,
     last_active: float | None,
     log_path: Path,
 ) -> tuple[int, int, bool, str | None]:
     """Compute running/idle duration and stuck status for a task."""
     now = int(time.time())
-    meta = task.get("metadata") or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(task.get("metadata"))
 
     started = (
         meta.get("started_at")
@@ -155,16 +151,9 @@ def _compute_stuck_status(
     return running_seconds, idle_seconds, is_stuck, stuck_reason
 
 
-def resolve_task_all_sessions(
-    task: dict[str, Any], backfill: bool = True
-) -> list[dict[str, Any]]:
+def resolve_task_all_sessions(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract all execution sessions (finished and ongoing) for a task across all agent profiles."""
-    meta = task.get("metadata") or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(task.get("metadata"))
 
     task_id = str(task.get("id") or "")
     task_title = str(task.get("title") or "")
@@ -459,12 +448,7 @@ def resolve_task_session_progress(
     task: dict[str, Any], backfill: bool = True
 ) -> dict[str, Any]:
     """Extract real-time execution progress, turn counts, tool calls, and all historical/ongoing sessions for a task."""
-    meta = task.get("metadata") or {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
+    meta = _coerce_task_metadata(task.get("metadata"))
 
     assignee = task.get("assignee") or "zf-builder"
     task_id = task.get("id") or ""
@@ -504,7 +488,7 @@ def resolve_task_session_progress(
         except Exception:
             _log.debug("Failed to tail worker log %s", log_path, exc_info=True)
 
-    sessions = resolve_task_all_sessions(task, backfill=backfill)
+    sessions = resolve_task_all_sessions(task)
 
     ongoing_sessions = [s for s in sessions if s.get("status") == "ongoing"]
     if ongoing_sessions:
@@ -535,7 +519,6 @@ def resolve_task_session_progress(
             task,
             is_alive,
             worker_pid,
-            active_session.get("started_at"),
             last_active_ts,
             log_path,
         )
@@ -567,7 +550,7 @@ def resolve_task_session_progress(
         }
 
     r_sec, i_sec, stuck, reason = _compute_stuck_status(
-        task, is_alive, worker_pid, None, None, log_path
+        task, is_alive, worker_pid, None, log_path
     )
     return {
         "has_session": bool(session_id),
@@ -617,20 +600,10 @@ def _load_task_board_map() -> tuple[
                 task_map[tid.lower()] = task_info
                 if bslug:
                     board_slugs.add(bslug)
-                meta_raw = row[4]
-                if meta_raw:
-                    try:
-                        mdict = (
-                            json.loads(meta_raw)
-                            if isinstance(meta_raw, str)
-                            else meta_raw
-                        )
-                        if isinstance(mdict, dict):
-                            msid = mdict.get("session_id")
-                            if msid:
-                                session_to_task[str(msid)] = task_info
-                    except Exception:
-                        pass
+                mdict = _coerce_task_metadata(row[4])
+                msid = mdict.get("session_id")
+                if msid:
+                    session_to_task[str(msid)] = task_info
     except Exception as e:
         _log.debug("Error querying tasks for session-board mapping: %s", e)
     return task_map, session_to_task, board_slugs

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import gc
 import os
+import shutil
+import stat
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -53,6 +56,7 @@ def _hermetic_dispatcher_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "ZEROFACTORY_LOCK_PATH", str(tmp_path / "zerofactory_dispatcher.lock")
     )
+    monkeypatch.setenv("OPENWIKI_CONFIG_DIR", str(tmp_path / "openwiki-config"))
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +71,77 @@ def _hermetic_default_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     override this with ``monkeypatch.delenv``/``setenv`` of their own.
     """
     monkeypatch.setenv("ZEROFACTORY_DB", str(tmp_path / "zerofactory_default.db"))
+
+
+# ``Path.home()`` and ``expanduser("~")`` read ``HOME`` on POSIX but ``USERPROFILE``
+# (or ``HOMEDRIVE`` + ``HOMEPATH``) on Windows, where ``HOME`` is ignored: a fake
+# home that only overrides ``HOME`` resolves to the operator's real profile there.
+HOME_ENV_KEYS = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")
+
+
+def fake_home_env(home: Path) -> dict[str, str]:
+    """Env overrides that point ``Path.home()`` at ``home`` on every platform."""
+    drive, tail = os.path.splitdrive(str(home))
+    env = {"HOME": str(home), "USERPROFILE": str(home)}
+    if drive:
+        env["HOMEDRIVE"] = drive
+        env["HOMEPATH"] = tail
+    return env
+
+
+def force_rmtree(path: Path | str) -> None:
+    """Remove a tree git and sqlite have written to, even on Windows.
+
+    git stores object files read-only. POSIX lets the owner unlink them
+    anyway; Windows refuses, so ``shutil.rmtree`` stops at the first one and,
+    with ``ignore_errors=True``, quietly leaves the rest of the tree behind in
+    the temp directory: one leaked tree per test run. Windows also refuses to
+    delete a database file while a connection holds it open, and a connection
+    opened with ``with sqlite3.connect(...)`` - which commits but never
+    closes - is only closed once the garbage collector reclaims it.
+    """
+    if sys.platform != "win32":
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    gc.collect()
+    _make_writable(path)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _make_writable(path: Path | str) -> None:
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    with os.scandir(path) as entries:
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            # A junction or symlink: never touch what it points at.
+            if st.st_file_attributes & reparse:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                _make_writable(entry.path)
+            elif not st.st_mode & stat.S_IWRITE:
+                try:
+                    os.chmod(entry.path, stat.S_IWRITE)
+                except OSError:
+                    pass
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_user_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``Path.home()``-relative state out of the operator's real home.
+
+    Windows only: the suite's fake homes override ``HOME``, which ``Path.home()``
+    ignores there, and an inherited ``HERMES_HOME`` (factory worker sessions)
+    points tests at the live home. Tests that set their own fake home with
+    ``fake_home_env`` override this for their duration.
+    """
+    if os.name != "nt":
+        return
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    for key, value in fake_home_env(tmp_path).items():
+        monkeypatch.setenv(key, value)
 
 
 @pytest.fixture
@@ -140,3 +215,24 @@ def default_board(api_client) -> str:
         },
     )
     return res.json()["slug"]
+
+
+@pytest.fixture
+def dir_link() -> Iterator[Callable[[Path, Path], None]]:
+    """Link a directory the way an unprivileged user can on this host.
+
+    POSIX: a symbolic link.  Windows: a junction — ``symlink_to`` needs a
+    privilege most accounts lack (``WinError 1314``), while a junction is the
+    link an unprivileged process can actually create.  Both resolve to their
+    target, which is what the path-containment checks must see through.
+    """
+
+    def _link(target: Path, link: Path) -> None:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    yield _link

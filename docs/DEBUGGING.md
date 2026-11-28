@@ -35,6 +35,15 @@ flowchart TD
 Every dispatcher decision is written down. The kanban DB is `~/.hermes/zerofactory.db`
 (`ZEROFACTORY_DB` overrides):
 
+In this deployment, the default-profile Hermes gateway is the expected board
+dispatcher owner; an explicitly started `hermes zerofactory start` process may
+also own it. Auxiliary `zf-*` profiles must not auto-start their own dispatcher.
+On Linux, run `lslocks --notruncate --output PID,COMMAND,PATH`, match `PATH` to
+the configured `<lock path>.owner` (normally
+`~/.hermes/zerofactory_dispatcher.lock.owner`), then check that PID with
+`ps -fp <PID>` and confirm it is the expected live process. The lock file can
+remain on disk after release, so its existence alone does not prove ownership.
+
 ```bash
 DB="${ZEROFACTORY_DB:-$HOME/.hermes/zerofactory.db}"
 
@@ -118,6 +127,7 @@ Rules of thumb:
 | Task stuck `blocked` with conflicts | git | In the worktree: `git status`, `grep -rn '<<<<<<<' --include='*.py'`, `ls .git/MERGE_HEAD` |
 | Task parked with **no** activity rows for hours | engine (silent gate) | `grep "STEP" agent.log \| grep <task_id>` — the last `skip`/`start` line names the gate or step that dropped it (§2b) |
 | Task bounced out of `blocked`/`done` by an agent report | engine (stale worker) | Look for `move_rejected` in `task_activity` — the guard now ignores zombie `move done` on parked states (only `changes-requested` accepts builder completion). If the row exists, the clobber was rejected as designed. |
+| `Completion ignored: no matching dispatcher-tracked worker execution` on every builder `move done` | engine (handoff token) | The report carried no current dispatch token. Confirm the agent session's first user message starts with the handoff header (dashboard **Agents** transcript, or `SELECT content FROM messages WHERE session_id=? ORDER BY rowid LIMIT 1` in `~/.hermes/profiles/<agent>/state.db`); retry by hand with `hermes zerofactory move <id> done --actor <agent> --execution-id <metadata.worker_execution_id>` only while that dispatch is still the current one |
 | PR merged/closed on GitHub, board not updated | polling lag (by design) | `gh pr view` vs the task row; the next cycle's `MERGED`/`CLOSED` branch archives it |
 | Nothing dispatches at all | capacity / env | `hermes zerofactory check-stuck`, board `max_concurrent_running`, `ZEROFACTORY_*` env, gateway restart |
 | Badges/UI look wrong | UI derivation | Badges derive from `status`/`assignee`/`metadata` only — if one shows stale state, the bug is in the derivation, never in titles |

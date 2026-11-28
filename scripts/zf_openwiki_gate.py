@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -98,7 +99,7 @@ def create_openwiki_task(
                 task_id = f"zf-{uuid.uuid4().hex[:8]}"
             now_ts = int(time.time())
             try:
-                with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                     cursor = conn.cursor()
                     cursor.execute("PRAGMA table_info(tasks)")
                     cols = {row[1] for row in cursor.fetchall()}
@@ -213,8 +214,8 @@ def load_state() -> dict[str, Any]:
     return {}
 
 
-def resolve_board_slug(repo_dir: Path) -> str:
-    """Infer board slug from argv or database."""
+def resolve_board_slug(repo_dir: Path) -> str | None:
+    """Resolve an explicit board slug or an exact, unambiguous repo match."""
     for arg in sys.argv[1:]:
         if not arg.startswith("-"):
             return arg
@@ -222,26 +223,31 @@ def resolve_board_slug(repo_dir: Path) -> str:
     db_path = paths.get_zerofactory_db_path()
     if db_path.exists():
         try:
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            remote_url = _run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir)
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT b.slug, br.git_url FROM boards b LEFT JOIN board_repositories br ON b.slug = br.board_slug"
                 )
+                matches: set[str] = set()
                 for row in cursor.fetchall():
                     slug, git_url = row[0], row[1] or ""
-                    if slug and (
-                        slug.lower() in repo_dir.name.lower()
-                        or repo_dir.name.lower() in slug.lower()
-                    ):
-                        return slug
-                    if git_url and (
-                        repo_dir.name in git_url or str(repo_dir) in git_url
-                    ):
-                        return slug
+                    remote_matches = bool(
+                        git_url and remote_url and git_url == remote_url
+                    )
+                    local_path_matches = bool(
+                        git_url
+                        and str(Path(git_url).expanduser().resolve())
+                        == str(repo_dir.resolve())
+                    )
+                    if slug and (remote_matches or local_path_matches):
+                        matches.add(slug)
+                if len(matches) == 1:
+                    return matches.pop()
         except Exception:
             pass
 
-    return repo_dir.name
+    return None
 
 
 def resolve_repo_path(
@@ -290,7 +296,7 @@ def has_active_openwiki_task(
     if not db_path.exists():
         return False, ""
     try:
-        with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             query = """
@@ -488,6 +494,11 @@ def check_openwiki_gate(
         (wake_agent, reason_message)
     """
     slug = board_slug or resolve_board_slug(repo_dir)
+    if not slug:
+        return (
+            False,
+            f"Unable to unambiguously resolve a board for repository '{repo_dir}'; skipping OpenWiki update.",
+        )
 
     force_update = "--force" in sys.argv or os.environ.get(
         "ZEROFACTORY_FORCE_OPENWIKI_UPDATE", ""
@@ -505,7 +516,7 @@ def check_openwiki_gate(
     board_repos: list[dict[str, Any]] = []
     if db_path.exists():
         try:
-            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(
