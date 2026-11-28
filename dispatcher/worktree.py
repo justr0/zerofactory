@@ -766,11 +766,8 @@ def setup_worktree(
 def _handle_local_merge_conflict(
     cursor: sqlite3.Cursor,
     task_id: str,
-    title: str,
-    workspace_path: str,
     conflict_files: list[str],
     now: int,
-    err_msg: str = "",
 ) -> None:
     """Handle a local merge conflict when syncing task branch with main before push."""
     max_conflict_retries = int(os.environ.get("ZEROFACTORY_MAX_CONFLICT_RETRIES", "3"))
@@ -1241,11 +1238,12 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
 
             _git = _shutil.which("git")
             if _git:
-                _cand = Path(_git).parent.parent / "bin" / "bash.exe"
-                if not _cand.exists():
-                    _cand = Path(_git).parent.parent / "usr" / "bin" / "bash.exe"
-                if _cand.exists():
-                    bash_exe = str(_cand)
+                for _gdir in Path(_git).resolve().parents[:3]:
+                    _cand = _gdir / "bin" / "bash.exe"
+                    if not _cand.exists():
+                        _cand = _gdir / "usr" / "bin" / "bash.exe"
+                    if _cand.exists():
+                        bash_exe = str(_cand)
         res = subprocess.run(
             [bash_exe, script_arg],
             cwd=str(workspace_path),
@@ -1288,7 +1286,6 @@ def run_deterministic_precommit(workspace_path: Path) -> tuple[bool, str, int]:
 def _handle_precommit_failure(
     cursor: sqlite3.Cursor,
     task_id: str,
-    title: str,
     workspace_path: str,
     err_output: str,
     now: int,

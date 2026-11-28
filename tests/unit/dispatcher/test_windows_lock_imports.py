@@ -68,6 +68,10 @@ def test_dispatcher_lock_tests_run_without_repo_fcntl_imports(tmp_path: Path) ->
                 return original_import(name, globals, locals, fromlist, level)
 
             builtins.__import__ = deny_repo_fcntl
+            # ctypes reads os.name when first imported (COMError is Windows-only):
+            # load it under the host platform, so the shim's import is a cache hit.
+            import ctypes
+
             original_name = os.name
             os.name = "nt"
             try:

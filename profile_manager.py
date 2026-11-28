@@ -16,10 +16,11 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 try:
@@ -35,6 +36,7 @@ except (ImportError, ValueError):
     from paths import get_hermes_home  # type: ignore
 
 ZF_PROFILES = ("zf-orchestrator", "zf-builder", "zf-reviewer", "zf-goldfish")
+_SKILL_MANIFEST = ".zerofactory-managed-files"
 
 # All HERMES_LANGFUSE_* keys written to .env files by sync_langfuse_profiles().
 # Used to scrub stale credentials from every profile .env when Langfuse is disabled.
@@ -117,6 +119,117 @@ def get_plugin_root() -> Path:
             pass
 
     return cur
+
+
+def _read_skill_manifest(manifest: Path) -> set[str] | None:
+    """Read trusted managed relative paths, returning None for invalid manifests."""
+    if not manifest.exists() and not manifest.is_symlink():
+        return set()
+    if manifest.is_symlink() or not manifest.is_file():
+        return None
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(entries, list):
+        return None
+
+    paths: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, str) or not entry or "\x00" in entry or "\\" in entry:
+            return None
+        posix_path = PurePosixPath(entry)
+        windows_path = PureWindowsPath(entry)
+        if (
+            entry != posix_path.as_posix()
+            or posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or any(
+                part in (".", "..") for part in (*posix_path.parts, *windows_path.parts)
+            )
+            or entry == _SKILL_MANIFEST
+        ):
+            return None
+        paths.add(entry)
+    return paths
+
+
+def _skill_path_has_symlink(root: Path, relative_path: str) -> bool:
+    """Return whether any component below a copied-skill root is a symlink."""
+    current = root
+    for part in PurePosixPath(relative_path).parts:
+        current /= part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _remove_managed_skill_path(
+    root: Path, relative_path: str, managed_paths: set[str]
+) -> bool:
+    """Remove a tracked path without following a destination symlink."""
+    parts = PurePosixPath(relative_path).parts
+    current = root
+    for index, part in enumerate(parts[:-1], start=1):
+        current /= part
+        parent_path = PurePosixPath(*parts[:index]).as_posix()
+        if current.is_symlink():
+            current.unlink()
+            return True
+        if current.exists() and not current.is_dir():
+            if parent_path in managed_paths:
+                current.unlink()
+                return True
+            return False
+        if not current.exists():
+            return True
+
+    target = current / parts[-1]
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        target.unlink()
+    elif target.is_dir():
+        try:
+            target.rmdir()
+        except OSError:
+            # Keep unrelated files if a formerly managed file became a directory.
+            pass
+    return True
+
+
+def _prepare_skill_file(
+    root: Path, relative_path: str, managed_paths: set[str]
+) -> Path | None:
+    """Prepare a copied-skill destination, refusing unowned file/directory clashes."""
+    parts = PurePosixPath(relative_path).parts
+    current = root
+    for index, part in enumerate(parts[:-1], start=1):
+        current /= part
+        parent_path = PurePosixPath(*parts[:index]).as_posix()
+        if current.is_symlink():
+            current.unlink()
+        elif current.exists() and not current.is_dir():
+            if parent_path not in managed_paths:
+                return None
+            current.unlink()
+        current.mkdir(exist_ok=True)
+
+    target = current / parts[-1]
+    if target.is_symlink():
+        target.unlink()
+    elif target.is_dir():
+        try:
+            target.rmdir()
+        except OSError:
+            return None
+    elif target.exists() and not target.is_file():
+        if relative_path not in managed_paths:
+            return None
+        target.unlink()
+    return target
 
 
 def get_root_model_config() -> dict[str, Any]:
@@ -219,8 +332,12 @@ def ensure_zf_profiles(
         # 4. Link or copy skills from plugin_root / "skills"
         if skills_dir.exists():
             profile_skills_dir = target_dir / "skills"
-            profile_skills_dir.mkdir(parents=True, exist_ok=True)
-            for skill_dir in skills_dir.iterdir():
+            if profile_skills_dir.is_symlink():
+                skill_dirs = ()
+            else:
+                profile_skills_dir.mkdir(parents=True, exist_ok=True)
+                skill_dirs = skills_dir.iterdir()
+            for skill_dir in skill_dirs:
                 if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
                     sname = skill_dir.name
                     # If a skill has a role prefix (e.g. zf-builder-), only link to that role
@@ -246,7 +363,69 @@ def ensure_zf_profiles(
                         try:
                             dest_skill.symlink_to(skill_dir, target_is_directory=True)
                         except Exception:
-                            shutil.copytree(skill_dir, dest_skill, dirs_exist_ok=True)
+                            dest_skill.mkdir(parents=True, exist_ok=True)
+                    if dest_skill.is_dir() and not dest_skill.is_symlink():
+                        manifest = dest_skill / _SKILL_MANIFEST
+                        managed_files = _read_skill_manifest(manifest) or set()
+
+                        source_files = {
+                            source_file.relative_to(skill_dir).as_posix(): source_file
+                            for source_file in skill_dir.rglob("*")
+                            if source_file.is_file()
+                            and source_file.relative_to(skill_dir).as_posix()
+                            != _SKILL_MANIFEST
+                        }
+                        sync_complete = True
+                        for relative_path in sorted(
+                            managed_files - source_files.keys(),
+                            key=lambda item: len(PurePosixPath(item).parts),
+                            reverse=True,
+                        ):
+                            try:
+                                if not _remove_managed_skill_path(
+                                    dest_skill, relative_path, managed_files
+                                ):
+                                    sync_complete = False
+                            except OSError:
+                                sync_complete = False
+
+                        for relative_path, source_file in source_files.items():
+                            try:
+                                destination_file = _prepare_skill_file(
+                                    dest_skill, relative_path, managed_files
+                                )
+                                if destination_file is None:
+                                    sync_complete = False
+                                elif (
+                                    not destination_file.is_file()
+                                    or source_file.read_bytes()
+                                    != destination_file.read_bytes()
+                                ):
+                                    shutil.copy2(source_file, destination_file)
+                            except OSError:
+                                sync_complete = False
+
+                        manifest_content = (
+                            json.dumps(sorted(source_files), indent=2) + "\n"
+                        )
+                        if sync_complete:
+                            try:
+                                if manifest.is_symlink():
+                                    manifest.unlink()
+                                if manifest.is_dir():
+                                    sync_complete = False
+                                elif (
+                                    not manifest.is_file()
+                                    or manifest.read_bytes()
+                                    != manifest_content.encode("utf-8")
+                                ):
+                                    manifest.write_text(
+                                        manifest_content, encoding="utf-8"
+                                    )
+                            except (OSError, ValueError):
+                                _log.warning(
+                                    "Could not update skill manifest %s", manifest
+                                )
 
         # 5. Ensure profile's plugins/ directory and symlinks exist
         prof_plugins = target_dir / "plugins"
@@ -300,6 +479,14 @@ def ensure_zf_profiles(
     return res
 
 
+def _is_junction(path: Path) -> bool:
+    """Windows directory junction: a reparse point ``Path.is_symlink()`` reports as False."""
+    try:
+        return os.lstat(path).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (AttributeError, OSError):
+        return False
+
+
 def ensure_plugin_symlinks() -> dict[str, Any]:
     """Ensure plugin symlink (zerofactory) and config entries exist in:
     1. Root ~/.hermes/plugins/ and ~/.hermes/config.yaml
@@ -331,30 +518,38 @@ def ensure_plugin_symlinks() -> dict[str, Any]:
         target_plugins_dir.mkdir(parents=True, exist_ok=True)
         link_path = target_plugins_dir / "zerofactory"
         try:
-            if link_path.is_symlink() or link_path.exists():
-                if link_path.is_symlink():
-                    try:
-                        cur_target = link_path.resolve()
-                        # If existing symlink points to a transient worktree or is broken, unlink it
-                        if "-worktrees" in str(cur_target) or not cur_target.exists():
-                            link_path.unlink()
-                            _link_to(link_path, plugin_root)
-                        elif cur_target == plugin_root.resolve():
-                            pass
-                        else:
-                            link_path.unlink()
-                            _link_to(link_path, plugin_root)
-                    except Exception:
+            is_link = link_path.is_symlink() or _is_junction(link_path)
+            if is_link or link_path.exists():
+                # Relink when the link is transient (git worktree), broken, or
+                # points at another install; a plain directory is an old copy.
+                cur_target = link_path.resolve() if is_link else None
+                stale = cur_target is None or (
+                    "-worktrees" in str(cur_target)
+                    or not cur_target.exists()
+                    or cur_target != plugin_root.resolve()
+                )
+                if not stale:
+                    linked.append(str(link_path))
+                    return
+                if _is_junction(link_path):
+                    # Removing a junction with rmdir never traverses its target.
+                    os.rmdir(link_path)
+                elif link_path.is_symlink():
+                    # Windows directory symlinks are not junctions. rmtree
+                    # refuses them, so remove the reparse point itself.
+                    attrs = getattr(os.lstat(link_path), "st_file_attributes", 0)
+                    is_directory = attrs & getattr(
+                        stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10
+                    )
+                    if os.name == "nt" and is_directory:
+                        os.rmdir(link_path)
+                    else:
                         link_path.unlink()
-                        _link_to(link_path, plugin_root)
                 elif link_path.is_dir():
                     shutil.rmtree(link_path)
-                    _link_to(link_path, plugin_root)
                 else:
                     link_path.unlink()
-                    _link_to(link_path, plugin_root)
-            else:
-                _link_to(link_path, plugin_root)
+            _link_to(link_path, plugin_root)
             linked.append(str(link_path))
         except Exception as e:
             _log.warning("Could not link plugin in %s: %s", target_plugins_dir, e)
@@ -755,7 +950,8 @@ def check_gh_auth_status(*, use_cache: bool = True) -> bool:
     ok = False
     try:
         proc = subprocess.run(
-            ["gh", "auth", "status"],
+            # Resolved through PATH so Windows also finds gh.cmd wrappers (PATHEXT).
+            [shutil.which("gh") or "gh", "auth", "status"],
             capture_output=True,
             text=True,
             timeout=3,
@@ -772,7 +968,9 @@ def check_gh_auth_status(*, use_cache: bool = True) -> bool:
 def check_setup_status(*, use_cache: bool = True) -> dict[str, Any]:
     """Read-only check of Zero Factory profile readiness, template sync, and GitHub auth status."""
     profiles_dir = get_hermes_profiles_root()
-    templates_dir = get_plugin_root() / "templates"
+    plugin_root = get_plugin_root()
+    templates_dir = plugin_root / "templates"
+    skills_dir = plugin_root / "skills"
     missing_profiles: list[str] = []
     outdated_profiles: list[str] = []
     for role in ZF_PROFILES:
@@ -785,15 +983,65 @@ def check_setup_status(*, use_cache: bool = True) -> dict[str, Any]:
             continue
         soul_src = templates_dir / role / "SOUL.md"
         soul_dst = prof_dir / "SOUL.md"
+        profile_outdated = False
         if soul_src.is_file():
             try:
                 if (
                     not soul_dst.is_file()
                     or soul_src.read_bytes() != soul_dst.read_bytes()
                 ):
-                    outdated_profiles.append(role)
+                    profile_outdated = True
             except OSError:
-                outdated_profiles.append(role)
+                profile_outdated = True
+
+        for skill_src in skills_dir.iterdir() if skills_dir.is_dir() else ():
+            if not skill_src.is_dir() or not (skill_src / "SKILL.md").is_file():
+                continue
+            if skill_src.name.startswith("zf-") and not skill_src.name.startswith(
+                f"{role}-"
+            ):
+                continue
+            skill_dst = prof_dir / "skills" / skill_src.name
+            try:
+                if skill_dst.is_symlink():
+                    if not skill_dst.exists():
+                        profile_outdated = True
+                    # Preserve any live profile-local skill link, even if it points
+                    # somewhere other than this plugin's bundle.
+                    continue
+                if not skill_dst.is_dir():
+                    profile_outdated = True
+                    continue
+
+                source_files = {
+                    source_file.relative_to(skill_src).as_posix(): source_file
+                    for source_file in skill_src.rglob("*")
+                    if source_file.is_file()
+                    and source_file.relative_to(skill_src).as_posix() != _SKILL_MANIFEST
+                }
+                for relative_path, source_file in source_files.items():
+                    destination_file = skill_dst / relative_path
+                    if _skill_path_has_symlink(skill_dst, relative_path):
+                        profile_outdated = True
+                        break
+                    try:
+                        if (
+                            not destination_file.is_file()
+                            or source_file.read_bytes() != destination_file.read_bytes()
+                        ):
+                            profile_outdated = True
+                            break
+                    except OSError:
+                        profile_outdated = True
+                        break
+
+                managed_files = _read_skill_manifest(skill_dst / _SKILL_MANIFEST)
+                if managed_files is None or managed_files - source_files.keys():
+                    profile_outdated = True
+            except OSError:
+                profile_outdated = True
+        if profile_outdated:
+            outdated_profiles.append(role)
     plugin_update = check_plugin_update(use_cache=use_cache)
     return {
         "profiles_ready": len(missing_profiles) == 0,

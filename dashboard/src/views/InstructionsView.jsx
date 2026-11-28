@@ -308,7 +308,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
                   title: "Thematic Review",
                   badge: "Running: review",
                   bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge). A recovered reviewer remains queued for PR polling until a verdict routes it, without a redundant reviewer spawn."
+                  desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge). Every park at the cap waits on a person: it holds through PR conflicts and stale GitHub review state, and a reviewer approval parks the task for human merge even while GitHub still shows an earlier request-changes review. The request deadline is measured from GitHub's own timestamp for the request comment (resolved by id when the thread cannot be read back; until it is verified nothing is consumed or expired), and a corrupt attempt counter reads as 0, so the next request is a valid attempt 1. A recovered reviewer remains queued for PR polling until a verdict routes it, without a redundant reviewer spawn."
                 },
                 {
                   num: "7",
@@ -1055,7 +1055,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
           group: "Profile & System Setup",
           cmds: [
             { cmd: "hermes zerofactory setup", desc: "Bootstrap or inspect zf-* profiles and script symlinks" },
-            { cmd: "hermes zerofactory sync-profiles", desc: "Update profile system prompts from plugin templates" }
+            { cmd: "hermes zerofactory sync-profiles", desc: "Refresh copied skills (changed files and tracked upstream removals) while preserving user files and live links; setup status reports stale copies and broken links" }
           ]
         },
         {
@@ -1067,7 +1067,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
             { cmd: "hermes zerofactory approve <task_id> [--split]", desc: "Approve triage specification and promote/split to Todo" },
             { cmd: "hermes zerofactory reject <task_id> --feedback \"...\"", desc: "Request spec revision back to zf-orchestrator" },
             { cmd: "hermes zerofactory split <task_id> [--repos api,web]", desc: "Decompose multi-repo triage into sibling Todo tasks" },
-            { cmd: "hermes zerofactory move <task_id> running", desc: "Transition ticket status; agent running/done reports are bound to the current dispatcher execution" },
+            { cmd: "hermes zerofactory move <task_id> running", desc: "Transition ticket status; agent running/done reports are bound to the current dispatch token, resolved from --execution-id, ZEROFACTORY_WORKER_EXECUTION_ID, or the agent session's dispatch header" },
             { cmd: "hermes zerofactory recover <task_id> [--guidance \"...\"]", desc: "Recover stuck task to Todo with builder advice" },
             { cmd: "hermes zerofactory report-bug --task <task_id> --title \"...\"", desc: "Report internal Zero Factory defect to GitHub issues" },
             { cmd: "hermes zerofactory block <task_id> --reason \"<reason>\"", desc: "Mark ticket as blocked with explanation" },

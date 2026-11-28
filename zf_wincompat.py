@@ -8,6 +8,8 @@ POSIX hosts never take the Windows branches: every call site gates on
   ``BlockingIOError`` like POSIX ``flock(LOCK_EX | LOCK_NB)``.
 - ``is_pid_alive``: kernel probe via ``OpenProcess``/``GetExitCodeProcess``
   (``os.kill(pid, 0)`` TERMINATES the process on Windows — never use it).
+- ``parent_pid_map``: ``{pid: parent pid}`` from a tool-help process snapshot,
+  the Windows stand-in for walking ``/proc/<pid>/stat``.
 - ``kill_tree``: hard process-tree kill via ``taskkill /T /F`` (Windows has
   no group SIGTERM; the two-stage grace flow degrades to one hard kill).
 - ``detached_popen_kwargs``: ``CREATE_NO_WINDOW`` + new process group instead
@@ -24,12 +26,14 @@ POSIX hosts never take the Windows branches: every call site gates on
 
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
@@ -129,6 +133,62 @@ def kill_tree(pid: int | None, timeout: int = 15) -> bool:
             return True
         except OSError:
             return False
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    """``PROCESSENTRY32W``: one row of a tool-help process snapshot."""
+
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+def parent_pid_map() -> dict[int, int] | None:
+    """``{pid: parent pid}`` for every process on the host, or ``None``.
+
+    Windows has no ``/proc`` to walk, so ``_pid_is_ancestor`` reads parentage
+    from a tool-help process snapshot instead.  ``None`` means the snapshot
+    could not be read: that is "unknown", never "no parents".  A parent PID is
+    the one recorded when the child was created, so a dead parent may name a
+    PID that has since been reused.
+    """
+    TH32CS_SNAPPROCESS = 0x00000002
+    k32 = ctypes.windll.kernel32
+
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    k32.Process32FirstW.restype = wintypes.BOOL
+    k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    k32.Process32NextW.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot in (None, 0, wintypes.HANDLE(-1).value):
+        return None
+    parents: dict[int, int] = {}
+    entry = _PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+    try:
+        more = k32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            parents[entry.th32ProcessID] = entry.th32ParentProcessID
+            more = k32.Process32NextW(snapshot, ctypes.byref(entry))
+    except Exception:
+        return None  # a partial map must not pass for a complete one
+    finally:
+        k32.CloseHandle(snapshot)
+    return parents
 
 
 def detached_popen_kwargs() -> dict:

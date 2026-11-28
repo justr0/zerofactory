@@ -78,7 +78,6 @@ def _compute_stuck_status(
     task: dict[str, Any],
     is_alive: bool,
     worker_pid: int | None,
-    started_at: float | None,
     last_active: float | None,
     log_path: Path,
 ) -> tuple[int, int, bool, str | None]:
@@ -152,9 +151,7 @@ def _compute_stuck_status(
     return running_seconds, idle_seconds, is_stuck, stuck_reason
 
 
-def resolve_task_all_sessions(
-    task: dict[str, Any], backfill: bool = True
-) -> list[dict[str, Any]]:
+def resolve_task_all_sessions(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract all execution sessions (finished and ongoing) for a task across all agent profiles."""
     meta = _coerce_task_metadata(task.get("metadata"))
 
@@ -491,7 +488,7 @@ def resolve_task_session_progress(
         except Exception:
             _log.debug("Failed to tail worker log %s", log_path, exc_info=True)
 
-    sessions = resolve_task_all_sessions(task, backfill=backfill)
+    sessions = resolve_task_all_sessions(task)
 
     ongoing_sessions = [s for s in sessions if s.get("status") == "ongoing"]
     if ongoing_sessions:
@@ -522,7 +519,6 @@ def resolve_task_session_progress(
             task,
             is_alive,
             worker_pid,
-            active_session.get("started_at"),
             last_active_ts,
             log_path,
         )
@@ -554,7 +550,7 @@ def resolve_task_session_progress(
         }
 
     r_sec, i_sec, stuck, reason = _compute_stuck_status(
-        task, is_alive, worker_pid, None, None, log_path
+        task, is_alive, worker_pid, None, log_path
     )
     return {
         "has_session": bool(session_id),

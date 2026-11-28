@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
-import shutil
 import sqlite3
+import subprocess
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import __init__ as zf_cli
 from dashboard.plugin_api import init_db
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 
 class TestZeroFactoryCLIE2E(unittest.TestCase):
@@ -37,7 +41,7 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
                 "ZEROFACTORY_SKIP_WORKER_SPAWN"
             ),
             "ZEROFACTORY_SKIP_GIT": os.environ.get("ZEROFACTORY_SKIP_GIT"),
-            "HOME": os.environ.get("HOME"),
+            **{key: os.environ.get(key) for key in HOME_ENV_KEYS},
             "HERMES_PROFILE": os.environ.get("HERMES_PROFILE"),
             "HERMES_HOME": os.environ.get("HERMES_HOME"),
         }
@@ -47,9 +51,9 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         os.environ["ZEROFACTORY_DISABLE_DISPATCHER"] = "1"
         os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = "1"
         os.environ["ZEROFACTORY_SKIP_GIT"] = "1"
-        os.environ["HOME"] = str(self.fake_home)
+        os.environ.update(fake_home_env(self.fake_home))
         # Pop HERMES_HOME (set in factory worker sessions) so get_hermes_home()
-        # falls back to Path.home()/.hermes, which tracks HOME = fake_home.
+        # falls back to Path.home()/.hermes, which tracks the fake home.
         # NOTE: setting it to the scratch path instead would break
         # get_hermes_home() because TMPDIR itself lives under
         # ~/.hermes/profiles/<profile>/cache/scratch.
@@ -74,7 +78,7 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _run_cli(self, args_list: list[str]) -> str:
         """Parse arguments and execute the CLI handler, returning captured stdout."""
@@ -99,6 +103,195 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         # 2. Sync profiles
         out_sync = self._run_cli(["sync-profiles"])
         self.assertIn("Zero Factory Profiles Synced", out_sync)
+
+    def test_cli_move_reports_with_the_dispatch_handoff_token(self):
+        """A worker's `move done` carries the token of its own dispatch, or is rejected.
+
+        Nothing here is hand-seeded: the scheduler's real claim puts the header on the
+        prompt, the real spawner builds the launched argv and env, Hermes persists
+        that prompt as the worker session's first user message, and the CLI reads the
+        token back from that transcript. The route's stale-report gate is unchanged.
+        """
+        import dispatcher as dispatcher_mod
+        import dispatcher.worker_spawner as spawner_mod
+        from dispatcher.worker_handoff import HEADER_INSTRUCTION, token_from_prompt
+
+        self._run_cli(["board", "create", "https://github.com/example/handoff.git"])
+        out_create = self._run_cli(
+            [
+                "create",
+                "Handoff token task",
+                "--board",
+                "example-handoff",
+                "--status",
+                "todo",
+                "--assignee",
+                "zf-builder",
+            ]
+        )
+        task_id = [part for part in out_create.split() if part.startswith("zf-")][
+            0
+        ].rstrip(":")
+        profile_db = self.fake_home / ".hermes" / "profiles" / "zf-builder" / "state.db"
+        profile_db.parent.mkdir(parents=True)
+        with sqlite3.connect(str(profile_db)) as conn:
+            conn.execute(
+                "CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE sessions (id TEXT, started_at REAL, title TEXT, cwd TEXT)"
+            )
+
+        # Dispatch state this test owns: the worker adapter settings (an inherited
+        # external adapter would launch a real process) and the registry of spawned
+        # workers. The first is cleared for the test, the second restored on teardown,
+        # assertion failure or not.
+        adapter_env = {
+            key: os.environ.pop(key)
+            for key in ("ZEROFACTORY_WORKER_COMMAND", "ZEROFACTORY_WORKER_ARGS")
+            if key in os.environ
+        }
+        self.addCleanup(os.environ.update, adapter_env)
+        self.addCleanup(spawner_mod._active_workers.pop, task_id, None)
+
+        launched = []
+        real_popen = subprocess.Popen
+        launch_marker = "zf-e2e-worker-launch"
+        starting = {"session": None}
+
+        def worker_launch_marker(cmd, exit_prefix):
+            """Stand-in for the platform wrapper: every launch family — POSIX shell
+            script, Windows helper, external adapter — passes here with the unwrapped
+            worker argv, and only the marker reaches Popen."""
+            launched.append([list(cmd), None, None])
+            return [launch_marker, *cmd]
+
+        def popen(argv, *args, **kwargs):
+            if not argv or argv[0] != launch_marker:
+                # Git and other helpers the dispatch cycle runs are real.
+                return real_popen(argv, *args, **kwargs)
+            launched[-1][1:] = [kwargs["env"], kwargs["cwd"]]
+            # Hermes starts the worker session: a sessions row, and the submitted
+            # prompt persisted as its first user message.
+            prompt = next(arg for arg in argv if HEADER_INSTRUCTION in arg)
+            with sqlite3.connect(str(profile_db)) as conn:
+                conn.execute(
+                    "INSERT INTO sessions VALUES (?, ?, '', ?)",
+                    (starting["session"], time.time(), kwargs["cwd"]),
+                )
+                conn.execute(
+                    "INSERT INTO messages VALUES (?, 'user', ?)",
+                    (starting["session"], prompt),
+                )
+            return SimpleNamespace(pid=424242, poll=lambda: 0)
+
+        def tracked():
+            """The task's status and metadata as the dispatcher tracks them."""
+            with sqlite3.connect(str(self.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT status, metadata FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+            return row[0], json.loads(row[1] or "{}")
+
+        def dispatch(session):
+            """Dispatch the task for real; the worker's Hermes session `session`
+            starts and persists the launched prompt as its first user message."""
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo', metadata = '{}' WHERE id = ?",
+                    (task_id,),
+                )
+            launched.clear()
+            starting["session"] = session
+            # Only the process launch is stood in for: scheduler, spawner, git
+            # helpers and the move route are the real ones.
+            subprocess_stub = SimpleNamespace(
+                Popen=popen, DEVNULL=subprocess.DEVNULL, STDOUT=subprocess.STDOUT
+            )
+            skip_spawn = os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+            try:
+                with (
+                    patch.object(
+                        spawner_mod, "build_shell_wrapper", worker_launch_marker
+                    ),
+                    patch.object(spawner_mod, "subprocess", subprocess_stub),
+                ):
+                    dispatcher_mod.run_dispatch_cycle(self.db_path)
+            finally:
+                if skip_spawn is not None:
+                    os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = skip_spawn
+            self.assertEqual(len(launched), 1, "one worker per dispatch")
+            cmd, env, _cwd = launched[0]
+            token = tracked()[1]["worker_execution_id"]
+            self.assertEqual(env["ZEROFACTORY_WORKER_EXECUTION_ID"], token)
+            # The header sits above the untouched task body, as the parser expects.
+            prompt = next(arg for arg in cmd if HEADER_INSTRUCTION in arg)
+            self.assertEqual(token_from_prompt(prompt), token)
+            self.assertIn(f"Task ID: {task_id}", prompt)
+            return token
+
+        def report(session, *extra, env=None):
+            """A command of session `session` in the worker's own gateway environment:
+            its session id, and never another process's handoff variable."""
+            environ = dict(os.environ)
+            environ.pop("ZEROFACTORY_WORKER_EXECUTION_ID", None)
+            environ.pop("HERMES_SESSION_ID", None)
+            environ.update({"HERMES_SESSION_ID": session, **(env or {})})
+            with patch.dict(os.environ, environ, clear=True):
+                try:
+                    return self._run_cli(
+                        ["move", task_id, "done", "--actor", "zf-builder", *extra]
+                    ).strip()
+                except SystemExit as exc:
+                    return f"exit {exc.code}"
+
+        with sqlite3.connect(str(profile_db)) as conn:
+            conn.execute(
+                "INSERT INTO messages VALUES ('sess-other', 'user', ?)",
+                (f"Task ID: {task_id}\n dispatched by an older dispatcher: no header",),
+            )
+
+        # A zombie of the first dispatch, then the live worker's own dispatch.
+        stale = dispatch("sess-stale")
+        current = dispatch("sess-worker")
+        self.assertNotEqual(stale, current)
+
+        # Without the current token the completion report is still rejected.
+        for session in ("sess-stale", "sess-other"):
+            assert report(session) == "exit 1", session
+        status, meta = tracked()
+        assert status == "running" and meta["worker_execution_id"] == current
+        assert not meta.get("awaiting_pr")
+
+        # The worker's own session carries the token of its latest dispatch.
+        assert report("sess-worker") == f"Moved task {task_id} to done"
+        status, meta = tracked()
+        assert status == "running" and meta["awaiting_pr"] is True
+        assert "worker_execution_id" not in meta
+
+        # A worker whose transcript has no token passes it by flag, or by env.
+        later = dispatch("sess-flag")
+        assert (
+            report("sess-other", "--execution-id", later)
+            == f"Moved task {task_id} to done"
+        )
+        again = dispatch("sess-env")
+        assert (
+            report("sess-other", env={"ZEROFACTORY_WORKER_EXECUTION_ID": again})
+            == f"Moved task {task_id} to done"
+        )
+
+        # A stale env token outranks the transcript even where the transcript holds
+        # the current one: precedence is env over session, not "whichever matches".
+        newest = dispatch("sess-worker")
+        assert (
+            report("sess-worker", env={"ZEROFACTORY_WORKER_EXECUTION_ID": stale})
+            == "exit 1"
+        )
+        status, meta = tracked()
+        assert status == "running" and meta["worker_execution_id"] == newest
+        assert not meta.get("awaiting_pr")
+        assert report("sess-worker") == f"Moved task {task_id} to done"
 
     def test_cli_migrate_status(self):
         """Migration status uses the module-level time import in cmd_run."""

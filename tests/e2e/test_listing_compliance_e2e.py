@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -14,11 +15,20 @@ from pathlib import Path
 
 import yaml
 
+from tests.conftest import fake_home_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _make_stub_gh(bin_dir: Path, exit_code: int = 0) -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        # No shebangs on Windows: the plugin resolves gh via shutil.which, which
+        # picks up a .cmd stub through PATHEXT.
+        (bin_dir / "gh.cmd").write_text(
+            f"@echo off\r\nexit /b {exit_code}\r\n", encoding="utf-8"
+        )
+        return
     gh_path = bin_dir / "gh"
     gh_path.write_text(f"#!/usr/bin/env sh\nexit {exit_code}\n", encoding="utf-8")
     gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
@@ -27,6 +37,7 @@ def _make_stub_gh(bin_dir: Path, exit_code: int = 0) -> None:
 def _subprocess_env(hermes_home: Path, db_path: Path, bin_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+    env.update(fake_home_env(hermes_home.parent))
     env["HERMES_HOME"] = str(hermes_home)
     env["ZEROFACTORY_DB"] = str(db_path)
     env["ZEROFACTORY_DISABLE_DISPATCHER"] = "0"
@@ -41,7 +52,10 @@ def _subprocess_env(hermes_home: Path, db_path: Path, bin_dir: Path) -> dict[str
 
 def test_subprocess_env_preserves_existing_pythonpath(tmp_path, monkeypatch):
     existing_pythonpath = str(tmp_path / "runtime-dependencies")
+    ambient_home = str(tmp_path / "ambient-home")
     monkeypatch.setenv("PYTHONPATH", existing_pythonpath)
+    monkeypatch.setenv("HOME", ambient_home)
+    monkeypatch.setenv("USERPROFILE", ambient_home)
 
     env = _subprocess_env(tmp_path / "hermes", tmp_path / "db", tmp_path / "bin")
 
@@ -49,6 +63,8 @@ def test_subprocess_env_preserves_existing_pythonpath(tmp_path, monkeypatch):
         str(REPO_ROOT),
         existing_pythonpath,
     ]
+    assert env["HOME"] == str(tmp_path)
+    assert env["USERPROFILE"] == str(tmp_path)
 
 
 def _run_py(code: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -60,6 +76,23 @@ def _run_py(code: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=30,
     )
+
+
+def _stop_foreground(proc: subprocess.Popen) -> bool:
+    """Ask the foreground dispatcher to stop; False when no console can carry the signal.
+
+    Windows has no deliverable SIGTERM and ``terminate()`` is a hard kill, so the
+    graceful stop there is Ctrl+Break to the child's own process group.
+    """
+    if os.name != "nt":
+        proc.terminate()
+        return True
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    except OSError:
+        proc.kill()
+        return False
+    return True
 
 
 def _cli_code(namespace_expr: str) -> str:
@@ -191,6 +224,7 @@ def test_passive_load_then_setup_status_and_start_lifecycle(tmp_path):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
     try:
         started_line = ""
@@ -201,10 +235,11 @@ def test_passive_load_then_setup_status_and_start_lifecycle(tmp_path):
                 started_line = line
                 break
         assert started_line, "Dispatcher foreground loop did not start"
-        proc.terminate()
+        graceful = _stop_foreground(proc)
         stdout_rest, stderr_rest = proc.communicate(timeout=10)
-        assert proc.returncode == 0, stderr_rest
-        assert "Zero Factory dispatcher stopped." in stdout_rest
+        if graceful:
+            assert proc.returncode == 0, stderr_rest
+            assert "Zero Factory dispatcher stopped." in stdout_rest
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -222,25 +257,32 @@ def test_hermes_home_profiles_subdir_not_stripped_and_worker_env_no_yolo_reaper_
     _make_stub_gh(bin_dir, exit_code=0)
 
     capture_file = tmp_path / "hermes_capture.json"
-    stub_hermes = bin_dir / "hermes"
-    stub_hermes.write_text(
-        textwrap.dedent(
-            f"""\
-            #!{sys.executable}
-            import json, os, sys
-            from pathlib import Path
+    stub_src = textwrap.dedent(
+        f"""\
+        #!{sys.executable}
+        import json, os, sys
+        from pathlib import Path
 
-            Path({str(capture_file)!r}).write_text(
-                json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ)}}),
-                encoding="utf-8",
-            )
-            print("Error: Command requires approval in non-interactive mode")
-            sys.exit(1)
-            """
-        ),
-        encoding="utf-8",
+        Path({str(capture_file)!r}).write_text(
+            json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ)}}),
+            encoding="utf-8",
+        )
+        print("Error: Command requires approval in non-interactive mode")
+        sys.exit(1)
+        """
     )
-    stub_hermes.chmod(stub_hermes.stat().st_mode | stat.S_IXUSR)
+    stub_hermes = bin_dir / "hermes"
+    if os.name == "nt":
+        # No shebangs on Windows: HERMES_BIN has to be something CreateProcess
+        # runs, so ship the stub as a batch file that launches the same script.
+        (bin_dir / "hermes_stub.py").write_text(stub_src, encoding="utf-8")
+        stub_hermes = bin_dir / "hermes.cmd"
+        stub_hermes.write_text(
+            f'@"{sys.executable}" "%~dp0hermes_stub.py" %*\r\n', encoding="utf-8"
+        )
+    else:
+        stub_hermes.write_text(stub_src, encoding="utf-8")
+        stub_hermes.chmod(stub_hermes.stat().st_mode | stat.S_IXUSR)
 
     env = _subprocess_env(hermes_home, db_path, bin_dir)
     env["HERMES_BIN"] = str(stub_hermes)

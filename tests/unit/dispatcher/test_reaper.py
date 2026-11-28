@@ -11,6 +11,7 @@ from dispatcher.reaper import (
     _compute_stuck_state,
     _mark_task_session_ended,
     _parse_task_metadata,
+    _current_worker_handle,
     reap_active_workers,
     reap_stuck_tasks,
 )
@@ -1118,3 +1119,144 @@ def test_reap_active_workers_exit0_clears_stale_failure_state():
     ):
         assert key not in saved_meta, f"{key} should have been deleted on exit 0"
     conn.close()
+
+
+def _running_task_conn():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            status TEXT,
+            assignee TEXT,
+            metadata TEXT,
+            updated_at INTEGER,
+            created_at INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE task_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT,
+            actor TEXT,
+            action TEXT,
+            details TEXT,
+            created_at INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE task_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT,
+            author TEXT,
+            body TEXT,
+            created_at INTEGER
+        )
+        """
+    )
+    return conn
+
+
+def test_current_worker_handle_rejects_handle_from_earlier_worker():
+    """Regression (zf-jae-035201b6): a dispatcher that still held the *finished*
+    handle of a task's previous worker booked that worker's exit 0 as the result of
+    the newly spawned reviewer and gated the task a minute into its review."""
+    from dispatcher.config import _active_workers
+
+    stale = MagicMock()
+    stale.pid = 42960
+    stale.poll.return_value = 0
+    _active_workers["t-rerouted"] = stale
+    try:
+        proc, pid = _current_worker_handle("t-rerouted", {"worker_pid": 42152})
+        assert proc is None
+        assert pid == 42152
+        assert "t-rerouted" not in _active_workers
+    finally:
+        _active_workers.pop("t-rerouted", None)
+
+    live = MagicMock()
+    live.pid = 42152
+    live.poll.return_value = None
+    _active_workers["t-rerouted"] = live
+    try:
+        proc, pid = _current_worker_handle("t-rerouted", {"worker_pid": 42152})
+        assert proc is live
+        assert pid == 42152
+        assert _active_workers["t-rerouted"] is live
+    finally:
+        _active_workers.pop("t-rerouted", None)
+
+
+def test_reap_does_not_book_stale_handle_exit_as_new_worker_result():
+    """A running task whose recorded worker is still out there is left alone even if
+    this process holds a finished handle for an earlier worker of the same task."""
+    from dispatcher.config import _active_workers
+
+    now = 5000
+    conn = _running_task_conn()
+    conn.execute(
+        "INSERT INTO tasks VALUES ('t-rerouted', 'Re-routed', 'running', 'zf-reviewer', ?, ?, ?)",
+        (
+            json.dumps(
+                {
+                    "worker_pid": 42152,
+                    "started_at": now - 60,
+                    "sessions": [
+                        {
+                            "session_id": "s-r",
+                            "status": "ongoing",
+                            "started_at": now - 60,
+                        }
+                    ],
+                }
+            ),
+            now - 60,
+            now - 600,
+        ),
+    )
+    conn.commit()
+
+    stale = MagicMock()
+    stale.pid = 42960
+    stale.poll.return_value = 0
+    _active_workers["t-rerouted"] = stale
+    from dispatcher.process_manager import ProcessState
+
+    running = (ProcessState.RUNNING, None)
+
+    import dispatcher
+
+    try:
+        with (
+            patch.object(dispatcher, "terminate_worker_process") as mock_term,
+            patch(
+                "dispatcher.reaper.get_process_exit_code", return_value=running
+            ) as mock_exit,
+            patch("dispatcher.is_pid_alive", return_value=True, create=True),
+            patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+            patch("dispatcher.reaper.cleanup_process_artifacts") as mock_cleanup,
+        ):
+            reaped = reap_active_workers(conn.cursor(), now=now)
+            conn.commit()
+    finally:
+        _active_workers.pop("t-rerouted", None)
+
+    assert reaped == 0
+    assert stale.poll.called is False
+    assert mock_exit.call_args[0][1] == 42152
+    mock_cleanup.assert_not_called()
+    mock_term.assert_not_called()
+    row = conn.execute(
+        "SELECT status, assignee FROM tasks WHERE id = 't-rerouted'"
+    ).fetchone()
+    assert (row["status"], row["assignee"]) == ("running", "zf-reviewer")
+    assert not conn.execute(
+        "SELECT 1 FROM task_comments WHERE task_id = 't-rerouted'"
+    ).fetchall()
