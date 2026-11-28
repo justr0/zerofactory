@@ -403,11 +403,6 @@ def evaluate_single_repo_openwiki(
         if subject.startswith("docs(openwiki): sync"):
             sync_commit = sha
             break
-    last_openwiki_commit = _run_cmd(
-        ["git", "log", "-1", "--format=%H", "--", "openwiki"],
-        cwd=repo_dir,
-    )
-
     state = load_state()
     board_state = state.get(slug, {})
     repo_state = board_state.get("repos", {}).get(repo_alias, {}) if repo_alias else {}
@@ -416,7 +411,19 @@ def evaluate_single_repo_openwiki(
         or state.get(f"{slug}:{repo_alias}", {}).get("last_scanned_sha")
         or board_state.get("last_scanned_sha")
     )
-    base_commit = sync_commit or last_scanned_sha or last_openwiki_commit
+    base_commit = sync_commit or last_scanned_sha
+    if not base_commit:
+        last_openwiki_commit = _run_cmd(
+            ["git", "log", "-1", "--format=%H", "--", "openwiki"],
+            cwd=repo_dir,
+        )
+        if last_openwiki_commit is None:
+            reason = (
+                f"Unable to inspect Git history for openwiki; conservatively "
+                f"requesting an OpenWiki refresh{alias_label}."
+            )
+            return _request_openwiki_refresh(slug, reason, repo_alias, auto_create_task)
+        base_commit = last_openwiki_commit
 
     if not base_commit:
         if auto_create_task:

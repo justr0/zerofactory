@@ -116,7 +116,16 @@ class TestOpenWikiGate(unittest.TestCase):
     def test_failed_git_status_is_not_treated_as_clean(self):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
-        with patch.object(self.gate.subprocess, "run") as mock_run:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ZEROFACTORY_DB": str(self.tmp / "missing.db"),
+                    "ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "",
+                },
+            ),
+            patch.object(self.gate.subprocess, "run") as mock_run,
+        ):
             mock_run.return_value = subprocess.CompletedProcess(
                 ["git", "status", "--porcelain"],
                 128,
@@ -175,41 +184,18 @@ class TestOpenWikiGate(unittest.TestCase):
             json.dumps({"test-board": {"last_scanned_sha": base_sha}}),
             encoding="utf-8",
         )
-        with patch.dict(os.environ, {"ZEROFACTORY_DB": str(self.tmp / "empty.db")}):
+        with patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_DB": str(self.tmp / "empty.db"),
+                "ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "",
+            },
+        ):
             wake, reason = self.gate.check_openwiki_gate(
                 repo_dir, board_slug="test-board"
             )
         self.assertFalse(wake)
         self.assertIn("No code changes", reason)
-
-    def test_failed_diff_log_requests_refresh_instead_of_no_changes(self):
-        repo_dir = self._init_git_repo(self.tmp / "api")
-        base_sha = self._git_commit(repo_dir, "initial commit")
-        (repo_dir / "service.py").write_text("value = 1\n", encoding="utf-8")
-        self._git_commit(repo_dir, "feat: add service")
-        self.state_file.write_text(
-            json.dumps({"test-board": {"last_scanned_sha": base_sha}}),
-            encoding="utf-8",
-        )
-        real_run = subprocess.run
-
-        def _fake_run(cmd, cwd=None, **kwargs):
-            if "log" in cmd and ":(exclude)openwiki" in cmd:
-                self.assertIn(f"{base_sha}..HEAD", cmd)
-                return subprocess.CompletedProcess(
-                    cmd, 128, stdout="", stderr="bad revision"
-                )
-            return real_run(cmd, cwd=cwd, **kwargs)
-
-        with patch.object(self.gate.subprocess, "run", side_effect=_fake_run):
-            wake, reason = self.gate.check_openwiki_gate(
-                repo_dir, board_slug="test-board", auto_create_task=False
-            )
-
-        self.assertTrue(wake)
-        self.assertIn("Unable to inspect Git log", reason)
-        self.assertIn("conservatively requesting an OpenWiki refresh", reason)
-        self.assertNotIn("No code changes", reason)
 
     def test_failed_sync_marker_log_does_not_report_current(self):
         repo_dir = self._init_git_repo(self.tmp / "api")
@@ -226,16 +212,25 @@ class TestOpenWikiGate(unittest.TestCase):
         db_file = self.tmp / "zerofactory.db"
         self._create_board_db(db_file, repo_dir, "api")
         real_run = subprocess.run
+        marker_cmd = ["git", "log", "-n", "200", "--format=%H%x09%s"]
+        marker_calls = []
 
         def _fake_run(cmd, cwd=None, **kwargs):
-            if "--format=%H%x09%s" in cmd:
+            if cmd == marker_cmd:
+                marker_calls.append((cmd, cwd))
                 return subprocess.CompletedProcess(
                     cmd, 128, stdout="", stderr="unable to read log"
                 )
             return real_run(cmd, cwd=cwd, **kwargs)
 
         with (
-            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
+            patch.dict(
+                os.environ,
+                {
+                    "ZEROFACTORY_DB": str(db_file),
+                    "ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "",
+                },
+            ),
             patch.object(self.gate.subprocess, "run", side_effect=_fake_run),
             patch(
                 "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
@@ -250,6 +245,7 @@ class TestOpenWikiGate(unittest.TestCase):
         self.assertIn("conservatively requesting an OpenWiki refresh", reason)
         self.assertIn("Created task 'task-1'", reason)
         self.assertNotIn("OpenWiki is up to date", reason)
+        self.assertEqual(marker_calls, [(marker_cmd, str(repo_dir))])
         task = create_task.call_args.args[0]
         self.assertEqual(task.board_slug, "test-board")
         self.assertEqual(task.repo_alias, "api")
@@ -257,7 +253,7 @@ class TestOpenWikiGate(unittest.TestCase):
         self.assertEqual(task.assignee, "zf-builder")
         create_task.assert_called_once()
 
-    def test_failed_diff_log_creates_task_by_default(self):
+    def test_failed_diff_log_requests_refresh_for_all_task_modes(self):
         repo_dir = self._init_git_repo(self.tmp / "api")
         base_sha = self._git_commit(repo_dir, "initial commit")
         (repo_dir / "service.py").write_text("value = 1\n", encoding="utf-8")
@@ -269,70 +265,138 @@ class TestOpenWikiGate(unittest.TestCase):
             encoding="utf-8",
         )
         real_run = subprocess.run
+        expected_cmd = [
+            "git",
+            "log",
+            f"{base_sha}..HEAD",
+            "--oneline",
+            "--",
+            ".",
+            ":(exclude)openwiki",
+        ]
+        fallback_cmd = ["git", "log", "-1", "--format=%H", "--", "openwiki"]
+        fallback_calls = []
 
-        def _fake_run(cmd, cwd=None, **kwargs):
-            if "log" in cmd and ":(exclude)openwiki" in cmd:
-                self.assertIn(f"{base_sha}..HEAD", cmd)
-                return subprocess.CompletedProcess(
-                    cmd, 128, stdout="", stderr="bad revision"
-                )
-            return real_run(cmd, cwd=cwd, **kwargs)
-
-        with (
-            patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_file)}),
-            patch.object(self.gate.subprocess, "run", side_effect=_fake_run),
-            patch(
-                "dashboard.plugin_api.create_task", return_value={"id": "task-1"}
-            ) as create_task,
-        ):
-            wake, reason = self.gate.check_openwiki_gate(
-                repo_dir, board_slug="test-board"
-            )
-
-        self.assertFalse(wake)
-        self.assertIn("Unable to inspect Git log", reason)
-        self.assertIn("Created task 'task-1'", reason)
-        self.assertNotIn("No code changes", reason)
-        task = create_task.call_args.args[0]
-        self.assertEqual(task.board_slug, "test-board")
-        self.assertEqual(task.repo_alias, "api")
-        self.assertEqual(task.status, "todo")
-        self.assertEqual(task.assignee, "zf-builder")
-        create_task.assert_called_once()
-
-    def test_failed_diff_log_task_creation_failure_requests_wake(self):
-        repo_dir = self._init_git_repo(self.tmp / "api")
-        base_sha = self._git_commit(repo_dir, "initial commit")
-        (repo_dir / "service.py").write_text("value = 1\n", encoding="utf-8")
-        self._git_commit(repo_dir, "feat: add service")
-        self.state_file.write_text(
-            json.dumps({"test-board": {"last_scanned_sha": base_sha}}),
-            encoding="utf-8",
+        cases = (
+            ("default task creation", True, {"id": "task-1"}),
+            ("task creation failure", True, None),
+            ("without auto-create", False, None),
         )
+        for case, auto_create, task_result in cases:
+            with self.subTest(case=case):
+                targeted_calls = []
+
+                def _fake_run(cmd, cwd=None, **kwargs):
+                    if cmd == fallback_cmd:
+                        fallback_calls.append((cmd, cwd))
+                    if ":(exclude)openwiki" in cmd:
+                        targeted_calls.append((cmd, cwd))
+                        return subprocess.CompletedProcess(
+                            cmd, 128, stdout="", stderr="bad revision"
+                        )
+                    return real_run(cmd, cwd=cwd, **kwargs)
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "ZEROFACTORY_DB": str(db_file),
+                            "ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "",
+                        },
+                    ),
+                    patch.object(self.gate.subprocess, "run", side_effect=_fake_run),
+                    patch(
+                        "dashboard.plugin_api.create_task", return_value=task_result
+                    ) as create_task,
+                ):
+                    wake, reason = self.gate.check_openwiki_gate(
+                        repo_dir,
+                        board_slug="test-board",
+                        auto_create_task=auto_create,
+                    )
+
+                self.assertEqual(len(targeted_calls), 1)
+                self.assertEqual(targeted_calls[0], (expected_cmd, str(repo_dir)))
+                self.assertEqual(fallback_calls, [])
+                self.assertIn("Unable to inspect Git log", reason)
+                self.assertNotIn("No code changes", reason)
+                if case == "default task creation":
+                    self.assertFalse(wake)
+                    self.assertIn("Created task 'task-1'", reason)
+                    task = create_task.call_args.args[0]
+                    self.assertEqual(task.board_slug, "test-board")
+                    self.assertEqual(task.repo_alias, "api")
+                    self.assertEqual(task.status, "todo")
+                    self.assertEqual(task.assignee, "zf-builder")
+                    create_task.assert_called_once()
+                elif case == "task creation failure":
+                    self.assertTrue(wake)
+                    self.assertIn("Failed to create an OpenWiki refresh task", reason)
+                    self.assertIn("wake requested", reason)
+                    self.assertNotIn("Created task", reason)
+                    create_task.assert_called_once()
+                else:
+                    self.assertTrue(wake)
+                    self.assertIn(
+                        "conservatively requesting an OpenWiki refresh", reason
+                    )
+                    create_task.assert_not_called()
+
+    def test_missing_base_fallback_distinguishes_failed_and_empty_log(self):
+        repo_dir = self._init_git_repo(self.tmp / "api")
+        self._git_commit(repo_dir, "initial repository state")
         real_run = subprocess.run
+        fallback_cmd = ["git", "log", "-1", "--format=%H", "--", "openwiki"]
 
-        def _fake_run(cmd, cwd=None, **kwargs):
-            if "log" in cmd and ":(exclude)openwiki" in cmd:
-                return subprocess.CompletedProcess(
-                    cmd, 128, stdout="", stderr="bad revision"
-                )
-            return real_run(cmd, cwd=cwd, **kwargs)
-
-        with (
-            patch.object(self.gate.subprocess, "run", side_effect=_fake_run),
-            patch("dashboard.plugin_api.create_task", return_value=None) as create_task,
+        for case, result, expected_reason in (
+            (
+                "failed query",
+                subprocess.CompletedProcess(
+                    fallback_cmd, 128, stdout="", stderr="bad revision"
+                ),
+                "Unable to inspect Git history for openwiki",
+            ),
+            (
+                "successful empty query",
+                subprocess.CompletedProcess(fallback_cmd, 0, stdout="", stderr=""),
+                "No previous openwiki commit history found",
+            ),
         ):
-            wake, reason = self.gate.check_openwiki_gate(
-                repo_dir, board_slug="test-board"
-            )
+            with self.subTest(case=case):
+                targeted_calls = []
 
-        self.assertTrue(wake)
-        self.assertIn("Unable to inspect Git log", reason)
-        self.assertIn("Failed to create an OpenWiki refresh task", reason)
-        self.assertIn("wake requested", reason)
-        self.assertNotIn("up to date", reason)
-        self.assertNotIn("created task", reason)
-        create_task.assert_called_once()
+                def _fake_run(cmd, cwd=None, **kwargs):
+                    if cmd == fallback_cmd:
+                        targeted_calls.append((cmd, cwd))
+                        return result
+                    return real_run(cmd, cwd=cwd, **kwargs)
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "ZEROFACTORY_DB": str(self.tmp / "missing.db"),
+                            "ZEROFACTORY_FORCE_OPENWIKI_UPDATE": "",
+                        },
+                    ),
+                    patch.object(self.gate.subprocess, "run", side_effect=_fake_run),
+                    patch("dashboard.plugin_api.create_task") as create_task,
+                ):
+                    wake, reason = self.gate.check_openwiki_gate(
+                        repo_dir, board_slug="test-board", auto_create_task=False
+                    )
+
+                self.assertEqual(len(targeted_calls), 1)
+                self.assertEqual(targeted_calls[0], (fallback_cmd, str(repo_dir)))
+                self.assertTrue(wake)
+                self.assertIn(expected_reason, reason)
+                if case == "failed query":
+                    self.assertNotIn(
+                        "No previous openwiki commit history found", reason
+                    )
+                else:
+                    self.assertNotIn("Unable to inspect Git history", reason)
+                create_task.assert_not_called()
 
     def test_branch_updates_detected_creates_task(self):
         (self.tmp / ".git").mkdir()
