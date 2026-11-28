@@ -288,9 +288,8 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
                     native_cmd, exit_prefix
                 )
                 assert cmd == expected_wrapper
-                assert cmd[:2] == ["sh", "-c"]
-                assert cmd[3:5] == ["zf-runner", str(exit_prefix)]
-                assert cmd[5:] == native_cmd
+                assert cmd[:3] == expected_wrapper[:3]
+                assert cmd[3:] == native_cmd
                 expected_isolation = {"start_new_session": True}
 
             env = kwargs.get("env", {})

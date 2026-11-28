@@ -134,7 +134,10 @@ def test_reaper_elephant_exit_transitions_to_goldfish(test_db: Path):
         with sqlite3.connect(str(test_db)) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            reaped = reap_active_workers(cursor, now)
+            with patch(
+                "dispatcher.reaper._has_unfinished_worker_turn", return_value=False
+            ):
+                reaped = reap_active_workers(cursor, now)
             conn.commit()
     finally:
         _active_workers.pop("task-egm-2", None)
@@ -182,7 +185,10 @@ def test_grill_interview_prevents_goldfish_advance(test_db: Path):
         with sqlite3.connect(str(test_db)) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            reap_active_workers(cursor, now)
+            with patch(
+                "dispatcher.reaper._has_unfinished_worker_turn", return_value=False
+            ):
+                reap_active_workers(cursor, now)
             conn.commit()
     finally:
         _active_workers.pop("task-grill-1", None)
@@ -267,7 +273,10 @@ def test_reaper_goldfish_exit_transitions_to_human_approval(test_db: Path):
         with sqlite3.connect(str(test_db)) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            reap_active_workers(cursor, now)
+            with patch(
+                "dispatcher.reaper._has_unfinished_worker_turn", return_value=False
+            ):
+                reap_active_workers(cursor, now)
             conn.commit()
     finally:
         _active_workers.pop("task-gold-2", None)

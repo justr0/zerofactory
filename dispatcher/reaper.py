@@ -102,7 +102,9 @@ def _worker_signal_details(
             signal_number = -retcode
         else:
             signal_number = (
-                {129: 1, 130: 2, 143: 15}.get(retcode) if retcode is not None else None
+                {129: 1, 130: 2, 137: 9, 143: 15}.get(retcode)
+                if retcode is not None
+                else None
             )
     if not signal_number:
         return None
@@ -117,7 +119,7 @@ def _worker_signal_details(
         signal_name = signal.Signals(signal_number).name
     except ValueError:
         signal_name = f"SIG{signal_number}"
-    return {
+    details = {
         "signal_number": signal_number,
         "signal_name": marker.get("signal_name") or signal_name,
         "task_id": task_id,
@@ -126,6 +128,10 @@ def _worker_signal_details(
         or meta.get("triage_phase")
         or "interrupted",
     }
+    for key in ("child_exit_code", "child_signal_number"):
+        if key in marker:
+            details[key] = marker[key]
+    return details
 
 
 def _worker_exit_details(
@@ -161,14 +167,17 @@ def _has_unfinished_worker_turn(assignee: str, meta: dict[str, Any]) -> bool:
                 None,
             )
     if not session_id:
-        return False
+        # Exit 0 is not proof of a completed turn when Hermes did not persist
+        # the short-lived session link. Retry rather than packaging a possible
+        # signal-interrupted worker.
+        return True
     try:
         dispatcher = _d()
         if dispatcher is None:
-            return False
+            return True
         state_db = dispatcher.resolve_profile_state_db(assignee)
         if not state_db or not state_db.is_file():
-            return False
+            return True
         uri = state_db.resolve().as_uri() + "?mode=ro"
         with sqlite3.connect(uri, uri=True, timeout=2.0) as conn:
             columns = {info[1] for info in conn.execute("PRAGMA table_info(messages)")}
@@ -180,13 +189,13 @@ def _has_unfinished_worker_turn(assignee: str, meta: dict[str, Any]) -> bool:
                 (session_id,),
             ).fetchone()
         if not row:
-            return False
+            return True
         # Older profile databases may not expose finish_reason. Fail closed for
         # an exit-0 worker with a persisted session rather than packaging a turn
         # whose completion cannot be established.
         return row[0] != "assistant" or not has_finish_reason or row[1] != "stop"
     except (OSError, sqlite3.Error, ValueError):
-        return False
+        return True
 
 
 def _record_worker_exit(
@@ -195,11 +204,18 @@ def _record_worker_exit(
     """Persist worker exit diagnostics to task activity and the worker log."""
     interrupted = isinstance(details.get("signal_number"), int)
     action = "worker_signal_interrupted" if interrupted else "worker_exit_observed"
+    child_status = (
+        f"; child_exit_code={details['child_exit_code']} "
+        f"child_signal_number={details.get('child_signal_number')}"
+        if "child_exit_code" in details
+        else ""
+    )
     message = ("Worker interrupted: " if interrupted else "Worker exited: ") + (
         f"signal_number={details['signal_number']} "
         f"signal_name={details['signal_name']} "
         f"task_id={details['task_id']}; elapsed_seconds={details['elapsed_seconds']}; "
         f"turn_state={details['turn_state']}; exit_code={details.get('exit_code')}"
+        f"{child_status}"
     )
     cursor.execute(
         "INSERT INTO task_activity (task_id, actor, action, details, created_at) "

@@ -1936,7 +1936,10 @@ def test_clean_exit_after_prior_failure_is_packaged(tmp_path: Path):
     try:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            assert reap_active_workers(conn.cursor(), now=now) == 1
+            with patch(
+                "dispatcher.reaper._has_unfinished_worker_turn", return_value=False
+            ):
+                assert reap_active_workers(conn.cursor(), now=now) == 1
             conn.commit()
     finally:
         _active_workers.pop("t-gh91", None)

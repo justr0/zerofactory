@@ -190,36 +190,11 @@ def _pid_is_ancestor(pid: int) -> bool:
 def build_shell_wrapper(cmd: list[str], exit_prefix: Path | str) -> list[str]:
     """Wrap command so an integer exit code is written atomically to ``<exit_prefix>.exit`` on exit.
 
-    POSIX runs a shell script with an EXIT trap. Windows runs the ``_worker_wrapper.py`` helper
-    next to this module. Both wrappers also persist caught termination signals for diagnosis.
+    Both platforms use the same Python supervisor so signal forwarding waits
+    for child teardown and preserves the child's actual wait status.
     """
-    if IS_WINDOWS:
-        wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
-        return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
-    script = (
-        'prefix="$1"; shift; started_at=$(date +%s); '
-        "write_exit() { rc=$?; trap - EXIT; "
-        'printf "%s\\n" "$rc" > "${prefix}.exit.tmp" && '
-        'mv "${prefix}.exit.tmp" "${prefix}.exit"; }; '
-        'write_signal() { signal_number="$1"; signal_name="$2"; kill_name="$3"; '
-        "ended_at=$(date +%s); elapsed_seconds=$((ended_at - started_at)); "
-        "task_id=${prefix##*/}; task_id=${task_id#worker_}; "
-        '[ -z "$child" ] || kill -"$kill_name" "$child" 2>/dev/null || true; '
-        'printf \'{"signal_number":%s,"signal_name":"%s","task_id":"%s",'
-        '"elapsed_seconds":%s,"turn_state":"interrupted"}\\n\' '
-        '"$signal_number" "$signal_name" "$task_id" "$elapsed_seconds" '
-        '> "${prefix}.signal.tmp" && mv "${prefix}.signal.tmp" "${prefix}.signal"; '
-        'printf "ZeroFactory worker interrupted: signal_number=%s signal_name=%s '
-        'task_id=%s elapsed_seconds=%s turn_state=interrupted\\n" '
-        '"$signal_number" "$signal_name" "$task_id" "$elapsed_seconds"; '
-        "trap - HUP INT TERM; exit $((128 + signal_number)); }; "
-        "trap write_exit EXIT; "
-        'trap "write_signal 1 SIGHUP HUP" HUP; '
-        'trap "write_signal 2 SIGINT INT" INT; '
-        'trap "write_signal 15 SIGTERM TERM" TERM; '
-        '"$@" & child=$!; wait "$child"; exit $?'
-    )
-    return ["sh", "-c", script, "zf-runner", str(exit_prefix)] + cmd
+    wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
+    return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
 
 
 def get_exit_file_path(task_id: str) -> Path:
@@ -378,16 +353,7 @@ def inspect_process_identity(pid: int, task_id: str) -> bool | None:
             basename = argument.replace("\\", "/").rsplit("/", 1)[-1]
             return basename in (f"worker_{task_id}", f"worker_{task_id}.exit")
 
-        # POSIX build_shell_wrapper: sh -c <script> zf-runner <prefix> ...
-        if (
-            len(args) > 4
-            and args[0].replace("\\", "/").rsplit("/", 1)[-1] == "sh"
-            and args[1] == "-c"
-            and args[3] == "zf-runner"
-            and is_exit_prefix(args[4])
-        ):
-            return True
-        # Windows build_shell_wrapper: python _worker_wrapper.py <prefix> ...
+        # build_shell_wrapper uses the same Python supervisor on every platform.
         return (
             len(args) > 2
             and args[1].replace("\\", "/").rsplit("/", 1)[-1] == "_worker_wrapper.py"

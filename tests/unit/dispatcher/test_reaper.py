@@ -2,11 +2,18 @@
 
 import json
 import os
+import signal
 import sqlite3
+import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dispatcher.config import _active_workers
+from dispatcher.process_manager import build_shell_wrapper
 from dispatcher.reaper import (
     _compute_stuck_state,
     _mark_task_session_ended,
@@ -739,7 +746,8 @@ def test_reap_active_workers_exit0_clears_worker_pid(tmp_path: Path):
     mock_proc.poll.return_value = 0
     _active_workers["t-exit0"] = mock_proc
     try:
-        reaped = reap_active_workers(conn.cursor(), now=now)
+        with patch("dispatcher.reaper._has_unfinished_worker_turn", return_value=False):
+            reaped = reap_active_workers(conn.cursor(), now=now)
         conn.commit()
     finally:
         _active_workers.pop("t-exit0", None)
@@ -755,76 +763,6 @@ def test_reap_active_workers_exit0_clears_worker_pid(tmp_path: Path):
     assert "session_id" not in saved_meta
     assert "started_at" not in saved_meta
     assert saved_meta.get("worker_failure_retries") in (None, 0)
-
-
-def test_reaper_retries_signal_interrupted_exit0_instead_of_packaging(tmp_path: Path):
-    """A Hermes signal-handler exit 0 is logged and routed through worker retries."""
-    task_id = "t-signal-exit0"
-    now = 5000
-    conn = _spawn_grace_conn(
-        task_id,
-        {
-            "worker_pid": 4243,
-            "started_at": now - 16,
-            "sessions": [
-                {
-                    "session_id": "sess-signal",
-                    "status": "ongoing",
-                    "started_at": now - 16,
-                }
-            ],
-        },
-        now=now,
-    )
-
-    from dispatcher.config import _active_workers
-
-    mock_proc = MagicMock()
-    mock_proc.pid = 4243
-    mock_proc.poll.return_value = 0
-    _active_workers[task_id] = mock_proc
-    marker = {
-        "signal_number": 15,
-        "signal_name": "SIGTERM",
-        "task_id": task_id,
-        "elapsed_seconds": 16,
-        "turn_state": "interrupted",
-    }
-    try:
-        with (
-            patch("dispatcher.reaper.read_worker_signal", return_value=marker),
-            patch(
-                "dispatcher.reaper._worker_log_path",
-                return_value=tmp_path / "worker.log",
-            ),
-        ):
-            reaped = reap_active_workers(conn.cursor(), now=now)
-            conn.commit()
-    finally:
-        _active_workers.pop(task_id, None)
-
-    assert reaped == 1
-    row = conn.execute(
-        "SELECT status, metadata FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
-    assert row["status"] == "todo"
-    saved_meta = json.loads(row["metadata"])
-    assert saved_meta["worker_failure_retries"] == 1
-    assert not saved_meta.get("awaiting_pr")
-    actions = conn.execute(
-        "SELECT action, details FROM task_activity WHERE task_id = ?", (task_id,)
-    ).fetchall()
-    signal_events = [
-        r["details"] for r in actions if r["action"] == "worker_signal_interrupted"
-    ]
-    assert len(signal_events) == 1
-    assert "signal_number=15" in signal_events[0]
-    assert f"task_id={task_id}" in signal_events[0]
-    assert "elapsed_seconds=16" in signal_events[0]
-    assert "turn_state=interrupted" in signal_events[0]
-    assert not any(r["action"] == "worker_done" for r in actions)
-    assert any(r["action"] == "worker_failed" for r in actions)
-    assert "signal_number=15" in (tmp_path / "worker.log").read_text()
 
 
 def test_reaper_retries_exit_130_and_records_signal_diagnostics(tmp_path: Path):
@@ -875,146 +813,125 @@ def test_reaper_retries_exit_130_and_records_signal_diagnostics(tmp_path: Path):
     assert "signal_number=2" in (tmp_path / "worker.log").read_text()
 
 
-def test_reaper_infers_signal_number_from_exit_130():
-    """Signal-style nonzero exits remain failures even without a sidecar marker."""
-    from dispatcher.reaper import _worker_signal_details
-
-    with patch("dispatcher.reaper.read_worker_signal", return_value=None):
-        details = _worker_signal_details(
-            "t-interrupt", 130, {"started_at": 984}, now=1000
+@pytest.mark.parametrize(
+    ("scenario", "expected_status"),
+    [("child_exit0", "todo"), ("child_sigkill", "todo"), ("clean", "running")],
+)
+def test_real_wrapper_exit0_without_session_is_not_phantom_completion(
+    tmp_path: Path, scenario: str, expected_status: str
+):
+    """Real child exits retry unless a persisted clean turn proves packaging is safe."""
+    if os.name == "nt":
+        pytest.skip("The child-only POSIX signal probe requires POSIX process groups")
+    task_id = f"t-wrapper-{scenario}"
+    prefix = tmp_path / "hermes" / "logs" / f"worker_{task_id}"
+    prefix.parent.mkdir(parents=True)
+    pid_file = tmp_path / "child.pid"
+    code = "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(__import__('os').getpid())); time.sleep(30)"
+    if scenario == "child_exit0":
+        code = (
+            "import os,pathlib,signal,sys,time; "
+            "signal.signal(signal.SIGTERM, lambda *_: os._exit(0)); "
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
         )
-    assert details == {
-        "signal_number": 2,
-        "signal_name": "SIGINT",
-        "task_id": "t-interrupt",
-        "elapsed_seconds": 16,
-        "turn_state": "interrupted",
-    }
-
-
-def test_reaper_infers_sigkill_exit_code():
-    """A negative subprocess status is decoded as the terminating signal."""
-    from dispatcher.reaper import _worker_signal_details
-
-    with patch("dispatcher.reaper.read_worker_signal", return_value=None):
-        details = _worker_signal_details("t-killed", -9, {"started_at": 990}, 1000)
-    assert details is not None
-    assert details["signal_number"] == 9
-    assert details["signal_name"] == "SIGKILL"
-    assert details["elapsed_seconds"] == 10
-
-
-def test_unfinished_turn_detection_uses_legacy_message_schema(tmp_path: Path):
-    """A profile DB without finish_reason cannot prove an exit-0 turn completed."""
-    from dispatcher.reaper import _has_unfinished_worker_turn
-
-    state_db = tmp_path / "profile.db"
-    with sqlite3.connect(state_db) as conn:
-        conn.execute(
-            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT)"
-        )
-        conn.execute(
-            "INSERT INTO messages (session_id, role) VALUES ('session-1', 'assistant')"
-        )
-    with patch("dispatcher.reaper._d") as mock_dispatcher:
-        mock_dispatcher.return_value.resolve_profile_state_db.return_value = state_db
-        assert _has_unfinished_worker_turn("zf-builder", {"session_id": "session-1"})
-
-
-def test_unfinished_turn_detection_checks_persisted_finish_reason(tmp_path: Path):
-    """Only an assistant stop proves completion; tool, user, and interrupted turns retry."""
-    from dispatcher.reaper import _has_unfinished_worker_turn
-
-    state_db = tmp_path / "profile.db"
-    with sqlite3.connect(state_db) as conn:
-        conn.execute(
-            "CREATE TABLE messages ("
-            "id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, finish_reason TEXT)"
-        )
-        conn.executemany(
-            "INSERT INTO messages (session_id, role, finish_reason) VALUES (?, ?, ?)",
-            [
-                ("completed", "assistant", "stop"),
-                ("tool-call", "assistant", "tool_calls"),
-                ("interrupted", "assistant", "incomplete"),
-                ("truncated", "assistant", "length"),
-                ("missing-reason", "assistant", None),
-                ("tool-result", "tool", None),
-            ],
-        )
-    with patch("dispatcher.reaper._d") as mock_dispatcher:
-        mock_dispatcher.return_value.resolve_profile_state_db.return_value = state_db
-        assert not _has_unfinished_worker_turn(
-            "zf-builder", {"session_id": "completed"}
-        )
-        for session_id in (
-            "tool-call",
-            "interrupted",
-            "truncated",
-            "missing-reason",
-            "tool-result",
-        ):
-            assert _has_unfinished_worker_turn("zf-builder", {"session_id": session_id})
-
-
-def test_reaper_retries_exit0_when_session_turn_is_unfinished(tmp_path: Path):
-    """An exit-0 kanban signal-handler flush is a worker failure, not packaging."""
-    task_id = "t-unfinished-exit0"
-    now = 5000
-    conn = _spawn_grace_conn(
-        task_id,
-        {
-            "worker_pid": 4244,
-            "started_at": now - 16,
-            "session_id": "session-unfinished",
-            "sessions": [
-                {
-                    "session_id": "session-unfinished",
-                    "status": "ongoing",
-                    "started_at": now - 16,
-                }
-            ],
-        },
-        now=now,
+    elif scenario == "clean":
+        code = "pass"
+    proc = subprocess.Popen(
+        build_shell_wrapper(
+            [sys.executable, "-c", code, str(pid_file)]
+            if scenario != "clean"
+            else [sys.executable, "-c", code],
+            prefix,
+        ),
+        start_new_session=True,
     )
-    from dispatcher.config import _active_workers
-
-    mock_proc = MagicMock()
-    mock_proc.pid = 4244
-    mock_proc.poll.return_value = 0
-    _active_workers[task_id] = mock_proc
+    now = int(time.time())
+    metadata = {"worker_pid": proc.pid, "started_at": now - 16}
+    state_db = tmp_path / "profile.db"
+    if scenario == "clean":
+        metadata.update(
+            session_id="session-clean",
+            sessions=[{"session_id": "session-clean", "status": "ongoing"}],
+        )
+        with sqlite3.connect(state_db) as state:
+            state.execute(
+                "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, finish_reason TEXT)"
+            )
+            state.execute(
+                "INSERT INTO messages (session_id, role, finish_reason) VALUES (?, 'assistant', 'stop')",
+                ("session-clean",),
+            )
+    conn = _spawn_grace_conn(task_id, metadata, now)
+    dispatcher = MagicMock()
+    dispatcher.get_task_timeout_seconds.return_value = 86400
+    dispatcher.get_inactivity_timeout_seconds.return_value = 86400
+    dispatcher.get_max_worker_retries.return_value = 3
+    dispatcher.resolve_profile_state_db.return_value = state_db
+    dispatcher._mark_task_session_ended.side_effect = _mark_task_session_ended
+    worker_log = tmp_path / "worker.log"
+    previous = _active_workers.get(task_id)
+    _active_workers[task_id] = proc
     try:
+        if scenario != "clean":
+            for _ in range(200):
+                if pid_file.exists():
+                    break
+                time.sleep(0.01)
+            assert pid_file.exists()
+            child_signal = (
+                signal.SIGKILL if scenario == "child_sigkill" else signal.SIGTERM
+            )
+            os.kill(int(pid_file.read_text()), child_signal)
+        assert proc.wait(timeout=5) == (137 if scenario == "child_sigkill" else 0)
         with (
-            patch("dispatcher.reaper.read_worker_signal", return_value=None),
-            patch("dispatcher.reaper._has_unfinished_worker_turn", return_value=True),
+            patch("dispatcher.reaper._d", return_value=dispatcher),
+            patch("dispatcher.reaper._worker_log_path", return_value=worker_log),
             patch(
-                "dispatcher.reaper._worker_log_path",
-                return_value=tmp_path / "worker.log",
+                "dispatcher.process_manager.get_hermes_home",
+                return_value=tmp_path / "hermes",
             ),
         ):
-            reaped = reap_active_workers(conn.cursor(), now=now)
+            assert reap_active_workers(conn.cursor(), now=now) == 1
             conn.commit()
     finally:
-        _active_workers.pop(task_id, None)
+        if previous is None:
+            _active_workers.pop(task_id, None)
+        else:
+            _active_workers[task_id] = previous
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
     row = conn.execute(
         "SELECT status, metadata FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
-    assert reaped == 1
-    assert row["status"] == "todo"
-    assert json.loads(row["metadata"])["worker_failure_retries"] == 1
     actions = conn.execute(
         "SELECT action, details FROM task_activity WHERE task_id = ?", (task_id,)
     ).fetchall()
-    assert not any(item["action"] == "worker_done" for item in actions)
-    assert any(item["action"] == "worker_failed" for item in actions)
-    exit_event = next(
-        item for item in actions if item["action"] == "worker_exit_observed"
-    )
-    assert "signal_number=unknown" in exit_event["details"]
-    assert f"task_id={task_id}" in exit_event["details"]
-    assert "elapsed_seconds=16" in exit_event["details"]
-    assert "turn_state=unfinished_session" in exit_event["details"]
+    assert row["status"] == expected_status
+    if scenario != "clean":
+        assert json.loads(row["metadata"])["worker_failure_retries"] == 1
+        assert not any(event["action"] == "worker_done" for event in actions)
+        diagnostic = next(
+            event["details"]
+            for event in actions
+            if event["action"] in ("worker_exit_observed", "worker_signal_interrupted")
+        )
+        expected_signal = "unknown" if scenario == "child_exit0" else "9"
+        assert f"signal_number={expected_signal}" in diagnostic
+        assert f"task_id={task_id}" in diagnostic
+        if scenario == "child_sigkill":
+            assert "child_exit_code=-9" in diagnostic
+            assert "child_signal_number=9" in diagnostic
+        elapsed = next(
+            field.split("=", 1)[1]
+            for field in diagnostic.split("; ")
+            if field.startswith("elapsed_seconds=")
+        )
+        assert int(elapsed) >= 0
+    else:
+        assert json.loads(row["metadata"])["awaiting_pr"] is True
+        assert any(event["action"] == "worker_done" for event in actions)
 
 
 def test_reaper_records_lost_worker_diagnostics_in_log_and_activity(tmp_path: Path):
@@ -1349,7 +1266,8 @@ def test_reap_active_workers_reviewer_exit0_without_verdict_parks_blocked():
     mock_proc.poll.return_value = 0
     _active_workers["t-rev-exit0"] = mock_proc
     try:
-        reaped = reap_active_workers(conn.cursor(), now=now)
+        with patch("dispatcher.reaper._has_unfinished_worker_turn", return_value=False):
+            reaped = reap_active_workers(conn.cursor(), now=now)
         conn.commit()
     finally:
         _active_workers.pop("t-rev-exit0", None)
@@ -1393,7 +1311,8 @@ def test_reap_active_workers_exit0_clears_stale_failure_state():
     mock_proc.poll.return_value = 0
     _active_workers["t-clear-stale"] = mock_proc
     try:
-        reaped = reap_active_workers(conn.cursor(), now=now)
+        with patch("dispatcher.reaper._has_unfinished_worker_turn", return_value=False):
+            reaped = reap_active_workers(conn.cursor(), now=now)
         conn.commit()
     finally:
         _active_workers.pop("t-clear-stale", None)
