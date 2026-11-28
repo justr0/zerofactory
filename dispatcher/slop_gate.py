@@ -71,7 +71,7 @@ _RE_BARE_PASS = re.compile(r"^\s*pass\s*(?:#.*)?$")
 
 _RE_PY_TEST_DEF = re.compile(r"^(\s*)(?:async\s+)?def\s+(test_[A-Za-z0-9_]*)\s*\(")
 _RE_PY_BLOCK_BOUNDARY = re.compile(r"^(\s*)(?:(?:async\s+)?def\s+|class\s+)")
-_RE_JS_TEST_DEF = re.compile(r"^(\s*)(?:it|test)\s*\(\s*['\"`]")
+_RE_JS_TEST_DEF = re.compile(r"^(\s*)(?:it|test)\s*\(")
 _RE_JS_BLOCK_BOUNDARY = re.compile(r"^(\s*)(?:it|test|describe)\s*\(")
 _RE_ASSERTION = re.compile(
     r"\bassert\b|self\.assert|pytest\.(?:raises|warns|deprecated_call|fail)\b"
@@ -227,6 +227,37 @@ def is_dependency_file(rel_path: str) -> bool:
     return name.startswith("requirements") and name.endswith(".txt")
 
 
+def _test_body_status(
+    lines: list[str], start_index: int, indent: int, is_python: bool
+) -> tuple[bool, bool]:
+    """Return whether the test has a body and an assertion in its post-image."""
+    has_body = False
+    has_assert = False
+    for index in range(start_index, len(lines)):
+        content = lines[index]
+        stripped = content.strip()
+        if not stripped or stripped.startswith(("#", "//", "/*", "*")):
+            continue
+        if index > start_index:
+            curr_indent = len(content) - len(content.lstrip())
+            if is_python:
+                if curr_indent <= indent and not stripped.startswith((")", "]", "}")):
+                    break
+            else:
+                boundary_m = _RE_JS_BLOCK_BOUNDARY.match(content)
+                if boundary_m and len(boundary_m.group(1)) <= indent:
+                    break
+        if index == start_index:
+            if _RE_ASSERTION.search(content):
+                has_body = True
+                has_assert = True
+            continue
+        has_body = True
+        if _RE_ASSERTION.search(content):
+            has_assert = True
+    return has_body, has_assert
+
+
 def _is_code_file(rel_path: str) -> bool:
     return Path(rel_path).suffix.lower() in CODE_EXTENSIONS
 
@@ -289,6 +320,7 @@ def _scan_added_lines(
     rel_path: str,
     lines_with_nums: list[tuple[int, str]],
     report: DiffHygieneReport,
+    post_image_lines: list[str] | None = None,
 ) -> None:
     if not _is_code_file(rel_path):
         return
@@ -304,29 +336,6 @@ def _scan_added_lines(
         mock_count = 0
         assert_count = 0
         first_mock_line = 0
-
-        active_test_line = 0
-        active_test_indent = 0
-        active_test_snippet = ""
-        active_has_body = False
-        active_has_assert = False
-
-        def _finalize_active_test() -> None:
-            nonlocal active_test_line, active_has_body, active_has_assert
-            if active_test_line > 0 and active_has_body and not active_has_assert:
-                report.errors.append(
-                    SlopFinding(
-                        rule="assertion_free_test",
-                        severity="error",
-                        file=rel_path,
-                        line=active_test_line,
-                        snippet=active_test_snippet[:120],
-                        message="Newly added test function contains no assertions; add behavioural assertions.",
-                    )
-                )
-            active_test_line = 0
-            active_has_body = False
-            active_has_assert = False
 
         for line_num, content in lines_with_nums:
             stripped = content.strip()
@@ -358,37 +367,24 @@ def _scan_added_lines(
                 else (_RE_JS_TEST_DEF.match(content) if is_js_ts else None)
             )
             if test_def_m:
-                _finalize_active_test()
-                active_test_line = line_num
-                active_test_indent = len(test_def_m.group(1))
-                active_test_snippet = stripped
-                # Handle single-line JS/Python test blocks that include an assertion on the header line
-                if is_js_ts and has_assert_on_line:
-                    active_has_body = True
-                    active_has_assert = True
-                continue
-
-            if active_test_line > 0:
-                if not stripped or stripped.startswith(("#", "//", "/*", "*")):
-                    continue
-                curr_indent = len(content) - len(content.lstrip())
-                if is_python:
-                    if curr_indent <= active_test_indent and not stripped.startswith(
-                        (")", "]", "}")
-                    ):
-                        _finalize_active_test()
-                        continue
-                elif is_js_ts:
-                    boundary_m = _RE_JS_BLOCK_BOUNDARY.match(content)
-                    if boundary_m and len(boundary_m.group(1)) <= active_test_indent:
-                        _finalize_active_test()
-                        continue
-
-                active_has_body = True
-                if has_assert_on_line:
-                    active_has_assert = True
-
-        _finalize_active_test()
+                if post_image_lines is not None:
+                    has_body, has_assert = _test_body_status(
+                        post_image_lines,
+                        line_num - 1,
+                        len(test_def_m.group(1)),
+                        is_python,
+                    )
+                    if has_body and not has_assert:
+                        report.errors.append(
+                            SlopFinding(
+                                rule="assertion_free_test",
+                                severity="error",
+                                file=rel_path,
+                                line=line_num,
+                                snippet=stripped[:120],
+                                message="Newly added test function contains no assertions; add behavioural assertions.",
+                            )
+                        )
 
         if mock_count >= 4 and mock_count > assert_count:
             report.warnings.append(
@@ -600,6 +596,8 @@ def analyze_workspace_diff(
                 report.test_lines_deleted += 1
             elif current_file in prod_code_files_seen:
                 report.prod_code_lines_deleted += 1
+        elif raw_line.startswith(" "):
+            current_line += 1
 
     # Also inspect untracked files during packaging (before `git add .`)
     if include_working_tree:
@@ -657,7 +655,38 @@ def analyze_workspace_diff(
     report.dependency_files_touched = sorted(dep_files_seen)
 
     for rel_path, lines_with_nums in added_by_file.items():
-        _scan_added_lines(rel_path, lines_with_nums, report)
+        suffix = Path(rel_path).suffix.lower()
+        test_definition_pattern = (
+            _RE_PY_TEST_DEF
+            if suffix == ".py"
+            else _RE_JS_TEST_DEF
+            if suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+            else None
+        )
+        post_image_lines = None
+        if (
+            is_test_file(rel_path)
+            and test_definition_pattern is not None
+            and any(test_definition_pattern.match(line) for _, line in lines_with_nums)
+        ):
+            try:
+                post_image_lines = (
+                    (workspace_path / rel_path)
+                    .read_text(encoding="utf-8", errors="replace")
+                    .splitlines()
+                )
+            except OSError as exc:
+                report.errors.append(
+                    SlopFinding(
+                        rule="diff_inspection_failed",
+                        severity="error",
+                        file=rel_path,
+                        line=0,
+                        snippet=type(exc).__name__,
+                        message=f"Unable to inspect post-image test file: {type(exc).__name__}: {exc}",
+                    )
+                )
+        _scan_added_lines(rel_path, lines_with_nums, report, post_image_lines)
 
     # Spec "Do Not Touch" file boundary enforcement (including paths filtered by EXCLUDED_DIFF_PATHSPECS)
     dnt_patterns = extract_do_not_touch_patterns(spec_text)
