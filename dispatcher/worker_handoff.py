@@ -39,9 +39,10 @@ _TOKEN_LINE_PREFIX = "ZEROFACTORY_WORKER_EXECUTION_ID="
 # The dispatcher's token is a uuid4 hex — anything else in a transcript is not a token.
 _TOKEN_LINE_RE = re.compile(r"ZEROFACTORY_WORKER_EXECUTION_ID=([0-9a-f]{32})")
 
-# User messages scanned per session, newest first. A dispatch prompt is a session's
-# first user message and a re-dispatch is its newest; only mid-run steering lands
-# between, so the bound is never reached by a real session — it only caps the read.
+# Candidate user messages read per batch, newest first, until a valid header is
+# parsed: a batch bound only, never a cutoff. The SQL prefix admits malformed
+# candidates (the instruction line with a bad token line), and they must not be
+# able to push the real dispatch out of the scan.
 _SESSION_SCAN_LIMIT = 50
 
 
@@ -94,33 +95,47 @@ def token_from_session(
         return None
     try:
         # The prefix narrows the scan in SQL; the strict parser decides, so a header
-        # quoted at the start of a longer message still does not count.
-        rows = conn.execute(
-            "SELECT content FROM messages "
-            "WHERE session_id = ? AND role = 'user' AND content LIKE ? "
-            f"ORDER BY rowid DESC LIMIT {_SESSION_SCAN_LIMIT}",
-            (session_id, f"{HEADER_INSTRUCTION}%"),
-        )
-        for (content,) in rows:
-            token = token_from_prompt(content)
-            if token:
-                return token
+        # quoted at the start of a longer message still does not count. Candidates
+        # are paged newest first by rowid until one parses: malformed ones can delay
+        # the dispatch, never hide it.
+        before_rowid: int | None = None
+        while True:
+            sql = (
+                "SELECT rowid, content FROM messages "
+                "WHERE session_id = ? AND role = 'user' AND content LIKE ?"
+            )
+            params: list = [session_id, f"{HEADER_INSTRUCTION}%"]
+            if before_rowid is not None:
+                sql += " AND rowid < ?"
+                params.append(before_rowid)
+            sql += f" ORDER BY rowid DESC LIMIT {_SESSION_SCAN_LIMIT}"
+            rows = conn.execute(sql, params).fetchall()
+            if not rows:
+                return None
+            for _, content in rows:
+                token = token_from_prompt(content)
+                if token:
+                    return token
+            before_rowid = rows[-1][0]
     except sqlite3.Error:
         return None
     finally:
         conn.close()
-    return None
 
 
 def _own_profile_state_db(actor: str) -> Path | None:
-    """``state.db`` of the reporting profile, or ``None`` when the profile has none.
+    """``state.db`` of the reporting worker profile, or ``None`` when it has none.
 
-    Only the actor's own profile database qualifies. The general profile resolver
-    ends in the global ``~/.hermes/state.db`` — a file holding the human operator's
-    sessions, which an unknown or unassigned actor must never be read as.
+    Only a specialist profile's own database qualifies. ``human`` and ``unassigned``
+    — which is also where every unknown actor normalizes — are not profiles and are
+    rejected before any path is probed, so neither a ``profiles/unassigned``
+    directory nor the global ``~/.hermes/state.db`` (the general resolver's last
+    resort, holding the human operator's sessions) can ever be read as a worker's.
     """
     try:
         from paths import (  # type: ignore
+            HUMAN,
+            UNASSIGNED,
             _plugin_profiles_root,
             get_hermes_profiles_root,
             normalize_assignee,
@@ -129,6 +144,8 @@ def _own_profile_state_db(actor: str) -> Path | None:
         return None
     try:
         profile = normalize_assignee(actor)
+        if profile in (UNASSIGNED, HUMAN):
+            return None
         candidate = get_hermes_profiles_root() / profile / "state.db"
         if candidate.is_file():
             return candidate
@@ -154,6 +171,11 @@ def resolve_worker_execution_id(
     ``actor`` is the reporting profile: its own ``state.db`` holds its sessions. The
     session lookup is skipped when the env already carries the ID (a worker spawned by
     a runner that does pass its env through) and when there is no session to look up.
+
+    The actor and the session id are the caller's own context, not an authenticated
+    identity: they select which transcript to recover a token from, never whether the
+    report is accepted. The move route still requires the recovered token to equal
+    the dispatch's, the task to be running under that assignee, and every other guard.
     """
     if explicit and explicit.strip():
         return explicit.strip()

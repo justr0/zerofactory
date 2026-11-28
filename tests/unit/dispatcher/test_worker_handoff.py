@@ -123,6 +123,40 @@ def test_header_below_many_steering_messages_is_still_found(tmp_path):
     assert token_from_session("s1", db) == CURRENT
 
 
+def test_malformed_header_candidates_cannot_hide_the_dispatch(tmp_path):
+    """A message that starts like a header but is not one still matches the SQL
+    prefix; the scan pages past any number of them instead of stopping at a bound."""
+    db = tmp_path / "state.db"
+    malformed = [
+        (
+            "s1",
+            "user",
+            f"{INSTRUCTION}\nZEROFACTORY_WORKER_EXECUTION_ID=not-a-token {n}",
+        )
+        for n in range(120)
+    ]
+    _state_db(db, [("s1", "user", with_execution_token("t", CURRENT)), *malformed])
+    assert token_from_session("s1", db) == CURRENT
+
+
+def test_sentinel_actors_resolve_nothing_even_with_a_profile_layout(
+    tmp_path, monkeypatch
+):
+    """``human``, ``unassigned`` and unknown actors are not profiles, however the
+    directory layout looks: a ``profiles/<sentinel>/state.db`` holding the session's
+    token is never opened, while a real profile in the same layout still resolves."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_row = [("s1", "user", with_execution_token("t", CURRENT))]
+    for name in ("unassigned", "human", "zf-builder"):
+        profile = tmp_path / "profiles" / name
+        profile.mkdir(parents=True)
+        _state_db(profile / "state.db", token_row)
+    env = {SESSION_ID_ENV: "s1"}
+    for actor in ("somebody", "unassigned", "human"):
+        assert resolve_worker_execution_id(actor=actor, env=env) is None, actor
+    assert resolve_worker_execution_id(actor="zf-builder", env=env) == CURRENT
+
+
 @pytest.mark.parametrize("broken", ["missing", "not-a-database", "no-messages-table"])
 def test_unreadable_transcript_is_no_token(tmp_path, broken):
     db = tmp_path / "state.db"

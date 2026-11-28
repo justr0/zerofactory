@@ -113,7 +113,8 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         token back from that transcript. The route's stale-report gate is unchanged.
         """
         import dispatcher as dispatcher_mod
-        from dispatcher.worker_handoff import token_from_prompt
+        import dispatcher.worker_spawner as spawner_mod
+        from dispatcher.worker_handoff import HEADER_INSTRUCTION, token_from_prompt
 
         self._run_cli(["board", "create", "https://github.com/example/handoff.git"])
         out_create = self._run_cli(
@@ -141,6 +142,49 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
                 "CREATE TABLE sessions (id TEXT, started_at REAL, title TEXT, cwd TEXT)"
             )
 
+        # Dispatch state this test owns: the worker adapter settings (an inherited
+        # external adapter would launch a real process) and the registry of spawned
+        # workers. The first is cleared for the test, the second restored on teardown,
+        # assertion failure or not.
+        adapter_env = {
+            key: os.environ.pop(key)
+            for key in ("ZEROFACTORY_WORKER_COMMAND", "ZEROFACTORY_WORKER_ARGS")
+            if key in os.environ
+        }
+        self.addCleanup(os.environ.update, adapter_env)
+        self.addCleanup(spawner_mod._active_workers.pop, task_id, None)
+
+        launched = []
+        real_popen = subprocess.Popen
+        launch_marker = "zf-e2e-worker-launch"
+        starting = {"session": None}
+
+        def worker_launch_marker(cmd, exit_prefix):
+            """Stand-in for the platform wrapper: every launch family — POSIX shell
+            script, Windows helper, external adapter — passes here with the unwrapped
+            worker argv, and only the marker reaches Popen."""
+            launched.append([list(cmd), None, None])
+            return [launch_marker, *cmd]
+
+        def popen(argv, *args, **kwargs):
+            if not argv or argv[0] != launch_marker:
+                # Git and other helpers the dispatch cycle runs are real.
+                return real_popen(argv, *args, **kwargs)
+            launched[-1][1:] = [kwargs["env"], kwargs["cwd"]]
+            # Hermes starts the worker session: a sessions row, and the submitted
+            # prompt persisted as its first user message.
+            prompt = next(arg for arg in argv if HEADER_INSTRUCTION in arg)
+            with sqlite3.connect(str(profile_db)) as conn:
+                conn.execute(
+                    "INSERT INTO sessions VALUES (?, ?, '', ?)",
+                    (starting["session"], time.time(), kwargs["cwd"]),
+                )
+                conn.execute(
+                    "INSERT INTO messages VALUES (?, 'user', ?)",
+                    (starting["session"], prompt),
+                )
+            return SimpleNamespace(pid=424242, poll=lambda: 0)
+
         def tracked():
             """The task's status and metadata as the dispatcher tracks them."""
             with sqlite3.connect(str(self.db_path)) as conn:
@@ -150,47 +194,40 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
             return row[0], json.loads(row[1] or "{}")
 
         def dispatch(session):
-            """Dispatch the task for real; the worker's Hermes session `session` starts
-            and persists the launched prompt as its first user message."""
+            """Dispatch the task for real; the worker's Hermes session `session`
+            starts and persists the launched prompt as its first user message."""
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute(
                     "UPDATE tasks SET status = 'todo', metadata = '{}' WHERE id = ?",
                     (task_id,),
                 )
-            launched = []
-            real_popen = subprocess.Popen
-
-            def start_worker(argv, **kwargs):
-                if list(argv[:1]) != ["sh"] or "-q" not in argv:
-                    # Git and other helpers the dispatch cycle runs are real.
-                    return real_popen(argv, **kwargs)
-                launched.append((argv, kwargs["env"]))
-                prompt = argv[argv.index("-q") + 1]
-                with sqlite3.connect(str(profile_db)) as conn:
-                    conn.execute(
-                        "INSERT INTO sessions VALUES (?, ?, '', ?)",
-                        (session, time.time(), kwargs["cwd"]),
-                    )
-                    conn.execute(
-                        "INSERT INTO messages VALUES (?, 'user', ?)", (session, prompt)
-                    )
-                return SimpleNamespace(pid=424242, poll=lambda: 0)
-
+            launched.clear()
+            starting["session"] = session
+            # Only the process launch is stood in for: scheduler, spawner, git
+            # helpers and the move route are the real ones.
+            subprocess_stub = SimpleNamespace(
+                Popen=popen, DEVNULL=subprocess.DEVNULL, STDOUT=subprocess.STDOUT
+            )
             skip_spawn = os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
             try:
-                with patch("dispatcher.worker_spawner.subprocess.Popen", start_worker):
+                with (
+                    patch.object(
+                        spawner_mod, "build_shell_wrapper", worker_launch_marker
+                    ),
+                    patch.object(spawner_mod, "subprocess", subprocess_stub),
+                ):
                     dispatcher_mod.run_dispatch_cycle(self.db_path)
             finally:
                 if skip_spawn is not None:
                     os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = skip_spawn
             self.assertEqual(len(launched), 1, "one worker per dispatch")
-            wrapped, env = launched[0]
+            cmd, env, _cwd = launched[0]
             token = tracked()[1]["worker_execution_id"]
-            self.assertEqual(wrapped[:2], ["sh", "-c"], "the launcher's real wrapper")
             self.assertEqual(env["ZEROFACTORY_WORKER_EXECUTION_ID"], token)
             # The header sits above the untouched task body, as the parser expects.
-            self.assertEqual(token_from_prompt(wrapped[-1]), token)
-            self.assertIn(f"Task ID: {task_id}", wrapped[-1])
+            prompt = next(arg for arg in cmd if HEADER_INSTRUCTION in arg)
+            self.assertEqual(token_from_prompt(prompt), token)
+            self.assertIn(f"Task ID: {task_id}", prompt)
             return token
 
         def report(session, *extra, env=None):
@@ -234,8 +271,9 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
 
         # A worker whose transcript has no token passes it by flag, or by env.
         later = dispatch("sess-flag")
-        assert report("sess-other", "--execution-id", later) == (
-            f"Moved task {task_id} to done"
+        assert (
+            report("sess-other", "--execution-id", later)
+            == f"Moved task {task_id} to done"
         )
         again = dispatch("sess-env")
         assert (
