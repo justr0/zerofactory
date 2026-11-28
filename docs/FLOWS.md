@@ -308,12 +308,12 @@ does not spawn an agent, so the gate costs 0 tokens. The spawned scanner runs as
 flowchart TD
     SP["spawn_agent_worker<br/>hermes -p PROFILE --yolo --cli --accept-hooks chat -q PROMPT"] --> META["write metadata:<br/>worker_pid / session_id / sessions[] ongoing"]
     META --> RUN["agentic session runs<br/>in worktree; logs to worker log"]
-    RUN --> POLL{"reaper: proc.poll()"}
-    POLL -->|"exit 0"| OK{"target status?"}
+    RUN --> POLL{"reaper: proc.poll() + signal marker"}
+    POLL -->|"exit 0, no signal"| OK{"target status?"}
     OK -->|"triage + interview"| TRI["triage + human<br/>awaiting_interview"]
     OK -->|"already blocked/todo/triage"| KEEP["keep status"]
     OK -->|"builder/reviewer finished"| AUTO["running + awaiting_pr = true<br/>-> step 3 packages PR"]
-    POLL -->|"exit != 0"| FAIL["worker_failure_retries++"]
+    POLL -->|"signal marker or exit != 0"| FAIL["record signal/task/elapsed; worker_failure_retries++"]
     FAIL --> FB{"budget left?"}
     FB -->|no| PERM["blocked + permanently_blocked<br/>human gate"]
     FB -->|yes| RETRY["todo — auto-retry on claim"]
@@ -322,7 +322,8 @@ flowchart TD
 ```
 
 - Spawn command: `hermes -p {zf-builder|zf-reviewer|zf-orchestrator} --yolo --cli --accept-hooks chat -q <prompt>`
-  with `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`. The same token is the first two lines of the prompt (`dispatcher/worker_handoff.py`: instruction line + `ZEROFACTORY_WORKER_EXECUTION_ID=<uuid4 hex>`, then the task header) — the prompt is the channel that actually reaches the worker, because its shell commands run in the Hermes gateway process and never see the worker's env.
+  with `HERMES_KANBAN_TASK`, `HERMES_KANBAN_WORKSPACE`, `TERMINAL_CWD`, `HERMES_PROFILE`, `HERMES_HOME=~/.hermes/profiles/<p>`, and a per-dispatch `ZEROFACTORY_WORKER_EXECUTION_ID`. The same token is the first two lines of the prompt (`dispatcher/worker_handoff.py`: instruction line + `ZEROFACTORY_WORKER_EXECUTION_ID=<uuid4 hex>`, then the task header) — the prompt is the channel that actually reaches the worker, because its shell commands run in the Hermes gateway process and never see the worker's env.
+- The Python worker supervisor atomically records caught `SIGHUP`, `SIGINT`, or `SIGTERM` in the worker log and signal marker, forwards signals to the child process group, and waits for bounded teardown. The reaper records signal number, task ID, elapsed seconds, and turn state; an exit 0 without a persisted completed turn is retried instead of entering packaging.
 - Agent `move running` / `move done` reports are accepted only when their execution ID matches the currently dispatched worker and the task is still `running` under that agent. The API serializes this ownership check with dispatcher claims/recovery; matching an assignee role alone is insufficient. The CLI resolves the reported ID as `--execution-id` > `ZEROFACTORY_WORKER_EXECUTION_ID` > the newest complete dispatch header among the reporting session's user messages (`HERMES_SESSION_ID`, read-only from the actor profile's own `state.db`; `human`, `unassigned` and unknown actors resolve nothing before any file is probed, and the scan pages past malformed header candidates). Only a header at the very top of a user message counts. The session id is the caller's own context, not an authenticated identity — what gates the report is the token match plus the route's ownership checks. Missing or stale execution identity is recorded as `move_rejected` without changing task state or metadata.
 - Workerless `running` rows, including `awaiting_pr` packaging rows, recover after `ZEROFACTORY_SPAWN_GRACE_SECONDS` (default **180s**) if no process, live PID, or ongoing session exists. Stalled packaging therefore releases its running slot; healthy deterministic packaging gets that grace window to proceed.
 - A recovered reviewer stays queued for PR polling instead of being respawned. Polling happens before any reviewer restart and the orphan marker persists through polls with no verdict until feedback routes the task or ownership changes.

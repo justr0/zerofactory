@@ -809,6 +809,7 @@ def spawn_agent_worker(
 
     env = build_minimal_child_env(
         {
+            "HERMES_KANBAN_TASK": task_id,
             "HERMES_KANBAN_STOP_NUDGE": "0",
             "HERMES_KANBAN_WORKSPACE": str(workdir),
             "TERMINAL_CWD": str(workdir),

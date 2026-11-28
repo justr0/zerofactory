@@ -240,18 +240,19 @@ def test_terminate_process_group_reports_a_real_signal():
 # --- reaper: deliberate stop is not a crash ------------------------------
 
 
-def test_reaper_books_exit_of_dispatcher_stopped_worker_as_worker_stopped():
+@pytest.mark.parametrize("exit_code", [0, 130])
+def test_reaper_books_exit_of_dispatcher_stopped_worker_as_worker_stopped(exit_code):
     conn = _board_db()
     mock_proc = MagicMock()
     mock_proc.pid = 7171
-    mock_proc.poll.return_value = 130  # SIGINT status of a killed worker
+    mock_proc.poll.return_value = exit_code
     _active_workers[TASK_ID] = mock_proc
     mark_deliberate_stop(TASK_ID, 7171)
 
     reaped = reap_active_workers(conn.cursor(), now=9000)
     conn.commit()
 
-    assert reaped == 1
+    assert reaped == 1, f"unexpected reaper count for exit code {exit_code}"
     row = conn.execute(
         "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (TASK_ID,)
     ).fetchone()

@@ -224,6 +224,7 @@ def test_gateway_runtime_auto_starts_when_the_setting_is_on(tmp_path):
         patch.object(
             zf_settings, "load_settings", lambda conn: {"auto_start_dispatcher": True}
         ),
+        patch.object(zf, "is_worker_or_child_process", return_value=False),
         patch.object(zf, "init_db") as mock_init,
         patch.object(zf, "ensure_builtin_cron_jobs") as mock_cron,
         patch.object(zf, "start_background_dispatcher") as mock_start,

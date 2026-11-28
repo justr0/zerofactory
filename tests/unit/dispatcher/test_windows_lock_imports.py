@@ -22,6 +22,7 @@ def test_dispatcher_lock_tests_run_without_repo_fcntl_imports(tmp_path: Path) ->
         textwrap.dedent(
             """
             import builtins
+            import ctypes
             import importlib
             import os
             import sys

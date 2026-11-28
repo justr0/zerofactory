@@ -190,19 +190,11 @@ def _pid_is_ancestor(pid: int) -> bool:
 def build_shell_wrapper(cmd: list[str], exit_prefix: Path | str) -> list[str]:
     """Wrap command so an integer exit code is written atomically to ``<exit_prefix>.exit`` on exit.
 
-    POSIX runs a shell script with an EXIT trap. Windows runs the ``_worker_wrapper.py`` helper
-    next to this module, because there is no POSIX shell there to trap signals.
+    Both platforms use the same Python supervisor so signal forwarding waits
+    for child teardown and preserves the child's actual wait status.
     """
-    if IS_WINDOWS:
-        wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
-        return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
-    script = (
-        'prefix="$1"; shift; '
-        'trap "rc=\\$?; printf \\"%d\\n\\" \\"\\$rc\\" > \\"${prefix}.exit.tmp\\" && '
-        'mv \\"${prefix}.exit.tmp\\" \\"${prefix}.exit\\"; exit \\$rc" EXIT INT TERM; '
-        '"$@"'
-    )
-    return ["sh", "-c", script, "zf-runner", str(exit_prefix)] + cmd
+    wrapper_py = Path(__file__).with_name("_worker_wrapper.py")
+    return [sys.executable, str(wrapper_py), str(exit_prefix)] + cmd
 
 
 def get_exit_file_path(task_id: str) -> Path:
@@ -212,10 +204,38 @@ def get_exit_file_path(task_id: str) -> Path:
     return logs_dir / f"worker_{task_id}.exit"
 
 
+def get_signal_file_path(task_id: str) -> Path:
+    """Return the durable signal-interruption marker path for a task worker."""
+    return get_exit_file_path(task_id).with_suffix(".signal")
+
+
+def read_worker_signal(task_id: str) -> dict | None:
+    """Read a validated signal marker written by the process-group wrapper."""
+    try:
+        payload = json.loads(get_signal_file_path(task_id).read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("task_id") != task_id
+            or type(payload.get("signal_number")) is not int
+            or payload["signal_number"] <= 0
+            or type(payload.get("elapsed_seconds")) is not int
+            or payload["elapsed_seconds"] < 0
+        ):
+            return None
+        return payload
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def cleanup_process_artifacts(task_id: str) -> None:
-    """Unlink lingering .exit and .exit.tmp files for task_id."""
+    """Unlink lingering worker exit and signal marker files for task_id."""
     logs_dir = get_hermes_home() / "logs"
-    for name in (f"worker_{task_id}.exit", f"worker_{task_id}.exit.tmp"):
+    for name in (
+        f"worker_{task_id}.exit",
+        f"worker_{task_id}.exit.tmp",
+        f"worker_{task_id}.signal",
+        f"worker_{task_id}.signal.tmp",
+    ):
         p = logs_dir / name
         try:
             if p.exists():
@@ -333,16 +353,7 @@ def inspect_process_identity(pid: int, task_id: str) -> bool | None:
             basename = argument.replace("\\", "/").rsplit("/", 1)[-1]
             return basename in (f"worker_{task_id}", f"worker_{task_id}.exit")
 
-        # POSIX build_shell_wrapper: sh -c <script> zf-runner <prefix> ...
-        if (
-            len(args) > 4
-            and args[0].replace("\\", "/").rsplit("/", 1)[-1] == "sh"
-            and args[1] == "-c"
-            and args[3] == "zf-runner"
-            and is_exit_prefix(args[4])
-        ):
-            return True
-        # Windows build_shell_wrapper: python _worker_wrapper.py <prefix> ...
+        # build_shell_wrapper uses the same Python supervisor on every platform.
         return (
             len(args) > 2
             and args[1].replace("\\", "/").rsplit("/", 1)[-1] == "_worker_wrapper.py"
@@ -577,23 +588,30 @@ def terminate_worker_process(
     the worker-loss churn. A PID that is not proven to be the worker, a live
     ``proc`` handle counting as proof, is skipped and logged instead.
     """
-    handle_proves_pid = _handle_covers_pid(proc, pid)
-    if (
-        pid
-        and is_pid_alive(pid)
-        and task_id
-        and not handle_proves_pid
-        and inspect_process_identity(pid, task_id) is not True
-    ):
-        _log.warning(
-            "terminate_worker_process: PID %s no longer matches task %s; "
-            "skipping signal to avoid killing an unrelated recycled process "
-            "(cmdline: %.120s)",
-            pid,
-            task_id,
-            describe_process_cmdline(pid),
-        )
-        return
+    if pid is None and proc is not None:
+        pid = proc.pid
+    if pid:
+        if not is_pid_alive(pid):
+            _log.debug(
+                "terminate_worker_process: PID %s is no longer alive; skipping signal",
+                pid,
+            )
+            return
+        handle_proves_pid = _handle_covers_pid(proc, pid)
+        if (
+            task_id
+            and not handle_proves_pid
+            and inspect_process_identity(pid, task_id) is not True
+        ):
+            _log.warning(
+                "terminate_worker_process: PID %s no longer matches task %s; "
+                "skipping signal to avoid killing an unrelated recycled process "
+                "(cmdline: %.120s)",
+                pid,
+                task_id,
+                describe_process_cmdline(pid),
+            )
+            return
     # Register before signalling: the reaper runs on another thread and can
     # observe the death before this call returns.
     mark_deliberate_stop(task_id, pid)

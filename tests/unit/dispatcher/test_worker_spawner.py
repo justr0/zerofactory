@@ -288,9 +288,8 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
                     native_cmd, exit_prefix
                 )
                 assert cmd == expected_wrapper
-                assert cmd[:2] == ["sh", "-c"]
-                assert cmd[3:5] == ["zf-runner", str(exit_prefix)]
-                assert cmd[5:] == native_cmd
+                assert cmd[:3] == expected_wrapper[:3]
+                assert cmd[3:] == native_cmd
                 expected_isolation = {"start_new_session": True}
 
             env = kwargs.get("env", {})
@@ -303,6 +302,7 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
             assert isolation_kwargs == expected_isolation
             assert isolation_kwargs == detached_popen_kwargs()
             assert env.get("HERMES_PROFILE") == "zf-reviewer"
+            assert env.get("HERMES_KANBAN_TASK") == "zf-mine"
             assert env.get("ZEROFACTORY_WORKER_EXECUTION_ID") == "exec-current"
 
 

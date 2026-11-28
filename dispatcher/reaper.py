@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import sqlite3
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from .process_manager import (
     cleanup_process_artifacts,
     consume_deliberate_stop,
     get_process_exit_code,
+    read_worker_signal,
     is_pid_alive,
 )
 from .state_machine import transition_task
@@ -32,6 +34,7 @@ def _record_deliberate_stop(
     meta: dict[str, Any],
     now: int,
     detail: str,
+    retcode: int | None = None,
 ) -> None:
     """Book a dispatcher-initiated worker stop without spending the failure budget.
 
@@ -40,6 +43,15 @@ def _record_deliberate_stop(
     signal status, which the reaper used to book as a crash: retrying the same
     role (duplicate reviews) and parking the task after three stops.
     """
+    exit_details = _worker_signal_details(task_id, retcode, meta, now) or (
+        _worker_exit_details(task_id, retcode, meta, now)
+    )
+    detail = (
+        f"{detail}; signal_number={exit_details['signal_number']} "
+        f"signal_name={exit_details['signal_name']} task_id={task_id} "
+        f"elapsed_seconds={exit_details['elapsed_seconds']} "
+        f"turn_state={exit_details['turn_state']}"
+    )
     meta = _mark_task_session_ended(meta, now, "stopped")
     meta["last_worker_stop"] = {"pid": pid, "stopped_at": now}
     cursor.execute(
@@ -55,6 +67,7 @@ def _record_deliberate_stop(
             now,
         ),
     )
+    cleanup_process_artifacts(task_id)
     _log.info(
         "Worker for task %s was stopped by the dispatcher (pid %s, %s); not a failure",
         task_id,
@@ -76,6 +89,150 @@ def _parse_task_metadata(metadata: str | None) -> dict[str, Any]:
         return json.loads(metadata or "{}")
     except Exception:
         return {}
+
+
+def _worker_signal_details(
+    task_id: str, retcode: int | None, meta: dict[str, Any], now: int
+) -> dict[str, Any] | None:
+    """Return signal identity and elapsed time for an interrupted worker exit."""
+    marker = read_worker_signal(task_id) or {}
+    signal_number = marker.get("signal_number")
+    if type(signal_number) is not int or signal_number <= 0:
+        if retcode is not None and retcode < 0:
+            signal_number = -retcode
+        else:
+            signal_number = (
+                {129: 1, 130: 2, 137: 9, 143: 15}.get(retcode)
+                if retcode is not None
+                else None
+            )
+    if not signal_number:
+        return None
+
+    elapsed_seconds = marker.get("elapsed_seconds")
+    if type(elapsed_seconds) is not int or elapsed_seconds < 0:
+        try:
+            elapsed_seconds = max(0, now - int(meta.get("started_at", now)))
+        except (TypeError, ValueError):
+            elapsed_seconds = 0
+    try:
+        signal_name = signal.Signals(signal_number).name
+    except ValueError:
+        signal_name = f"SIG{signal_number}"
+    details = {
+        "signal_number": signal_number,
+        "signal_name": marker.get("signal_name") or signal_name,
+        "task_id": task_id,
+        "elapsed_seconds": elapsed_seconds,
+        "turn_state": marker.get("turn_state")
+        or meta.get("triage_phase")
+        or "interrupted",
+    }
+    for key in ("child_exit_code", "child_signal_number"):
+        if key in marker:
+            details[key] = marker[key]
+    return details
+
+
+def _worker_exit_details(
+    task_id: str, retcode: int | None, meta: dict[str, Any], now: int
+) -> dict[str, Any]:
+    """Describe an observed exit even when its terminating signal is unknown."""
+    try:
+        elapsed_seconds = max(0, now - int(meta.get("started_at", now)))
+    except (TypeError, ValueError):
+        elapsed_seconds = 0
+    return {
+        "signal_number": "unknown",
+        "signal_name": "unknown",
+        "task_id": task_id,
+        "elapsed_seconds": elapsed_seconds,
+        "turn_state": meta.get("triage_phase") or "worker_running",
+        "exit_code": retcode,
+    }
+
+
+def _has_unfinished_worker_turn(assignee: str, meta: dict[str, Any]) -> bool:
+    """Detect a clean process exit that left its persisted one-shot turn unfinished."""
+    session_id = meta.get("session_id")
+    if not session_id:
+        sessions = meta.get("sessions")
+        if isinstance(sessions, list):
+            session_id = next(
+                (
+                    session.get("session_id")
+                    for session in reversed(sessions)
+                    if isinstance(session, dict) and session.get("status") == "ongoing"
+                ),
+                None,
+            )
+    if not session_id:
+        # Exit 0 is not proof of a completed turn when Hermes did not persist
+        # the short-lived session link. Retry rather than packaging a possible
+        # signal-interrupted worker.
+        return True
+    try:
+        dispatcher = _d()
+        if dispatcher is None:
+            return True
+        state_db = dispatcher.resolve_profile_state_db(assignee)
+        if not state_db or not state_db.is_file():
+            return True
+        uri = state_db.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=2.0) as conn:
+            columns = {info[1] for info in conn.execute("PRAGMA table_info(messages)")}
+            has_finish_reason = "finish_reason" in columns
+            fields = "role, finish_reason" if has_finish_reason else "role"
+            row = conn.execute(
+                f"SELECT {fields} FROM messages "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return True
+        # Older profile databases may not expose finish_reason. Fail closed for
+        # an exit-0 worker with a persisted session rather than packaging a turn
+        # whose completion cannot be established.
+        return row[0] != "assistant" or not has_finish_reason or row[1] != "stop"
+    except (OSError, sqlite3.Error, ValueError):
+        return True
+
+
+def _record_worker_exit(
+    cursor: sqlite3.Cursor, details: dict[str, Any], now: int
+) -> None:
+    """Persist worker exit diagnostics to task activity and the worker log."""
+    interrupted = isinstance(details.get("signal_number"), int)
+    action = "worker_signal_interrupted" if interrupted else "worker_exit_observed"
+    child_status = (
+        f"; child_exit_code={details['child_exit_code']} "
+        f"child_signal_number={details.get('child_signal_number')}"
+        if "child_exit_code" in details
+        else ""
+    )
+    message = ("Worker interrupted: " if interrupted else "Worker exited: ") + (
+        f"signal_number={details['signal_number']} "
+        f"signal_name={details['signal_name']} "
+        f"task_id={details['task_id']}; elapsed_seconds={details['elapsed_seconds']}; "
+        f"turn_state={details['turn_state']}; exit_code={details.get('exit_code')}"
+        f"{child_status}"
+    )
+    cursor.execute(
+        "INSERT INTO task_activity (task_id, actor, action, details, created_at) "
+        "VALUES (?, 'dispatcher', ?, ?, ?)",
+        (details["task_id"], action, message, now),
+    )
+    try:
+        log_path = _worker_log_path(details["task_id"])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"{message}\n")
+    except OSError as exc:
+        _log.debug(
+            "Could not append worker exit details for %s: %s",
+            details["task_id"],
+            exc,
+        )
 
 
 _APPROVAL_FAILURE_MARKERS = (
@@ -290,6 +447,43 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 retcode = file_rc
 
         if retcode is not None:
+            if consume_deliberate_stop(task_id, pid):
+                _active_workers.pop(task_id, None)
+                _record_deliberate_stop(
+                    cursor,
+                    task_id,
+                    pid,
+                    meta,
+                    now,
+                    f"exit code {retcode}",
+                    retcode,
+                )
+                reaped += 1
+                continue
+            signal_details = _worker_signal_details(task_id, retcode, meta, now)
+            unfinished_session = (
+                retcode == 0
+                and signal_details is None
+                and _has_unfinished_worker_turn(curr_asgn, meta)
+            )
+            exit_details = signal_details or (
+                _worker_exit_details(task_id, retcode, meta, now)
+                if retcode != 0 or unfinished_session
+                else None
+            )
+            if exit_details:
+                if unfinished_session:
+                    exit_details["turn_state"] = "unfinished_session"
+                exit_details["exit_code"] = retcode
+                _record_worker_exit(cursor, exit_details, now)
+            if unfinished_session:
+                # A signal handler may hard-exit with status 0 after flushing an
+                # incomplete turn. Treat that as worker failure, not packaging.
+                retcode = 1
+            if signal_details and retcode == 0:
+                # Hermes' kanban signal handler exits 0; never treat that
+                # interrupted turn as successful completion/packaging.
+                retcode = 128 + int(signal_details["signal_number"])
             _active_workers.pop(task_id, None)
             cleanup_process_artifacts(task_id)
             if retcode == 0:
@@ -418,12 +612,6 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                 )
                 t_check = cursor.fetchone()
                 curr_stat = t_check["status"] if t_check else row_status
-                if consume_deliberate_stop(task_id, pid):
-                    _record_deliberate_stop(
-                        cursor, task_id, pid, meta, now, f"exit code {retcode}"
-                    )
-                    reaped += 1
-                    continue
                 if curr_stat in ("todo", "done"):
                     meta = _d()._mark_task_session_ended(meta, now, "finished")
                     cursor.execute(
@@ -571,6 +759,20 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                     "reason": "PID not found",
                     "failed_at": now,
                 }
+                signal_details = _worker_signal_details(task_id, None, meta, now)
+                exit_details = signal_details or _worker_exit_details(
+                    task_id, None, meta, now
+                )
+                _record_worker_exit(cursor, exit_details, now)
+                signal_context = (
+                    f"signal_number={signal_details['signal_number']} "
+                    f"task_id={task_id} elapsed_seconds={signal_details['elapsed_seconds']} "
+                    f"turn_state={signal_details['turn_state']}"
+                    if signal_details
+                    else f"signal_number=unknown task_id={task_id} "
+                    f"elapsed_seconds={exit_details['elapsed_seconds']} "
+                    f"turn_state={exit_details['turn_state']}"
+                )
                 max_worker_retries = _d().get_max_worker_retries()
                 if fail_retries >= max_worker_retries:
                     reason = (
@@ -609,7 +811,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'worker_failed_permanently', ?, ?)",
                         (
                             task_id,
-                            f"Worker process PID {pid} not found ({fail_retries}/{max_worker_retries} retries exceeded); task permanently blocked",
+                            f"Worker process PID {pid} not found ({fail_retries}/{max_worker_retries} retries exceeded); task permanently blocked; {signal_context}",
                             now,
                         ),
                     )
@@ -638,7 +840,7 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
                         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'worker_lost', ?, ?)",
                         (
                             task_id,
-                            f"Worker process PID {pid} not found (attempt {fail_retries}/{max_worker_retries}); queued for retry",
+                            f"Worker process PID {pid} not found (attempt {fail_retries}/{max_worker_retries}); queued for retry; {signal_context}",
                             now,
                         ),
                     )
@@ -713,6 +915,13 @@ def reap_active_workers(cursor: sqlite3.Cursor, now: int) -> int:
 
         if is_stuck:
             _d().terminate_worker_process(proc, pid, task_id=task_id)
+            signal_retcode = proc.poll() if proc is not None else None
+            signal_details = _worker_signal_details(task_id, signal_retcode, meta, now)
+            exit_details = signal_details or _worker_exit_details(
+                task_id, signal_retcode, meta, now
+            )
+            exit_details["exit_code"] = signal_retcode
+            _record_worker_exit(cursor, exit_details, now)
             _active_workers.pop(task_id, None)
             meta = _d()._mark_task_session_ended(meta, now, "timed_out")
             fail_retries = int(meta.get("worker_failure_retries", 0)) + 1
@@ -1030,6 +1239,19 @@ def reap_stuck_tasks(
                             _meta = _parse_task_metadata(
                                 _row["metadata"] if _row is not None else None
                             )
+                            signal_details = _worker_signal_details(
+                                t_id,
+                                proc.poll() if proc is not None else None,
+                                _meta,
+                                now,
+                            )
+                            exit_details = signal_details or _worker_exit_details(
+                                t_id,
+                                proc.poll() if proc is not None else None,
+                                _meta,
+                                now,
+                            )
+                            _record_worker_exit(cursor, exit_details, now)
                             _meta["blocked_reason"] = reason
                             _meta["blocked_reason_type"] = "stuck"
                             _meta = _d()._mark_task_session_ended(

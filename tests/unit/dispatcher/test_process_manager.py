@@ -19,10 +19,12 @@ from dispatcher.process_manager import (
     build_shell_wrapper,
     cleanup_process_artifacts,
     get_exit_file_path,
+    get_signal_file_path,
     get_process_exit_code,
     inspect_process_identity,
     is_pid_alive,
     process_matches_identity,
+    read_worker_signal,
     stop_task_worker,
     terminate_process_group,
     terminate_task_worker,
@@ -104,7 +106,7 @@ def test_process_matches_identity_requires_task_specific_marker():
 
 
 def test_process_matches_identity_accepts_real_worker_prefix_and_scanner_exit_path():
-    """Recognize production wrapper argv for workers and scanner artifacts."""
+    """Recognize production supervisor argv for workers and scanner artifacts."""
     for task_id, suffix in (("task-123", ""), ("scanner_board-a", ".exit")):
         posix, procfs = _procfs_host()
         with (
@@ -113,8 +115,8 @@ def test_process_matches_identity_accepts_real_worker_prefix_and_scanner_exit_pa
             patch(
                 "pathlib.Path.read_bytes",
                 return_value=(
-                    f"sh\0-c\0script\0zf-runner\0/logs/worker_{task_id}{suffix}\0"
-                    "hermes\0"
+                    f"python\0/dispatcher/_worker_wrapper.py\0/logs/worker_{task_id}{suffix}\0"
+                    "hermes\0-p\0zf-builder\0"
                 ).encode(),
             ),
         ):
@@ -272,20 +274,16 @@ def test_stop_task_worker_falls_back_to_db_metadata():
 
 
 def test_build_shell_wrapper():
-    """Verify build_shell_wrapper sets up POSIX script, shift, and exit code trapping."""
+    """Both platforms use the Python supervisor and preserve the command argv."""
     cmd = ["hermes", "-p", "zf-builder", "chat"]
     exit_prefix = "/tmp/test_exit"
     with patch("dispatcher.process_manager.IS_WINDOWS", False):
         wrapped = build_shell_wrapper(cmd, exit_prefix)
 
-    assert wrapped[0] == "sh"
-    assert wrapped[1] == "-c"
-    assert 'prefix="$1"; shift;' in wrapped[2]
-    assert "printf" in wrapped[2]
-    assert "${prefix}.exit" in wrapped[2]
-    assert wrapped[3] == "zf-runner"
-    assert wrapped[4] == exit_prefix
-    assert wrapped[5:] == cmd
+    wrapper_py = Path(sys.modules["dispatcher.process_manager"].__file__).with_name(
+        "_worker_wrapper.py"
+    )
+    assert wrapped == [sys.executable, str(wrapper_py), exit_prefix, *cmd]
 
 
 def test_build_shell_wrapper_windows():
@@ -315,9 +313,9 @@ def test_process_matches_identity_rejects_generic_hermes_process():
 
 
 def test_process_matches_identity_accepts_wrapped_scanner():
-    """The shell wrapper's exit path carries the scanner-specific identity."""
+    """The Python supervisor argv carries the scanner-specific identity."""
     cmdline = (
-        b"sh\0-c\0trap ...\0zf-runner\0/home/test/.hermes/logs/"
+        b"python\0/dispatcher/_worker_wrapper.py\0/home/test/.hermes/logs/"
         b"worker_scanner_board-a.exit\0/usr/bin/hermes\0"
     )
     posix, procfs = _procfs_host()
@@ -407,7 +405,7 @@ def test_get_process_exit_code_crashed(tmp_path):
 
 
 def test_cleanup_process_artifacts(tmp_path):
-    """Verify cleanup_process_artifacts removes both .exit and .exit.tmp."""
+    """Verify cleanup removes both exit and signal marker artifacts."""
     task_id = "task-cleanup-123"
     exit_file = tmp_path / f"worker_{task_id}.exit"
     tmp_file = tmp_path / f"worker_{task_id}.exit.tmp"
@@ -422,10 +420,14 @@ def test_cleanup_process_artifacts(tmp_path):
         logs_dir.mkdir(parents=True, exist_ok=True)
         (logs_dir / f"worker_{task_id}.exit").write_text("0")
         (logs_dir / f"worker_{task_id}.exit.tmp").write_text("0")
+        (logs_dir / f"worker_{task_id}.signal").write_text("{}")
+        (logs_dir / f"worker_{task_id}.signal.tmp").write_text("{}")
 
         cleanup_process_artifacts(task_id)
         assert not (logs_dir / f"worker_{task_id}.exit").exists()
         assert not (logs_dir / f"worker_{task_id}.exit.tmp").exists()
+        assert not (logs_dir / f"worker_{task_id}.signal").exists()
+        assert not (logs_dir / f"worker_{task_id}.signal.tmp").exists()
 
 
 def test_terminate_task_worker_stops_real_wrapped_worker_and_cleans_artifacts(
@@ -552,6 +554,179 @@ def test_terminate_task_worker_preserves_best_effort_without_procfs(
     assert not tmp_file.exists()
     marker = tmp_path / "dispatcher.lock.stops" / f"{task_id}.stop"
     assert marker.read_text().strip() == "9876"
+
+
+def test_stop_task_worker_skips_recycled_pid():
+    """A live PID with a mismatched task marker must not receive a signal."""
+    with (
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch(
+            "dispatcher.process_manager.inspect_process_identity", return_value=False
+        ),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+        patch("dispatcher.process_manager.cleanup_process_artifacts"),
+    ):
+        stop_task_worker("task-old", pid=9876)
+        mock_term.assert_not_called()
+
+
+def test_stop_task_worker_skips_dead_pid_before_signaling():
+    """A PID that died before stop cannot be signaled after possible reuse."""
+    with (
+        patch("dispatcher.process_manager.is_pid_alive", return_value=False),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+        patch("dispatcher.process_manager.cleanup_process_artifacts"),
+    ):
+        stop_task_worker("task-old", pid=9876)
+        mock_term.assert_not_called()
+
+
+def test_terminate_worker_process_skips_recycled_pid():
+    """Worker process-group termination validates identity before signaling."""
+    with (
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch(
+            "dispatcher.process_manager.inspect_process_identity", return_value=False
+        ),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+    ):
+        terminate_worker_process(None, 9876, task_id="task-old")
+        mock_term.assert_not_called()
+
+
+def test_terminate_task_worker_skips_recycled_pid():
+    """Direct task termination shares the same fail-closed identity guard."""
+    with (
+        patch("dispatcher.process_manager.is_pid_alive", return_value=True),
+        patch(
+            "dispatcher.process_manager.inspect_process_identity", return_value=False
+        ),
+        patch("dispatcher.process_manager.terminate_process_group") as mock_term,
+        patch("dispatcher.process_manager.cleanup_process_artifacts"),
+    ):
+        terminate_task_worker("task-old", 9876)
+        mock_term.assert_not_called()
+
+
+def test_read_worker_signal_validates_task_and_payload(tmp_path):
+    """Only a valid marker for the requested task is accepted."""
+    signal_file = tmp_path / "worker_task-1.signal"
+    with patch(
+        "dispatcher.process_manager.get_signal_file_path", return_value=signal_file
+    ):
+        signal_file.write_text(
+            '{"signal_number":15,"signal_name":"SIGTERM","task_id":"task-1",'
+            '"elapsed_seconds":16,"turn_state":"interrupted"}'
+        )
+        marker = read_worker_signal("task-1")
+        assert marker is not None
+        assert marker["signal_number"] == 15
+
+        signal_file.write_text('{"signal_number":15,"task_id":"other"}')
+        assert read_worker_signal("task-1") is None
+
+        signal_file.write_text('{"signal_number":true,"task_id":"task-1"}')
+        assert read_worker_signal("task-1") is None
+
+
+def test_shell_wrapper_records_signal_and_nonzero_exit(tmp_path):
+    """Group SIGINT waits for child teardown and preserves its SIGKILL status."""
+    if os.name == "nt":
+        return
+    task_id = "task-signal"
+    exit_prefix = tmp_path / f"worker_{task_id}"
+    ready_file = tmp_path / "ready"
+    log_path = tmp_path / "worker.log"
+    child_code = (
+        "import os, pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+    )
+    cmd = [sys.executable, "-c", child_code, str(ready_file)]
+    with log_path.open("wb") as log_file:
+        proc = subprocess.Popen(
+            build_shell_wrapper(cmd, exit_prefix),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            for _ in range(100):
+                if ready_file.exists():
+                    break
+                if proc.poll() is not None:
+                    raise AssertionError("wrapper exited before test command was ready")
+                time.sleep(0.01)
+            assert ready_file.exists()
+            child_pid = int(ready_file.read_text())
+            os.killpg(proc.pid, signal.SIGINT)
+            assert proc.wait(timeout=5) == 130
+            with pytest.raises(ProcessLookupError):
+                os.kill(child_pid, 0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    marker = json.loads(exit_prefix.with_suffix(".signal").read_text())
+    assert marker == {
+        "signal_number": 2,
+        "signal_name": "SIGINT",
+        "task_id": task_id,
+        "elapsed_seconds": marker["elapsed_seconds"],
+        "turn_state": "interrupted",
+        "child_exit_code": -9,
+        "child_signal_number": 9,
+    }
+    assert int(exit_prefix.with_suffix(".exit").read_text()) == 130
+    assert b"task_id=task-signal" in log_path.read_bytes()
+    assert marker["elapsed_seconds"] >= 0
+
+
+def test_supervisor_records_child_only_sigkill_status(tmp_path):
+    """A child-only SIGKILL survives the wrapper as signal 9, not unknown/137."""
+    if os.name == "nt":
+        pytest.skip("POSIX child wait statuses are required")
+    prefix = tmp_path / "worker_child-killed"
+    ready = tmp_path / "child-pid"
+    command = [
+        sys.executable,
+        "-c",
+        "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(__import__('os').getpid())); time.sleep(30)",
+        str(ready),
+    ]
+    proc = subprocess.Popen(
+        build_shell_wrapper(command, prefix), start_new_session=True
+    )
+    try:
+        for _ in range(200):
+            if ready.exists():
+                break
+            time.sleep(0.01)
+        assert ready.exists()
+        os.kill(int(ready.read_text()), signal.SIGKILL)
+        assert proc.wait(timeout=5) == 137
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    marker = json.loads(prefix.with_suffix(".signal").read_text())
+    assert marker["signal_number"] == 9
+    assert marker["task_id"] == "child-killed"
+    assert int(prefix.with_suffix(".exit").read_text()) == 137
+
+
+def test_shell_wrapper_preserves_normal_nonzero_exit(tmp_path):
+    """The wrapper must not turn an ordinary command failure into success."""
+    exit_prefix = tmp_path / "worker_task-failed"
+    result = subprocess.run(
+        build_shell_wrapper(["sh", "-c", "exit 17"], exit_prefix),
+        check=False,
+        timeout=5,
+    )
+    assert result.returncode == 17
+    assert exit_prefix.with_suffix(".exit").read_text() == "17\n"
+    assert not exit_prefix.with_suffix(".signal").exists()
 
 
 def test_terminate_task_worker_skips_pid_for_another_task():
