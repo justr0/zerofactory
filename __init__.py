@@ -199,6 +199,7 @@ try:
         run_dispatch_cycle,
         start_background_dispatcher,
     )
+    from .dispatcher.worker_handoff import resolve_worker_execution_id
 except ImportError:
     from dispatcher import (  # type: ignore
         dispatcher_owned_elsewhere,
@@ -206,6 +207,7 @@ except ImportError:
         run_dispatch_cycle,
         start_background_dispatcher,
     )
+    from dispatcher.worker_handoff import resolve_worker_execution_id  # type: ignore
 
 try:
     from .dashboard.routes.cron import (
@@ -643,6 +645,13 @@ def register(ctx: Any):
             "--actor",
             default=None,
             help="Actor executing move (defaults to HERMES_PROFILE or 'user')",
+        )
+        p_move.add_argument(
+            "--execution-id",
+            default=None,
+            help="Handoff token of the dispatch reporting (ZEROFACTORY_WORKER_EXECUTION_ID "
+            "in the worker prompt); defaults to the env variable, then to the token of "
+            "this session's latest dispatch",
         )
 
         # update
@@ -1376,7 +1385,9 @@ def register(ctx: Any):
                 actor=actor,
                 reason=reason,
                 assignee=assignee,
-                worker_execution_id=os.environ.get("ZEROFACTORY_WORKER_EXECUTION_ID"),
+                worker_execution_id=resolve_worker_execution_id(
+                    getattr(args, "execution_id", None), actor=actor
+                ),
             )
             res = _move_task(args.task_id, req)
             if res.get("ignored"):

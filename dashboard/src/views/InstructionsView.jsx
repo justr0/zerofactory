@@ -1066,7 +1066,7 @@ export function InstructionsView({ instructionTab, setInstructionTab, setActiveV
             { cmd: "hermes zerofactory approve <task_id> [--split]", desc: "Approve triage specification and promote/split to Todo" },
             { cmd: "hermes zerofactory reject <task_id> --feedback \"...\"", desc: "Request spec revision back to zf-orchestrator" },
             { cmd: "hermes zerofactory split <task_id> [--repos api,web]", desc: "Decompose multi-repo triage into sibling Todo tasks" },
-            { cmd: "hermes zerofactory move <task_id> running", desc: "Transition ticket status; agent running/done reports are bound to the current dispatcher execution" },
+            { cmd: "hermes zerofactory move <task_id> running", desc: "Transition ticket status; agent running/done reports are bound to the current dispatch token, resolved from --execution-id, ZEROFACTORY_WORKER_EXECUTION_ID, or the agent session's dispatch header" },
             { cmd: "hermes zerofactory recover <task_id> [--guidance \"...\"]", desc: "Recover stuck task to Todo with builder advice" },
             { cmd: "hermes zerofactory report-bug --task <task_id> --title \"...\"", desc: "Report internal Zero Factory defect to GitHub issues" },
             { cmd: "hermes zerofactory block <task_id> --reason \"<reason>\"", desc: "Mark ticket as blocked with explanation" },

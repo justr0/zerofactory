@@ -2442,7 +2442,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory move <task_id> running",
-							desc: "Transition ticket status; agent running/done reports are bound to the current dispatcher execution"
+							desc: "Transition ticket status; agent running/done reports are bound to the current dispatch token, resolved from --execution-id, ZEROFACTORY_WORKER_EXECUTION_ID, or the agent session's dispatch header"
 						},
 						{
 							cmd: "hermes zerofactory recover <task_id> [--guidance \"...\"]",
