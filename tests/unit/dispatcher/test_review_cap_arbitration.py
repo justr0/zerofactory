@@ -56,8 +56,8 @@ def _iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _key(task_id: str, head: str = HEAD) -> str:
-    return arb.request_key(task_id, head)
+def _key(task_id: str, head: str = HEAD, attempt: int = 1) -> str:
+    return arb.request_key(task_id, head, attempt)
 
 
 def _verdict_body(
@@ -340,7 +340,7 @@ class TestWireFormat:
         )
         assert state["status"] == arb.STATUS_REQUESTED
         assert state["request_head"] == HEAD
-        assert state["request_key"] == "arbitration:t1:" + HEAD
+        assert state["request_key"] == _key("t1")  # task + head + attempt
         # A task never has two live requests.
         assert (
             arb.build_arbitration_request(
@@ -373,7 +373,8 @@ class TestWireFormat:
         settled = {**first, "status": arb.STATUS_ESCALATED}
         second = build({arb.STATE_KEY: settled}, 200, HEAD_2)
         assert second["attempts"] == 2
-        assert second["request_key"] == _key("t1", HEAD_2)
+        assert second["request_key"] == _key("t1", HEAD_2, attempt=2)
+        assert second["request_key"] != first["request_key"]
         assert build({arb.STATE_KEY: second}, 300, HEAD_3) is None
 
     def test_settings_come_from_env_like_max_review_rounds(self):
@@ -490,6 +491,67 @@ class TestWireFormat:
             "pr-closed",
             "k",
         )
+
+
+def _builder_exits(db_path: Path, task_id: str) -> None:
+    """The builder has committed its fix and its worker exited cleanly: the
+    reaper stamps awaiting_pr, so the next cycle packages the fix commit."""
+    from dispatcher.config import _active_workers
+    from dispatcher.reaper import reap_active_workers
+
+    now = int(time.time())
+    meta = _meta(db_path, task_id)
+    meta.update(
+        worker_pid=4321,
+        session_id="sess-fix",
+        started_at=now - 60,
+        sessions=[
+            {"session_id": "sess-fix", "status": "ongoing", "started_at": now - 60}
+        ],
+    )
+    _update_task(
+        db_path,
+        task_id,
+        status="running",
+        assignee="zf-builder",
+        meta=meta,
+        workspace=str(_managed_workspace(db_path.parent, task_id)),
+    )
+    worker = MagicMock()
+    worker.pid = 4321
+    worker.poll.return_value = 0
+    _active_workers[task_id] = worker
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            assert reap_active_workers(conn.cursor(), now=now) == 1
+            conn.commit()
+    finally:
+        _active_workers.pop(task_id, None)
+    assert _meta(db_path, task_id)["awaiting_pr"] is True
+
+
+def _packaged_fix() -> tuple[list[str], MagicMock]:
+    """``_package_and_open_pr``'s tail - PR synced, task routed to the reviewer
+    (commit/push/gh are outside the tests' GitHub boundary) - and the list of
+    task ids it packaged."""
+    calls: list[str] = []
+    package = MagicMock()
+
+    def _tail(conn, cursor, row, meta, workspace_path, *args, **kwargs):
+        calls.append(row["id"])
+        for key in ("awaiting_pr", "worker_pid", "session_id", "started_at"):
+            meta.pop(key, None)
+        meta["packaged_by"] = "zf-builder"
+        cursor.execute(
+            "UPDATE tasks SET assignee = 'zf-reviewer', pr_url = ?, status = 'todo', metadata = ? WHERE id = ?",
+            (PR, json.dumps(meta), row["id"]),
+        )
+        conn.commit()
+        return True
+
+    package.side_effect = _tail
+    return calls, package
 
 
 def _find(
@@ -868,11 +930,15 @@ class TestRequestPosting:
             "author": ALLOWED,
             "created_at": None,
             "adopted": False,
+            "timestamp_pending": True,
         }
-        assert run.call_count == 1
+        # The POST, then the by-id lookup for the comment's own timestamp.
+        assert run.call_count == 2
         assert calls[0][:4] == ["gh", "pr", "comment", PR]
         # Reconciled against GitHub before and after the POST.
-        assert fetch.call_count == 2
+        # The thread is read before the POST only: a successful POST names
+        # its own comment (the cycle tests follow that id).
+        assert fetch.call_count == 1
         sent = Path(calls[0][calls[0].index("--body-file") + 1])
         assert not sent.exists()  # temp body file cleaned up
 
@@ -921,7 +987,8 @@ class TestRequestPosting:
             "comment_id": "issue_900",
             "author": ALLOWED,
             "created_at": _NOW - 60,
-            "adopted": True,
+            # Read back after this call's own POST: a first post, not an adoption.
+            "adopted": False,
         }
         assert run.call_count == 1
 
@@ -990,6 +1057,20 @@ class TestFixRoundBrief:
         assert arb.fix_round_brief({arb.STATE_KEY: {"status": "fix-requested"}}) is None
         assert arb.fix_round_brief({}) is None
         assert arb.fix_round_brief(None) is None
+
+    def test_an_approval_counts_only_from_the_current_head(self):
+        """The latest approving review's commit, as ``gh pr view`` reports it
+        (an ``oid`` object, or a bare SHA), decides; nothing else is one."""
+        on_head = arb.approval_on_head
+        late = {"state": "APPROVED", "commit": {"oid": HEAD}}
+        assert on_head([{"state": "COMMENTED", "commit": {"oid": HEAD_2}}, late], HEAD)
+        assert on_head([{"state": "APPROVED", "commit": HEAD_2}], HEAD_2)
+        assert not on_head([late], HEAD_2)
+        assert not on_head(
+            [late, {"state": "CHANGES_REQUESTED", "commit": HEAD_2}], HEAD_2
+        )
+        assert not on_head([{"state": "APPROVED"}], HEAD)
+        assert not on_head(None, HEAD) and not on_head([], HEAD)
 
 
 class TestConversationPagination:
@@ -1122,26 +1203,54 @@ class TestArbitrationCycle:
         unset=(),
         package=None,
         arbiter_available=True,
+        review_decision="CHANGES_REQUESTED",
+        reviews=None,
+        thread_unknown=False,
+        issue_comment_api: list | None = None,
+        thread_calls: list | None = None,
     ) -> SimpleNamespace:
         """Drive ``run_dispatch_cycle`` with gh, the GitHub comment fetch and the
         worktree helpers stubbed. ``conversation`` is what the paginated
         conversation fetch returns (default: the raw form of ``comments``);
-        ``package`` replaces ``_package_and_open_pr`` (the commit/push/reviewer
-        handoff boundary)."""
+        ``thread_unknown`` makes that fetch fail (None) instead;
+        ``issue_comment_api`` is the sequence of ``(returncode, stdout)`` answers
+        the by-id comment lookup (``gh api .../issues/comments/<id>``) gives, one
+        per call, the last one repeating; default: the API is unavailable;
+        ``thread_calls`` is what the thread reads inside ``post_arbitration_request``
+        itself return, in call order (the last repeating; None = unreadable);
+        ``reviews`` is the PR's review list as ``gh pr view`` reports it (default:
+        one approving review on ``head`` when the decision reads APPROVED, none
+        otherwise); ``package`` replaces ``_package_and_open_pr`` (the
+        commit/push/reviewer handoff boundary)."""
         lock_file = db_path.parent / "dispatcher.lock"
         fake_pr_data = {
             "state": pr_state,
-            "reviewDecision": "CHANGES_REQUESTED",
+            "reviewDecision": review_decision,
             "url": PR,
             "mergeable": mergeable,
             "headRefOid": head,
+            "reviews": reviews
+            if reviews is not None
+            else [{"state": "APPROVED", "commit": {"oid": head}}]
+            * (review_decision == "APPROVED"),
         }
         gh_calls: list[list[str]] = []
+        issue_api = list(issue_comment_api or [])
+        arb_reads = list(thread_calls or [])
+
+        def arb_thread(*_args, **_kwargs):
+            return arb_reads[0] if len(arb_reads) < 2 else arb_reads.pop(0)
 
         def fake_subprocess_run(cmd, *args, **kwargs):
             if "view" in cmd:
                 return MagicMock(returncode=0, stdout=json.dumps(fake_pr_data))
             gh_calls.append(list(cmd))
+            if any("issues/comments/" in str(part) for part in cmd):
+                rc, out = issue_api.pop(0) if issue_api else (1, "")
+                return MagicMock(returncode=rc, stdout=out)
+            if "comment" in cmd:
+                # `gh pr comment` prints the new comment's URL.
+                return MagicMock(returncode=0, stdout=f"{PR}#issuecomment-9001\n")
             # git lookups run against a plain temp dir: not a repository.
             return MagicMock(returncode=1 if cmd and cmd[0] == "git" else 0, stdout="")
 
@@ -1206,18 +1315,20 @@ class TestArbitrationCycle:
                     dispatcher, "fetch_pr_review_comments", return_value=list(comments)
                 )
             )
+            thread = None if thread_unknown else list(conversation)
             stack.enter_context(
                 patch.object(
                     dispatcher,
                     "fetch_pr_conversation_comments",
-                    return_value=list(conversation),
+                    return_value=thread,
                 )
             )
             stack.enter_context(
                 patch.object(
                     arb,
                     "fetch_pr_conversation_comments",
-                    return_value=list(conversation),
+                    side_effect=arb_thread if arb_reads else None,
+                    return_value=thread,
                 )
             )
             stack.enter_context(
@@ -1507,59 +1618,16 @@ class TestArbitrationCycle:
         row = _row(db_path, task_id)
         assert (row["status"], row["assignee"]) == ("running", "zf-builder")
 
-        # The builder commits the fix and its worker exits cleanly: the reaper
-        # stamps awaiting_pr, and the next cycle packages the fix commit (push,
-        # PR sync, reviewer handoff) - i.e. re-review is dispatched for the task.
-        from dispatcher.config import _active_workers
-        from dispatcher.reaper import reap_active_workers
-
-        now = int(time.time())
-        meta = _meta(db_path, task_id)
-        meta.update(
-            worker_pid=4321,
-            session_id="sess-fix",
-            started_at=now - 60,
-            sessions=[
-                {"session_id": "sess-fix", "status": "ongoing", "started_at": now - 60}
-            ],
+        # The builder commits the fix and its worker exits cleanly: the next
+        # cycle packages the fix commit (push, PR sync, reviewer handoff) -
+        # i.e. re-review is dispatched for the task.
+        _builder_exits(db_path, task_id)
+        assert (
+            _meta(db_path, task_id)[arb.STATE_KEY]["status"] == arb.STATUS_FIX_REQUESTED
         )
-        _update_task(
-            db_path,
-            task_id,
-            status="running",
-            assignee="zf-builder",
-            meta=meta,
-            workspace=str(_managed_workspace(db_path.parent, task_id)),
-        )
-        worker = MagicMock()
-        worker.pid = 4321
-        worker.poll.return_value = 0
-        _active_workers[task_id] = worker
-        try:
-            with sqlite3.connect(str(db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                assert reap_active_workers(conn.cursor(), now=now) == 1
-                conn.commit()
-        finally:
-            _active_workers.pop(task_id, None)
-        meta = _meta(db_path, task_id)
-        assert meta["awaiting_pr"] is True
-        assert meta[arb.STATE_KEY]["status"] == arb.STATUS_FIX_REQUESTED
 
-        pkg_calls: list[str] = []
-
-        def fake_package(conn, cursor, row, meta, workspace_path, *args, **kwargs):
-            """The real packaging's tail: PR synced, task routed to the reviewer
-            (commit/push/gh are outside this test's GitHub boundary)."""
-            pkg_calls.append(row["id"])
-            cursor.execute(
-                "UPDATE tasks SET assignee = 'zf-reviewer', pr_url = ?, status = 'todo' WHERE id = ?",
-                (PR, row["id"]),
-            )
-            conn.commit()
-            return True
-
-        second = self._run(db_path, [], conversation=[], package=fake_package)
+        pkg_calls, package = _packaged_fix()
+        second = self._run(db_path, [], conversation=[], package=package)
 
         assert pkg_calls == [task_id]
         second.post.assert_not_called()
@@ -2043,3 +2111,562 @@ class TestArbitrationCycle:
         self._assert_still_parked(db_path, task_id, arb.STATUS_REQUESTED)
         assert not _activities(db_path, task_id, "review_cap_arbitration_expired")
         result.post.assert_not_called()
+
+    def test_a_corrupt_attempt_counter_does_not_strand_the_task(self, tmp_path: Path):
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-corrupt"
+        self._seed_parked_with_request(
+            db_path, task_id, _parked_state(task_id, attempts="abc")
+        )
+        verdict = _std(540, _verdict_body("FIX", task_id))
+
+        self._run(db_path, [verdict])
+
+        settled = _meta(db_path, task_id)[arb.STATE_KEY]
+        assert settled["status"] == arb.STATUS_FIX_REQUESTED
+        assert settled["decision_comment_id"] == "issue_540"
+        (recorded,) = _activities(db_path, task_id, "review_cap_arbitration")
+        assert "Arbiter verdict FIX (attempt 0/2)" in recorded[0]
+
+    def test_a_standing_approval_does_not_close_the_unreviewed_fix_round(
+        self, tmp_path: Path
+    ):
+        """A real fix round, consumed from a verdict, with an approval standing
+        on the pre-fix head: across the pre-push packaging poll, and on the fix
+        commit itself once pushed, the round stays open - no reviewer has seen
+        the fix - so the builder's brief survives and nothing is parked for
+        merge on that approval."""
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-standing"
+        self._seed_parked_with_request(db_path, task_id)
+        self._run(db_path, [_std(501, _verdict_body("FIX", task_id))])
+        self._run(db_path, [], conversation=[])
+        _builder_exits(db_path, task_id)
+        pkg_calls, package = _packaged_fix()
+
+        # Pre-push: the head GitHub reports is the head the approval is on; the
+        # fix is still only in the worktree.
+        self._run(
+            db_path, [], conversation=[], review_decision="APPROVED", package=package
+        )
+
+        assert pkg_calls == [task_id]
+        meta = _meta(db_path, task_id)
+        assert arb.fix_round_closed_by(meta) is None
+        assert arb.fix_round_brief(meta) == arb.state_of(meta)["decision_body"]
+        assert "approved" not in {
+            a[0] for a in _activities(db_path, task_id, "pr_poll")
+        }
+        # Post-push: the fix is the head, the approval still answers the old one.
+        _update_task(
+            db_path,
+            task_id,
+            status="blocked",
+            assignee="zf-reviewer",
+            meta=meta,
+            workspace=str(_managed_workspace(db_path.parent, task_id)),
+        )
+        standing = [{"state": "APPROVED", "commit": {"oid": HEAD}}]
+        self._run(
+            db_path,
+            [],
+            conversation=[],
+            head=HEAD_2,
+            review_decision="APPROVED",
+            reviews=standing,
+        )
+        meta = _meta(db_path, task_id)
+        assert arb.fix_round_closed_by(meta) is None
+        assert (
+            arb.fix_round_brief(meta) and meta.get("blocked_reason_type") != "approved"
+        )
+        assert _row(db_path, task_id)["status"] == "blocked"  # not routed anywhere
+        # The reviewer approves the fix commit: that closes the round.
+        self._run(
+            db_path,
+            [],
+            conversation=[],
+            head=HEAD_2,
+            review_decision="APPROVED",
+            reviews=[{"state": "APPROVED", "commit": {"oid": HEAD_2}}],
+        )
+        assert arb.fix_round_closed_by(_meta(db_path, task_id)) == "approval"
+        assert arb.fix_round_brief(_meta(db_path, task_id)) is None
+
+    def test_recovery_after_an_approved_fix_round_keeps_the_closed_scope_out(
+        self, tmp_path: Path
+    ):
+        """A fix round the reviewer approved, then an operator recovery: the
+        builder's prompt carries the operator's guidance and the reviewer's live
+        feedback, and nothing of the closed verdict."""
+        from dashboard.models import TaskRecoverRequest
+        from dashboard.routes.tasks import recover_task
+
+        db_path = tmp_path / "test.db"
+        _init_db(db_path)
+        task_id = "t-arb-recovered"
+        self._seed_parked_with_request(db_path, task_id)
+        self._run(db_path, [_std(501, _verdict_body("FIX", task_id))])
+        self._run(db_path, [], conversation=[])
+        _builder_exits(db_path, task_id)
+        _, package = _packaged_fix()
+        self._run(db_path, [], conversation=[], package=package)
+        # The reviewer approved the fix as it reached review, and said one more
+        # thing about the new head; the operator then sends it back to build.
+        _update_task(
+            db_path,
+            task_id,
+            status="blocked",
+            assignee="human",
+            meta={
+                **_meta(db_path, task_id),
+                "blocked_reason_type": "approved",
+                "last_reviewed_commit": HEAD_2,
+            },
+            workspace=str(_managed_workspace(db_path.parent, task_id)),
+        )
+        self._run(db_path, [], conversation=[], head=HEAD_2)
+        assert arb.fix_round_closed_by(_meta(db_path, task_id)) == "approval"
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'zf-reviewer', ?, ?)",
+                (
+                    task_id,
+                    "[AI:zf-reviewer] [Reviewer Feedback] Rename the retry helper.",
+                    _NOW,
+                ),
+            )
+        with patch.dict(
+            os.environ,
+            {"ZEROFACTORY_DB": str(db_path), "ZEROFACTORY_SKIP_DISPATCHER": "1"},
+        ):
+            recover_task(
+                task_id,
+                TaskRecoverRequest(guidance="Keep the lock-free read.", actor="human"),
+            )
+
+        assert _row(db_path, task_id)["status"] == "todo"
+        prompt = _builder_prompt(db_path, task_id)
+        assert "Keep the lock-free read." in prompt
+        assert "Rename the retry helper." in prompt
+        assert "ARBITRATION VERDICT" not in prompt
+        assert "race in refresh()" not in prompt
+
+
+# --------------------------------------------------------------------------------------
+# Cycle: what a poll does with a parked task
+# --------------------------------------------------------------------------------------
+
+_CYCLE = TestArbitrationCycle()
+
+_PARKED = "t-park"
+# Times here follow the clock the cycle runs on, not _NOW: a verdict dated in
+# the future is ignored as such.
+_POSTED_AT = int(time.time()) - 1800
+# The request's earlier copy for the same attempt key: same key and head, posted
+# two hours before the comment this cycle's own POST names.
+_OLDER_AT = _POSTED_AT - 7200
+
+
+def _tag(db_path: Path, task_id: str, tags: str) -> None:
+    with sqlite3.connect(str(db_path)) as conn:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)")]
+        if "tags" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN tags TEXT")
+        conn.execute("UPDATE tasks SET tags = ? WHERE id = ?", (tags, task_id))
+
+
+_TWO_DAYS_AGO = int(time.time()) - 48 * 3600
+_OPEN_FIX_ROUND = dict(
+    status=arb.STATUS_FIX_REQUESTED,
+    decision=arb.VERDICT_FIX,
+    decision_body="1. race in refresh()",
+    decision_comment_id="issue_501",
+)
+# kind: (assignee, park code or None, at the review cap, arbitration-state
+# overrides, extra metadata). A fix-round seed also gets the FIX handoff note.
+_SEEDS = {
+    # The reviewer approved the fix commit of an arbitration FIX round through the
+    # CLI (``block --reason 'approved'``): parked, round still open.
+    "cli-approved": ("human", "approved", False, _OPEN_FIX_ROUND, None),
+    # ...or approved on the PR while the reviewer worker still holds the task.
+    "pr-approved": ("zf-reviewer", None, False, _OPEN_FIX_ROUND, None),
+    # A review-cap park: plain (arbitration off, spent or unavailable) ...
+    "cap": ("human", "human-gate", True, None, None),
+    # ... or waiting on a live request, fresh or long past its deadline.
+    "request": ("human", "human-gate", True, {}, None),
+    "request-old": ("human", "human-gate", True, {"requested_at": _TWO_DAYS_AGO}, None),
+    # The cap recurring on a head whose earlier attempt ended in FIX.
+    "fix-closed": (
+        "zf-reviewer",
+        "changes-requested",
+        False,
+        {**_OPEN_FIX_ROUND, "fix_round_closed_at": _NOW - 1800},
+        {"review_round": 1, "commit_review_count": 1},
+    ),
+    # A human HOLD that is not a review-cap park, and a stuck worker.
+    "hold": ("human", "human-gate", False, None, None),
+    "stuck": ("human", "stuck", False, None, None),
+}
+
+
+def _seed_park(
+    db_path: Path, task_id: str, kind: str, state_over: dict | None = None
+) -> None:
+    """A task parked ``blocked`` as ``kind`` describes it (see ``_SEEDS``);
+    ``state_over`` amends its arbitration state."""
+    assignee, park_type, at_cap, state, extra = _SEEDS[kind]
+    meta: dict = {
+        "last_reviewed_commit": HEAD,
+        "processed_review_comment_ids": [],
+        "packaged_by": "zf-builder",
+    }
+    if at_cap:
+        meta.update(
+            review_cap_reached=True,
+            review_round=2,
+            commit_review_count=2,
+            blocked_reason="Review cap reached (2 rounds on commit)",
+        )
+    if park_type:
+        meta["blocked_reason_type"] = park_type
+    meta.update(extra or {})
+    if state is not None:
+        meta[arb.STATE_KEY] = state = _parked_state(
+            task_id, **{**state, **(state_over or {})}
+        )
+    _seed(
+        db_path,
+        task_id,
+        meta,
+        assignee=assignee,
+        workspace=str(_managed_workspace(db_path.parent, task_id)),
+    )
+    if state and state.get("decision") == arb.VERDICT_FIX:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'zf-dispatcher', ?, ?)",
+                (
+                    task_id,
+                    "[AI:zf-dispatcher] Arbitration fix round (1/2): the arbiter's "
+                    "verdict below defines the scope of this round.\n\n"
+                    "=== ARBITRATION VERDICT: FIX ===\n"
+                    f"{state['decision_body']}",
+                    _NOW,
+                ),
+            )
+
+
+def _older_request_copy(**overrides) -> dict:
+    return _convo(
+        8999,
+        _request_body(_key(_PARKED)),
+        **{"created_at": _iso(_OLDER_AT), **overrides},
+    )
+
+
+_OLDER_DATED = _older_request_copy()
+_OLDER_UNDATED = _older_request_copy(created_at="")
+_ARB_OFF = {"ZEROFACTORY_REVIEW_CAP_ARBITRATION": "0"}
+# The dispatcher's request and a recorded verdict: the protocol's own comments on
+# the PR, never feedback about the change.
+_PROTOCOL = [
+    _std(1, _request_body(_key(_PARKED)), type_="issue_comment"),
+    _std(2, _verdict_body("FIX", _PARKED), type_="issue_comment"),
+]
+_OWN_REQUEST = _std(1, _request_body(_key(_PARKED)))
+# A genuine review that happens to open with the verdict words.
+_BUG_IN_VERDICT = _std(
+    77,
+    "Bug in ARBITRATION VERDICT: a fresh request can inherit the previous "
+    "deadline. The state must keep the comment id the POST returned.",
+)
+# Fresh reviewer feedback, and a plain PR comment a person left.
+_FEEDBACK = _std(900, "Still racy: two dispatch cycles overlap in refresh().")
+_FEEDBACK["state"] = "CHANGES_REQUESTED"
+_NOTE = _std(901, "Rebased main this morning; the conflict is expected.")
+
+# (park kind, reviewDecision, mergeable, PR comments (None: thread unreadable),
+#  automerge, outcome). "-off" outcomes run with arbitration disabled.
+_POLLS = [
+    ("cli-approved", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("cli-approved", "CHANGES_REQUESTED", "CONFLICTING", [], False, "held"),
+    ("cli-approved", "APPROVED", "MERGEABLE", [], True, "merged"),
+    ("cli-approved", "APPROVED", "CONFLICTING", [], True, "held"),
+    ("cli-approved", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "builder"),
+    ("pr-approved", "APPROVED", "MERGEABLE", [], False, "held"),
+    ("pr-approved", "APPROVED", "CONFLICTING", [], False, "held"),
+    ("pr-approved", "CHANGES_REQUESTED", "CONFLICTING", [], False, "conflict"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("cap", "APPROVED", "MERGEABLE", [], True, "held"),
+    ("cap", "APPROVED", "MERGEABLE", [], True, "held-off"),
+    ("cap", "CHANGES_REQUESTED", "CONFLICTING", [_NOTE], False, "conflict"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "arb"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "repark"),
+    ("cap", "CHANGES_REQUESTED", "CONFLICTING", _PROTOCOL, False, "held"),
+    ("cap", "CHANGES_REQUESTED", "MERGEABLE", [_BUG_IN_VERDICT], False, "arb"),
+    ("request", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("request", "CHANGES_REQUESTED", "MERGEABLE", [_OWN_REQUEST], False, "held"),
+    ("request", "CHANGES_REQUESTED", "MERGEABLE", [_BUG_IN_VERDICT], False, "held"),
+    ("request-old", "CHANGES_REQUESTED", "MERGEABLE", None, False, "held"),
+    ("hold", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "builder"),
+    ("stuck", "CHANGES_REQUESTED", "MERGEABLE", [], False, "held"),
+    ("stuck", "CHANGES_REQUESTED", "MERGEABLE", [_FEEDBACK], False, "builder"),
+]
+
+
+def _builder_prompt(db_path: Path, task_id: str) -> str:
+    """The real builder prompt for the task as it stands in ``db_path``."""
+    import dispatcher
+
+    mock_popen = MagicMock()
+    mock_popen.return_value = MagicMock(pid=1, poll=lambda: None)
+    with (
+        patch.object(
+            dispatcher, "check_unresolved_conflicts_safe", return_value=(True, [], "")
+        ),
+        patch("subprocess.Popen", mock_popen),
+        patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}),
+    ):
+        os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+        dispatcher.spawn_agent_worker(
+            task_id=task_id,
+            title="Fix Task",
+            description="desc",
+            priority="P1",
+            assignee="zf-builder",
+            workspace_path=os.getcwd(),
+            branch_name=f"task/{task_id}",
+            metadata=json.dumps({}),
+        )
+    return mock_popen.call_args[0][0][-1]
+
+
+@pytest.mark.parametrize(
+    ("kind", "decision", "mergeable", "comments", "automerge", "outcome"), _POLLS
+)
+def test_a_park_holds_until_new_feedback_arrives(
+    tmp_path, kind, decision, mergeable, comments, automerge, outcome
+):
+    """C2-C4, B1/B2, D2, E2: what a poll does with a parked task is decided by the
+    PR state, GitHub's decision and whether new feedback arrived - not by which
+    signal parked it. A quiet poll holds every decision-wait park: no builder, no
+    merge, no conflict routing, nothing expired. A reviewer's approval closes an
+    arbitration fix round before anything else can route, so no path hands the
+    closed verdict back to a builder's brief. New feedback - a review, a plain
+    note, a bug report that merely opens with the verdict words - ends the hold."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    _seed_park(db_path, _PARKED, kind)
+    if automerge:
+        _tag(db_path, _PARKED, '["automerge"]')
+
+    # A hold must survive being polled again; a route is settled in one cycle.
+    result = _CYCLE._run(
+        db_path,
+        comments or [],
+        review_decision=decision,
+        mergeable=mergeable,
+        env=_ARB_OFF if outcome in ("held-off", "repark") else None,
+        thread_unknown=comments is None,
+        cycles=2 if outcome.startswith("held") else 1,
+    )
+
+    row = _row(db_path, _PARKED)
+    meta = json.loads(row["metadata"])
+    state = meta.get(arb.STATE_KEY, {})
+    assert any("merge" in cmd for cmd in result.gh_calls) == (outcome == "merged")
+    assert result.conflict.call_count == (1 if outcome == "conflict" else 0)
+    # The fix round's handoff note stays on the task as history; nothing else
+    # is new unless the poll copied feedback there.
+    copies = _task_comments(db_path, _PARKED)
+    if outcome in ("builder", "arb", "repark"):
+        assert any(comments[0]["body"] in body for body in copies)
+    elif not kind.startswith("request"):
+        # A live request's poll records new comments for visibility only.
+        assert len(copies) == (1 if kind in ("cli-approved", "pr-approved") else 0)
+
+    if outcome == "builder":
+        # ... and routed as a new round. The re-queued builder is asked to do
+        # that work - not the verdict the reviewer already answered.
+        assert (row["status"], row["assignee"]) == ("todo", "zf-builder")
+        assert meta["review_round"] == 1
+        prompt = _builder_prompt(db_path, _PARKED)
+        assert "PULL REQUEST REVIEW COMMENTS TO ADDRESS" in prompt
+        assert comments[0]["body"] in prompt
+        assert "ARBITRATION VERDICT" not in prompt
+        assert "Arbitration fix round" not in prompt
+        return
+    if outcome == "merged":
+        assert row["status"] == "done"
+        return
+    if outcome == "arb":
+        assert result.post.call_count == 1
+        assert state["status"] == arb.STATUS_REQUESTED and state["attempts"] == 1
+    if outcome in ("arb", "repark"):
+        assert (row["status"], row["assignee"]) == ("blocked", "human")
+        assert meta["review_cap_reached"] is True
+        assert (meta["review_round"], meta["commit_review_count"]) == (3, 3)
+        return
+
+    # Held, or routed to the conflict flow: still parked, nothing spawned.
+    assert row["status"] == "blocked"
+    assert row["assignee"] == (
+        "human" if outcome.startswith("held") else _SEEDS[kind][0]
+    )
+    result.spawn.assert_not_called()
+    result.setup.assert_not_called()
+    if outcome == "conflict":
+        return
+    if kind in ("cli-approved", "pr-approved"):
+        # The approval closed the round before anything could route on it, and
+        # the conflicting PR neither requeued a builder nor merged.
+        assert (
+            state["fix_round_closed_at"] and state["fix_round_closed_by"] == "approval"
+        )
+        assert arb.fix_round_brief(meta) is None
+        assert "review_round" not in meta and "commit_review_count" not in meta
+        assert not _activities(db_path, _PARKED, "changes_requested")
+        assert len(_activities(db_path, _PARKED, "approved")) == (kind == "pr-approved")
+    if at_cap := _SEEDS[kind][2]:
+        assert meta["review_cap_reached"] is True
+        assert (meta["review_round"], meta["commit_review_count"]) == (2, 2)
+        assert "conflict_retries" not in meta
+        result.post.assert_not_called()
+    if kind.startswith("request"):
+        # A live request is neither expired nor voided on a poll that could not
+        # read the thread; its own comment is not an ignored verdict, and neither
+        # is a review that merely opens with the verdict words.
+        assert state["status"] == arb.STATUS_REQUESTED
+        for action in ("ignored", "expired", "void"):
+            assert not _activities(db_path, _PARKED, f"review_cap_arbitration_{action}")
+
+
+@pytest.mark.parametrize("kind", ["cap", "request"], ids=["at-cap", "awaiting-verdict"])
+def test_a_park_with_its_parents_done_still_holds(tmp_path, kind):
+    """A blocked child whose blocking parent has completed goes back to todo -
+    unless it is parked on arbitration: that waits on a decision, and the poll
+    over it must not lift the park through its parents either."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    parent, child = "t-parent", "t-arb-parked"
+    _seed(db_path, parent, {}, assignee="zf-builder")
+    _update_task(db_path, parent, status="done", assignee="zf-builder", meta={})
+    _seed_park(db_path, child, kind)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id, link_type, created_at) VALUES (?, ?, 'blocks', ?)",
+            (parent, child, _NOW),
+        )
+
+    _CYCLE._run(db_path, [])
+
+    row = _row(db_path, child)
+    assert (row["status"], row["assignee"]) == ("blocked", "human")
+    assert not _activities(db_path, child, "unblock")
+
+
+def _post_request(db_path: Path, comments: list[dict], thread: list[dict], **run):
+    """Two cycles from a review-cap park that make the dispatcher post a request
+    (``real_post``); the state they leave behind."""
+    _CYCLE._run(db_path, comments, conversation=thread, real_post=True, cycles=2, **run)
+    return _meta(db_path, _PARKED)[arb.STATE_KEY]
+
+
+@pytest.mark.parametrize(
+    ("posted_at", "adopted"),
+    [
+        (_POSTED_AT, False),  # posted: its own comment, by id
+        (_POSTED_AT, True),  # adopted copy, verified by id on the next poll
+        (None, True),  # adopted undated, GitHub not answering
+        (None, False),  # posted with GitHub not answering
+    ],
+    ids=["posted", "adopted", "adopted-unverified", "posted-unverified"],
+)
+def test_the_deadline_follows_the_comment_the_post_named(tmp_path, posted_at, adopted):
+    """A4, D1: an attempt key identifies the logical request, not the GitHub
+    comment. A successful POST names its own comment and the deadline is bound
+    to that id's GitHub timestamp even when a list readback exposes an older
+    same-key copy; only a lost local state adopts that copy. Either way, with
+    no verified time a verdict is not consumed, the deadline does not run and
+    nothing is posted twice, until the poll reads the timestamp back."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    _seed_park(db_path, _PARKED, "cap")
+    key = _key(_PARKED)
+    older = _OLDER_UNDATED if adopted else _OLDER_DATED
+    thread = [
+        older,
+        # A verdict waiting to be read.
+        _convo(2, _verdict_body("FIX", _PARKED), created_at=_iso(_POSTED_AT + 60)),
+    ]
+    # The review that hits the cap is what makes the cycle post the request. The
+    # thread reads inside the posting: an unreadable one before the POST, or the
+    # older copy before and after it.
+    result = _CYCLE._run(
+        db_path,
+        [_FEEDBACK, _std(8999, _request_body(key))],
+        conversation=thread,
+        real_post=True,
+        cycles=2,
+        thread_calls=[[older]] if adopted else [None, [older]],
+        issue_comment_api=[(0, _iso(_POSTED_AT))] if posted_at else [],
+    )
+
+    state = _meta(db_path, _PARKED)[arb.STATE_KEY]
+    assert state["request_key"] == key and state["attempts"] == 1
+    assert state["comment_id"] == ("issue_8999" if adopted else "issue_9001")
+    assert bool(state.get("adopted")) == adopted
+    # One request on the PR, however it got there: nothing is posted twice.
+    assert sum("comment" in cmd for cmd in result.gh_calls) == (0 if adopted else 1)
+    if posted_at is None:
+        assert state["status"] == arb.STATUS_REQUESTED
+        assert state["requested_at"] == 0 and state["timestamp_pending"]
+    else:
+        assert state["requested_at"] == posted_at
+        assert not state.get("timestamp_pending")
+        # Time verified: the second cycle consumed the verdict that was waiting.
+        assert state["status"] == arb.STATUS_FIX_REQUESTED
+
+
+@pytest.mark.parametrize(
+    ("prior", "attempt"),
+    [(1, 2), (-1, 1), ("abc", 1), (None, 1)],
+    ids=["second", "negative", "nonnumeric", "null"],
+)
+def test_a_second_attempt_on_the_same_head_is_a_new_request(tmp_path, prior, attempt):
+    """The cap recurs on a head that was already arbitrated: the next attempt is
+    a new request - the earlier request, right there in a readable thread, is
+    not adopted for it and its verdict does not apply. An unreadable attempt
+    counter still mints a request, for attempt 1 (never one keyed on nonsense)."""
+    db_path = tmp_path / "test.db"
+    _init_db(db_path)
+    _seed_park(db_path, _PARKED, "fix-closed", state_over={"attempts": prior})
+    old = [_convo(501, _verdict_body("FIX", _PARKED), created_at=_iso(_OLDER_AT + 60))]
+    if attempt == 2:
+        old.insert(
+            0, _convo(1, _request_body(_key(_PARKED)), created_at=_iso(_OLDER_AT))
+        )
+    state = _post_request(
+        db_path,
+        [_ROUND_2, _std(1, _request_body(_key(_PARKED)))],
+        old,
+        thread_calls=[old],
+        issue_comment_api=[(0, _iso(_POSTED_AT))],
+    )
+
+    assert state["attempts"] == attempt
+    assert state["request_key"] == _key(_PARKED, HEAD, attempt=attempt)
+    assert state["comment_id"] == "issue_9001" and state["requested_at"] == _POSTED_AT
+    assert "adopted" not in state and "decision" not in state
+    # Exactly the new request was copied onto the task, no other attempt's.
+    on_task = _dispatcher_comments(db_path, _PARKED)
+    copied = [
+        key
+        for key in (_key(_PARKED), _key(_PARKED, HEAD, attempt=2))
+        if any(f"REQUEST: {key}" in c for c in on_task)
+    ]
+    assert copied == [state["request_key"]]

@@ -16,7 +16,7 @@ Protocol - every message is a PR conversation comment, so the decision trail
 stays on the PR. The dispatcher's request:
 
     [AI:zf-dispatcher] ARBITRATION REQUEST
-    REQUEST: arbitration:<task_id>:<full_head_sha>
+    REQUEST: arbitration:<task_id>:<full_head_sha>:<attempt>
     HEAD: <full_head_sha>
 
 and the arbiter's answer, of which only the FIRST line is read:
@@ -110,6 +110,8 @@ VERDICTS = (VERDICT_MERGE, VERDICT_FIX, VERDICT_ESCALATE)
 
 VERDICT_PREFIX = "ARBITRATION VERDICT:"
 REQUEST_PREFIX = "[AI:zf-dispatcher] ARBITRATION REQUEST"
+FIX_CLOSED_BY_REVIEW = "review"
+FIX_CLOSED_BY_APPROVAL = "approval"
 
 # A verdict must be the FIRST line and carry the request key and full head, so
 # it can be bound to exactly one request on exactly one commit.
@@ -121,6 +123,21 @@ _VERDICT_LINE_RE = re.compile(
 )
 _FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 _COMMENT_URL_RE = re.compile(r"#issuecomment-(\d+)")
+# A protocol record by shape: the marker opens the first line, role-tagged or
+# not, well-formed or not. A review that opens "Bug in ARBITRATION VERDICT: ..."
+# merely mentions the words: it is feedback, not the protocol.
+_VERDICT_RECORD_RE = re.compile(
+    r"^(?:\[AI:[A-Za-z0-9_.-]+\]\s*)?ARBITRATION\s+VERDICT:", re.IGNORECASE
+)
+# The verdict scan's gate: the role-tagged marker anywhere in the body, so a
+# misplaced verdict is still rejected as one; an untagged mention is a review.
+_TAGGED_VERDICT_RE = re.compile(
+    r"\[AI:[A-Za-z0-9_.-]+\]\s*ARBITRATION\s+VERDICT:", re.IGNORECASE
+)
+
+# The task comment the FIX branch leaves for the builder: the handoff note
+# that precedes the verdict body, not feedback about the change.
+_FIX_ROUND_NOTE_PREFIX = "[AI:zf-dispatcher] Arbitration fix round"
 
 # Tolerated clock skew between this host and GitHub timestamps.
 _CLOCK_SLACK_SECONDS = 300
@@ -280,6 +297,20 @@ def state_of(task_meta: dict[str, Any] | None) -> dict[str, Any]:
     return dict(state) if isinstance(state, dict) else {}
 
 
+def is_review_cap_park(
+    task_meta: dict[str, Any] | None, *, status: Any, assignee: Any
+) -> bool:
+    """A task parked at the review cap, arbitrated or not: blocked, held at
+    the human gate, ``review_cap_reached`` set - a decision wait, never a
+    dependency wait."""
+    meta = task_meta or {}
+    return (
+        bool(meta.get("review_cap_reached"))
+        and (status or "") == "blocked"
+        and (assignee or "") == "human"
+    )
+
+
 def is_arbitration_park(
     task_meta: dict[str, Any] | None, *, status: Any, assignee: Any
 ) -> bool:
@@ -307,14 +338,122 @@ def voided(state: dict[str, Any] | None, reason: str, now: Any) -> dict[str, Any
     }
 
 
-def request_key(task_id: str, head_sha: str) -> str:
-    """Deterministic identity of one arbitration request."""
-    return f"arbitration:{task_id}:{str(head_sha or '').lower()}"
+def request_key(task_id: str, head_sha: str, attempt: Any) -> str:
+    """Deterministic identity of one arbitration request.
+
+    ``attempt`` is the task's arbitration counter and is required: a key
+    without it names no answerable request. A later request for the same
+    head is a new request with its own key, so the earlier request's comment
+    is never adopted for it and the verdict that answered the earlier one no
+    longer applies.
+    """
+    return f"arbitration:{task_id}:{str(head_sha or '').lower()}:{_coerce_int(attempt)}"
 
 
 def verdict_line(arbiter: str, verdict: str, key: str, head_sha: str) -> str:
     """The exact first line the arbiter pastes to answer ``verdict``."""
     return f"[AI:{arbiter}] ARBITRATION VERDICT: {verdict} | REQUEST: {key} | HEAD: {head_sha}"
+
+
+def _unwrapped_first_line(body: Any) -> str:
+    """The first line of ``body`` with one enclosing inline-code span removed.
+
+    The request shows each verdict line as an inline code span and asks for a
+    verbatim copy, so a literal copy arrives in backticks. Exactly one span
+    around the whole line is unwrapped; anything else fails the first-line match.
+    """
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    first_line = text.splitlines()[0].strip()
+    if len(first_line) > 2 and first_line.startswith("`") and first_line.endswith("`"):
+        first_line = first_line[1:-1].strip()
+    return first_line
+
+
+def _is_protocol_first_line(first_line: str) -> bool:
+    """The request's own first line, or a verdict record: the marker opens the
+    line (it need not parse). A line that merely mentions the words is a review."""
+    return first_line == REQUEST_PREFIX or bool(_VERDICT_RECORD_RE.match(first_line))
+
+
+def is_protocol_comment(comment: dict[str, Any] | None) -> bool:
+    """A PR comment that belongs to the arbitration protocol, not to the review.
+
+    True for the dispatcher's request comment and for any comment that opens
+    with a verdict record, well-formed or not: it asks for a decision or
+    records one, it is never feedback about the change, and ordinary
+    review-comment routing must not copy it to a builder as work to do.
+    """
+    item = comment if isinstance(comment, dict) else {}
+    first_line = _unwrapped_first_line(item.get("body"))
+    if not first_line:
+        return False
+    return _is_protocol_first_line(first_line)
+
+
+def is_protocol_record(author: Any, body: Any) -> bool:
+    """A ``task_comments`` row that records the protocol, not review feedback.
+
+    Three kinds: the request text, an arbiter's verdict and the dispatcher's
+    fix-round handoff note. They stay on the task as history; a builder prompt
+    must not present them as mandatory review work.
+    """
+    text = str(body or "").strip()
+    if not text:
+        return False
+    lines = text.splitlines()
+    # format_task_comment_body() prefixes a copied PR comment with a
+    # "**[GitHub PR Comment]**"-style header line; the protocol line follows.
+    if lines[0].startswith("**[GitHub") and len(lines) > 1:
+        lines = lines[1:]
+    first_line = _unwrapped_first_line("\n".join(lines))
+    if _is_protocol_first_line(first_line):
+        return True
+    return str(author or "").strip() == "zf-dispatcher" and text.startswith(
+        _FIX_ROUND_NOTE_PREFIX
+    )
+
+
+def fetch_issue_comment_created_at(
+    *, repo_path: Any, pr_url: str | None, comment_id: Any
+) -> int | None:
+    """GitHub's ``created_at`` for one PR conversation comment, or None.
+
+    Resolves exactly one comment by id. Used when a request was posted but the
+    paginated thread could not be read back, so the request deadline can still
+    be anchored to GitHub's timestamp for that comment instead of this host's
+    clock. None when the comment cannot be resolved: skip modes, an unusable
+    id or PR URL, an API error, or a timestamp that does not parse.
+    """
+    if os.environ.get("ZEROFACTORY_SKIP_GIT") or os.environ.get(
+        "ZEROFACTORY_SKIP_GH_API"
+    ):
+        return None
+    info = extract_gh_repo_info(pr_url or "")
+    match = re.search(r"\d+", str(comment_id or ""))
+    if not info or not match:
+        return None
+    owner, repo = info[0], info[1]
+    try:
+        res = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{owner}/{repo}/issues/comments/{match.group(0)}",
+                "--jq",
+                ".created_at",
+            ],
+            cwd=str(repo_path) if repo_path else None,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if res.returncode != 0:
+        return None
+    return parse_github_timestamp(res.stdout)
 
 
 def parse_github_timestamp(value: Any) -> int | None:
@@ -350,7 +489,9 @@ def build_arbitration_request(
     prev = state_of(task_meta)
     if prev.get("status") == STATUS_REQUESTED:
         return None
-    attempts = _coerce_int(prev.get("attempts"))
+    # Floor at 0: a negative or corrupt counter must not mint a request
+    # keyed on a nonsense attempt.
+    attempts = max(0, _coerce_int(prev.get("attempts")))
     if attempts >= max_arbitrations:
         return None
     head = str(head_sha or "").strip().lower()
@@ -363,13 +504,19 @@ def build_arbitration_request(
         "max_arbitrations": max_arbitrations,
         "requested_at": int(now),
         "request_head": head,
-        "request_key": request_key(task_id, head),
+        "request_key": request_key(task_id, head, attempts + 1),
         "rounds": rounds,
     }
 
 
 def arbitration_is_stale(state: dict[str, Any], now: int, timeout_hours: int) -> bool:
     if not state or state.get("status") != STATUS_REQUESTED:
+        return False
+    if state.get("timestamp_pending"):
+        # Posted, but GitHub's timestamp for the request comment has not been
+        # read back yet. Until it is, there is no deadline a verdict could be
+        # held to and none the park could expire on: nothing is consumed and
+        # nothing expires. The poll verifies the timestamp when GitHub answers.
         return False
     requested_at = _coerce_int(state.get("requested_at"))
     if requested_at <= 0:
@@ -389,7 +536,10 @@ def format_arbitration_request(
     attempt: int,
     max_arbitrations: int,
 ) -> str:
-    key = request_key(task_id, head_sha)
+    # Same identity as the persisted state: an arbiter who pastes the verdict
+    # lines answers THIS attempt, and a retry after a crash can find this
+    # exact comment again by key.
+    key = request_key(task_id, head_sha, attempt)
     head = str(head_sha or "").strip().lower()
     lines = [
         REQUEST_PREFIX,
@@ -509,19 +659,13 @@ def find_arbitration_verdict(
             continue
         comment = normalize_conversation_comment(item)
         body = comment["body"]
-        if VERDICT_PREFIX not in body.upper():
+        if not _TAGGED_VERDICT_RE.search(str(body)):
             continue
-        first_line = body.strip().splitlines()[0].strip() if body.strip() else ""
-        # The request comment shows each verdict line as an inline code span and
-        # asks for a verbatim copy, so a literal copy arrives wrapped in
-        # backticks. Unwrap exactly one span around the whole line; anything
-        # else before or after it still fails the first-line match below.
-        if (
-            len(first_line) > 2
-            and first_line.startswith("`")
-            and first_line.endswith("`")
-        ):
-            first_line = first_line[1:-1].strip()
+        first_line = _unwrapped_first_line(body)
+        if first_line == REQUEST_PREFIX:
+            # The dispatcher's request carries the paste-ready verdict lines;
+            # it asks for a decision, it is not one.
+            continue
         entry = {"comment_id": comment["comment_id"], "author": comment["author"]}
         match = _VERDICT_LINE_RE.match(first_line)
         if not match:
@@ -596,20 +740,40 @@ def record_rejections(
     return fresh
 
 
-def close_fix_round(task_meta: dict[str, Any] | None, now: Any) -> bool:
-    """End the fix round a FIX verdict opened: a reviewer round was recorded
-    on its commit, so the verdict is no longer the builder's open brief.
+def attempt_counts(state: dict[str, Any] | None) -> tuple[int, int]:
+    """``(attempts, max_arbitrations)`` as ints; a corrupt value reads as 0.
 
-    Without this the brief could outlive its round - e.g. resurface after an
-    operator reset of ``review_round``. Returns True when a round was open.
+    Recording a verdict must never fail on the state's shape: an exception
+    here would leave the task parked with neither a decision nor a deadline.
+    """
+    current = state or {}
+    return (
+        max(0, _coerce_int(current.get("attempts"))),
+        max(0, _coerce_int(current.get("max_arbitrations"))),
+    )
+
+
+def close_fix_round(
+    task_meta: dict[str, Any] | None, now: Any, *, by: str = FIX_CLOSED_BY_REVIEW
+) -> bool:
+    """End the fix round a FIX verdict opened: the reviewer answered its commit
+    with a new round (``FIX_CLOSED_BY_REVIEW``) or an approval
+    (``FIX_CLOSED_BY_APPROVAL``), so the verdict is no longer the builder's
+    open brief. Returns True when a round was open; the first close is kept.
     """
     meta = task_meta or {}
     state = state_of(meta)
     if state.get("status") != STATUS_FIX_REQUESTED or state.get("fix_round_closed_at"):
         return False
     state["fix_round_closed_at"] = _coerce_int(now)
+    state["fix_round_closed_by"] = by
     meta[STATE_KEY] = state
     return True
+
+
+def fix_round_closed_by(task_meta: dict[str, Any] | None) -> str | None:
+    """What closed the task's fix round, or None while it is open (or never was)."""
+    return str(state_of(task_meta or {}).get("fix_round_closed_by") or "") or None
 
 
 def fix_round_brief(task_meta: dict[str, Any] | None) -> str | None:
@@ -631,6 +795,26 @@ def fix_round_brief(task_meta: dict[str, Any] | None) -> str | None:
     return brief or None
 
 
+def approval_on_head(reviews: Any, head_sha: Any) -> bool:
+    """True when the latest approving review was submitted on ``head_sha``.
+
+    GitHub's aggregate reviewDecision keeps reading APPROVED after a push
+    until the stale review is dismissed, so it cannot tell an approval of the
+    fix commit from one standing on the pre-fix head; the review's own commit
+    can. An unreadable list, or one without an approving review, is no
+    approval.
+    """
+    head = str(head_sha or "")
+    if not head or not isinstance(reviews, list):
+        return False
+    for review in reversed(reviews):
+        if isinstance(review, dict) and review.get("state") == "APPROVED":
+            commit = review.get("commit")
+            oid = commit.get("oid") if isinstance(commit, dict) else commit
+            return str(oid or "") == head
+    return False
+
+
 def post_arbitration_request(
     *,
     pr_url: str | None,
@@ -639,14 +823,14 @@ def post_arbitration_request(
     key: str,
     head_sha: str,
 ) -> dict[str, Any] | None:
-    """Post the request comment once and return its verified identity.
+    """Post the request comment once and return its identity.
 
-    Returns ``{"comment_id", "author", "created_at", "adopted"}``, or None when
-    no live request exists: skip mode, no PR URL, no authenticated GitHub
-    account to author the comment, or a POST that failed and could not be
-    reconciled. A comment this account already posted for this request key
-    (any page) is adopted instead of posting, so a crash between a successful
-    POST and the local task update never produces a duplicate.
+    Returns ``{"comment_id", "author", "created_at", "adopted"}`` - plus
+    ``timestamp_pending`` when GitHub's time for that comment is not verified -
+    or None when no live request exists: skip mode, no PR URL, no GitHub
+    account, or a POST that failed and could not be reconciled. A comment this
+    account already posted for this key is adopted instead of posting, so a
+    retry after a lost local update never duplicates the request.
     """
     if os.environ.get("ZEROFACTORY_SKIP_GIT") or not pr_url:
         return None
@@ -663,27 +847,48 @@ def post_arbitration_request(
         return None
     authors = {_normalize_login(owner)}
 
-    def _adopt(existing: dict[str, Any]) -> dict[str, Any]:
-        return {
+    def _record(
+        existing: dict[str, Any], *, adopted: bool, created_at: int | None = None
+    ) -> dict[str, Any]:
+        # The deadline hangs off GitHub's time for this exact comment. A missing
+        # or unreadable created_at leaves the timestamp pending - for an adopted
+        # copy as for a fresh post - so nothing is consumed or expired until the
+        # poll verifies it.
+        posted = {
             "comment_id": existing["comment_id"],
-            "author": existing["author"],
-            "created_at": parse_github_timestamp(existing.get("created_at")),
-            "adopted": True,
+            "author": existing.get("author") or owner,
+            "created_at": (
+                created_at
+                if created_at is not None
+                else parse_github_timestamp(existing.get("created_at"))
+            ),
+            "adopted": adopted,
         }
+        if posted["created_at"] is None:
+            posted["timestamp_pending"] = True
+        return posted
 
     def _existing() -> dict[str, Any] | None:
-        comments = (
-            fetch_pr_conversation_comments(repo_path=repo_path, pr_url=pr_url) or []
-        )
+        # An unreadable thread (None) is treated like an empty one on purpose:
+        # refusing to post on a failed read would turn a slow page fetch into a
+        # human park, while the worst case here is a duplicate comment carrying
+        # the same key - one request, one deadline, either way.
+        comments = fetch_pr_conversation_comments(repo_path=repo_path, pr_url=pr_url)
+        if comments is None:
+            _log.warning(
+                "Arbitration request %s: could not read the PR conversation; "
+                "an earlier copy of this request cannot be ruled out",
+                key,
+            )
+            comments = []
         return find_request_comment(
             comments, key=key, head_sha=head_sha, authors=authors
         )
 
     found = _existing()
     if found is not None:
-        return _adopt(found)
+        return _record(found, adopted=True)
 
-    author = owner
     fd, path = tempfile.mkstemp(prefix="zf-arbitration-", suffix=".md")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -709,23 +914,32 @@ def post_arbitration_request(
         except OSError:
             pass
 
-    # The POST may have landed even when gh reports failure or prints no URL
-    # (timeout after GitHub accepted it): reconcile before deciding.
+    # The POST names its own comment and the deadline follows that exact id;
+    # the thread is never asked to confirm it, since a list readback can expose
+    # an older same-key copy (an attempt key names the logical request, not the
+    # comment) whose older time must not shorten this request's window. This
+    # host's clock is never a substitute; when GitHub does not answer, pending.
+    url_match = _COMMENT_URL_RE.search((res.stdout if res else "") or "")
+    if res is not None and res.returncode == 0 and url_match:
+        comment_id = f"issue_{url_match.group(1)}"
+        return _record(
+            {"comment_id": comment_id, "author": owner},
+            adopted=False,
+            created_at=fetch_issue_comment_created_at(
+                repo_path=repo_path, pr_url=pr_url, comment_id=comment_id
+            ),
+        )
+
+    # gh failed or printed no URL, yet the POST may have landed (a timeout
+    # after GitHub accepted it). With no id of its own the request can only be
+    # reconciled against the thread, by key: a first post, not an adoption.
     found = _existing()
     if found is not None:
-        return _adopt(found)
-    url_match = _COMMENT_URL_RE.search((res.stdout if res else "") or "")
-    if res is None or res.returncode != 0 or not url_match:
-        _log.warning(
-            "Arbitration request %s: `gh pr comment` did not produce a comment (rc=%s): %s",
-            key,
-            res.returncode if res else "raised",
-            (res.stderr if res else "").strip()[:300],
-        )
-        return None
-    return {
-        "comment_id": f"issue_{url_match.group(1)}",
-        "author": author,
-        "created_at": None,
-        "adopted": False,
-    }
+        return _record(found, adopted=False)
+    _log.warning(
+        "Arbitration request %s: `gh pr comment` did not produce a comment (rc=%s): %s",
+        key,
+        res.returncode if res else "raised",
+        (res.stderr if res else "").strip()[:300],
+    )
+    return None
