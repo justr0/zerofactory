@@ -388,6 +388,11 @@ def test_task_grill_with_docs_triage_and_interview_reply(
     )
     assert create_res.status_code == 200
     task_id = create_res.json()["id"]
+    with get_db_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET blocked_reason = 'stale' WHERE id = ?", (task_id,)
+        )
+        conn.commit()
 
     # 2. Trigger Grill-with-Docs triage dispatch
     triage_res = api_client.post(f"/api/plugins/zerofactory/tasks/{task_id}/triage")
@@ -401,6 +406,7 @@ def test_task_grill_with_docs_triage_and_interview_reply(
     ]
     assert task_details["status"] == "triage"
     assert task_details["assignee"] == "zf-orchestrator"
+    assert task_details["blocked_reason"] is None
 
     # 3. Simulate zf-orchestrator posting a Grill-with-Docs question
     question_body = (
@@ -618,6 +624,18 @@ def test_blocked_assigns_human_except_changes_requested(
     )
     assert res.status_code == 200
     assert _assignee(t1) == "human"
+    blocked_task = api_client.get(f"/api/plugins/zerofactory/tasks/{t1}").json()["task"]
+    assert blocked_task["blocked_reason"] == "Human Review & Merge"
+    api_client.post(
+        f"/api/plugins/zerofactory/tasks/{t1}/move",
+        json={"status": "todo", "actor": "user"},
+    )
+    assert (
+        api_client.get(f"/api/plugins/zerofactory/tasks/{t1}").json()["task"][
+            "blocked_reason"
+        ]
+        is None
+    )
 
     # 2. Canonical 'approved' code -> human queue
     t2 = _new_task("Approved Canonical Code")
@@ -965,6 +983,23 @@ def test_triage_task_split_multi_repo(api_client: TestClient):
     assert parent_task["status"] == "triage"
     assert parent_task.get("target_repos") == ["frontend", "backend"]
 
+    # The direct split endpoint may be used on a blocked parent; finishing the
+    # decomposition must not retain an unrelated active block reason.
+    with get_db_conn() as conn:
+        parent_meta = json.loads(
+            conn.execute(
+                "SELECT metadata FROM tasks WHERE id = ?", (parent_id,)
+            ).fetchone()[0]
+        )
+        parent_meta.update(
+            blocked_reason="old worker failure", blocked_reason_type="stuck"
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', assignee = 'human', blocked_reason = ?, metadata = ? WHERE id = ?",
+            ("old worker failure", json.dumps(parent_meta), parent_id),
+        )
+        conn.commit()
+
     # 3. Call split endpoint
     split_res = api_client.post(f"/api/plugins/zerofactory/tasks/{parent_id}/split")
     assert split_res.status_code == 200
@@ -987,6 +1022,9 @@ def test_triage_task_split_multi_repo(api_client: TestClient):
     ]
     assert parent_after["status"] == "done"
     assert parent_after["assignee"] == "zf-orchestrator"
+    assert parent_after["blocked_reason"] is None
+    assert "blocked_reason" not in parent_after["metadata"]
+    assert "blocked_reason_type" not in parent_after["metadata"]
     children = parent_after.get("children", [])
     assert len(children) == 2
     assert all(c["link_type"] == "relates_to" for c in children)

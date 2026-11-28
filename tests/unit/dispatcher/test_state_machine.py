@@ -122,6 +122,34 @@ def test_transition_invalid_raises(db_conn):
         transition_task(db_conn, "t2", "done")
 
 
+def test_transition_commit_false_keeps_writes_in_caller_transaction(db_conn):
+    db_conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, created_at, updated_at) "
+        "VALUES ('t-uncommitted', 'Caller transaction', 'todo', 'zf-builder', 1000, 1000)"
+    )
+    db_conn.commit()
+
+    transition_task(
+        db_conn, "t-uncommitted", "running", actor="dispatcher", commit=False
+    )
+    assert db_conn.in_transaction
+    assert (
+        db_conn.execute(
+            "SELECT status FROM tasks WHERE id = 't-uncommitted'"
+        ).fetchone()["status"]
+        == "running"
+    )
+    db_conn.rollback()
+
+    row = db_conn.execute(
+        "SELECT status FROM tasks WHERE id = 't-uncommitted'"
+    ).fetchone()
+    assert row["status"] == "todo"
+    assert not db_conn.execute(
+        "SELECT 1 FROM task_activity WHERE task_id = 't-uncommitted'"
+    ).fetchone()
+
+
 def test_recovered_reviewer_marker_clears_on_ownership_change(db_conn):
     db_conn.execute(
         "INSERT INTO tasks (id, title, status, assignee, metadata, created_at, updated_at) VALUES ('t-reviewer', 'Recovered reviewer', 'todo', 'zf-reviewer', ?, 1000, 1000)",
@@ -173,6 +201,10 @@ def test_transition_exiting_running_terminates_worker(db_conn):
     assert row["worker_pid"] is None
     assert row["started_at"] is None
     assert row["blocked_reason"] == "precommit_failed"
+    activity = db_conn.execute(
+        "SELECT actor, action, details FROM task_activity WHERE task_id = 't3' AND action = 'blocked'"
+    ).fetchone()
+    assert tuple(activity) == ("system", "blocked", "precommit_failed")
     saved_meta = json.loads(row["metadata"])
     assert "worker_pid" not in saved_meta
     assert "started_at" not in saved_meta
@@ -212,6 +244,116 @@ def test_transition_exiting_blocked_clears_blocked_state(db_conn):
     assert "worker_failure_retries" not in saved_meta
     assert "last_worker_failure" not in saved_meta
     assert saved_meta["custom_key"] == "preserve_me"
+
+
+@pytest.mark.parametrize("target_status", ["todo", "running", "triage", "done"])
+def test_transition_from_blocked_clears_reason_for_every_nonblocked_status(
+    db_conn, target_status
+):
+    db_conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, blocked_reason, metadata, created_at, updated_at) "
+        "VALUES ('t-block-exit', 'Blocked task', 'blocked', 'human', 'old reason', ?, 1000, 1000)",
+        (json.dumps({"blocked_reason": "old reason", "blocked_reason_type": "stuck"}),),
+    )
+
+    result = transition_task(
+        db_conn, "t-block-exit", target_status, target_assignee="zf-builder"
+    )
+
+    row = db_conn.execute(
+        "SELECT status, blocked_reason, metadata FROM tasks WHERE id = 't-block-exit'"
+    ).fetchone()
+    assert row["status"] == target_status
+    assert row["blocked_reason"] is None
+    assert result["blocked_reason"] is None
+    assert "blocked_reason" not in json.loads(row["metadata"])
+    assert "blocked_reason_type" not in json.loads(row["metadata"])
+
+
+def test_second_block_replaces_reason_and_records_one_activity_per_block(db_conn):
+    db_conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, created_at, updated_at) "
+        "VALUES ('t-reblock', 'Reblocked task', 'todo', 'zf-builder', 1000, 1000)"
+    )
+    transition_task(
+        db_conn,
+        "t-reblock",
+        "blocked",
+        blocked_reason="worker failure",
+        actor="dispatcher",
+    )
+    transition_task(
+        db_conn,
+        "t-reblock",
+        "blocked",
+        blocked_reason="review_cap_reached",
+        actor="dispatcher",
+    )
+
+    row = db_conn.execute(
+        "SELECT blocked_reason FROM tasks WHERE id = 't-reblock'"
+    ).fetchone()
+    activities = db_conn.execute(
+        "SELECT actor, details, created_at FROM task_activity WHERE task_id = 't-reblock' AND action = 'blocked' ORDER BY id"
+    ).fetchall()
+    assert row["blocked_reason"] == "review_cap_reached"
+    assert len(activities) == 2
+    assert [tuple(activity[:2]) for activity in activities] == [
+        ("dispatcher", "worker failure"),
+        ("dispatcher", "review_cap_reached"),
+    ]
+    assert all(activity["created_at"] for activity in activities)
+
+
+def test_review_cap_block_replaces_an_earlier_worker_failure_reason(db_conn):
+    db_conn.execute(
+        "INSERT INTO tasks (id, title, status, assignee, blocked_reason, metadata, created_at, updated_at) "
+        "VALUES ('t-review-cap', 'Review cap', 'running', 'zf-reviewer', 'old worker failure', ?, 1000, 1000)",
+        (
+            json.dumps(
+                {"blocked_reason": "old worker failure", "blocked_reason_type": "stuck"}
+            ),
+        ),
+    )
+
+    transition_task(
+        db_conn,
+        "t-review-cap",
+        "todo",
+        blocked_reason="old worker failure",
+        metadata_patch={"blocked_reason": "old worker failure"},
+        actor="dispatcher",
+    )
+    assert (
+        db_conn.execute(
+            "SELECT blocked_reason FROM tasks WHERE id = 't-review-cap'"
+        ).fetchone()["blocked_reason"]
+        is None
+    )
+    transition_task(db_conn, "t-review-cap", "running", actor="dispatcher")
+
+    result = transition_task(
+        db_conn,
+        "t-review-cap",
+        "blocked",
+        target_assignee="human",
+        metadata_patch={
+            "blocked_reason": "review_cap_reached",
+            "blocked_reason_type": "human-gate",
+        },
+        actor="dispatcher",
+    )
+
+    row = db_conn.execute(
+        "SELECT blocked_reason, metadata FROM tasks WHERE id = 't-review-cap'"
+    ).fetchone()
+    assert row["blocked_reason"] == "review_cap_reached"
+    assert json.loads(row["metadata"])["blocked_reason"] == "review_cap_reached"
+    assert result["blocked_reason"] == "review_cap_reached"
+    activity = db_conn.execute(
+        "SELECT actor, details FROM task_activity WHERE task_id = 't-review-cap' AND action = 'blocked'"
+    ).fetchall()
+    assert [tuple(item) for item in activity] == [("dispatcher", "review_cap_reached")]
 
 
 def test_transition_to_todo_clears_interview_flags(db_conn):

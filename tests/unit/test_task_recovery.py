@@ -73,8 +73,12 @@ class TestTaskRecovery(unittest.TestCase):
                 "last_precommit_error": "AssertionError: expected 1 got 2",
             }
             conn.execute(
-                "UPDATE tasks SET metadata = ? WHERE id = ?",
-                (json.dumps(meta), task_id),
+                "UPDATE tasks SET metadata = ?, blocked_reason = ? WHERE id = ?",
+                (
+                    json.dumps(meta),
+                    "Deterministic precommit failed 3 times",
+                    task_id,
+                ),
             )
             conn.commit()
 
@@ -99,6 +103,7 @@ class TestTaskRecovery(unittest.TestCase):
             ).fetchone()
             self.assertEqual(row["status"], "todo")
             self.assertEqual(row["assignee"], "zf-builder")
+            self.assertIsNone(row["blocked_reason"])
             saved_meta = json.loads(row["metadata"])
             self.assertNotIn("precommit_retries", saved_meta)
             self.assertNotIn("worker_failure_retries", saved_meta)

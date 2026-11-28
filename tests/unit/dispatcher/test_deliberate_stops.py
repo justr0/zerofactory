@@ -55,7 +55,10 @@ def _board_db(
             assignee TEXT,
             metadata TEXT,
             updated_at INTEGER,
-            created_at INTEGER
+            created_at INTEGER,
+            worker_pid INTEGER DEFAULT NULL,
+            started_at INTEGER DEFAULT NULL,
+            blocked_reason TEXT DEFAULT NULL
         )
         """
     )
@@ -97,7 +100,7 @@ def _board_db(
         ],
     }
     conn.execute(
-        "INSERT INTO tasks VALUES (?, 'Stop Task', ?, ?, ?, ?, ?)",
+        "INSERT INTO tasks (id, title, status, assignee, metadata, updated_at, created_at) VALUES (?, 'Stop Task', ?, ?, ?, ?, ?)",
         (TASK_ID, status, assignee, json.dumps(meta), now - 100, now - 100),
     )
     conn.commit()

@@ -184,7 +184,10 @@ def _init_test_db(db_path: Path):
                 tenant TEXT,
                 pr_url TEXT,
                 updated_at INTEGER,
-                created_at INTEGER
+                created_at INTEGER,
+                worker_pid INTEGER DEFAULT NULL,
+                started_at INTEGER DEFAULT NULL,
+                blocked_reason TEXT DEFAULT NULL
             )
             """
         )
@@ -319,11 +322,12 @@ class TestReviewCapPerCommit:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT status, assignee, metadata FROM tasks WHERE id = ?",
+                "SELECT status, assignee, blocked_reason, metadata FROM tasks WHERE id = ?",
                 (task_id,),
             ).fetchone()
             assert row["status"] == "todo"
             assert row["assignee"] == "zf-builder"
+            assert row["blocked_reason"] is None
             meta = json.loads(row["metadata"])
             assert meta["commit_review_count"] == 1
 
@@ -341,14 +345,15 @@ class TestReviewCapPerCommit:
             "review_round": 1,
             "commit_review_count": 1,
             "processed_review_comment_ids": [],
+            "blocked_reason": "old worker failure",
             "blocked_reason_type": "changes-requested",
         }
 
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 """
-                INSERT INTO tasks (id, title, status, assignee, pr_url, metadata, workspace_path)
-                VALUES (?, ?, 'blocked', 'zf-reviewer', 'https://github.com/acme/repo/pull/1', ?, ?)
+                INSERT INTO tasks (id, title, status, assignee, pr_url, blocked_reason, metadata, workspace_path)
+                VALUES (?, ?, 'blocked', 'zf-reviewer', 'https://github.com/acme/repo/pull/1', 'old worker failure', ?, ?)
                 """,
                 (
                     task_id,
@@ -416,7 +421,7 @@ class TestReviewCapPerCommit:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT status, assignee, title, metadata FROM tasks WHERE id = ?",
+                "SELECT status, assignee, title, blocked_reason, metadata FROM tasks WHERE id = ?",
                 (task_id,),
             ).fetchone()
             # Must be escalated to human with status='blocked'
@@ -432,6 +437,7 @@ class TestReviewCapPerCommit:
                 "Review cap reached (2 rounds on commit commit_"
                 in meta["blocked_reason"]
             )
+            assert row["blocked_reason"] == meta["blocked_reason"]
 
             # Verify activity log was recorded exactly once (idempotent on subsequent poll cycles)
             activities = conn.execute(
@@ -442,6 +448,13 @@ class TestReviewCapPerCommit:
             assert (
                 "Review cap reached (2 review rounds on PR)" in activities[0]["details"]
             )
+            block_activities = conn.execute(
+                "SELECT actor, details FROM task_activity WHERE task_id = ? AND action = 'blocked'",
+                (task_id,),
+            ).fetchall()
+            assert [(a["actor"], a["details"]) for a in block_activities] == [
+                ("dispatcher", meta["blocked_reason"])
+            ]
 
     def test_new_commit_cumulatively_hits_review_cap_and_recover_resets(
         self, tmp_path: Path

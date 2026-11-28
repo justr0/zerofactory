@@ -10,6 +10,11 @@ from typing import Any, Dict, Optional
 from .config import resolve_status_assignee
 from .process_manager import cleanup_process_artifacts, terminate_task_worker
 
+try:
+    from ..task_lifecycle import clear_task_block, record_task_block
+except ImportError:
+    from task_lifecycle import clear_task_block, record_task_block
+
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "triage": {"todo", "running", "blocked", "done"},
     "todo": {"running", "blocked", "triage"},
@@ -38,6 +43,8 @@ def transition_task(
     started_at: Optional[int] = None,
     actor: str = "system",
     comment: Optional[str] = None,
+    commit: bool = True,
+    allow_todo_to_done: bool = False,
 ) -> dict[str, Any]:
     """Execute a task state transition with process teardown and atomic DB commit.
 
@@ -50,22 +57,17 @@ def transition_task(
        metadata_patch keys set to None delete the key from the stored
        metadata (so callers can clear stale state such as
        worker_failure_retries / last_worker_failure / permanently_blocked);
-       other values are merged in as usual.
+       other values are merged in as usual. Set commit=False when composing
+       this transition with other writes in the caller's transaction.
     """
     if target_status not in KNOWN_STATUSES:
         raise InvalidStateTransitionError(f"Unknown status '{target_status}'")
 
     cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT status, assignee, worker_pid, started_at, blocked_reason, metadata FROM tasks WHERE id = ?",
-            (task_id,),
-        )
-    except sqlite3.OperationalError:
-        cursor.execute(
-            "SELECT status, assignee, NULL as worker_pid, NULL as started_at, NULL as blocked_reason, metadata FROM tasks WHERE id = ?",
-            (task_id,),
-        )
+    cursor.execute(
+        "SELECT status, assignee, worker_pid, started_at, blocked_reason, metadata FROM tasks WHERE id = ?",
+        (task_id,),
+    )
     row = cursor.fetchone()
     if not row:
         raise ValueError(f"Task '{task_id}' not found")
@@ -92,7 +94,14 @@ def transition_task(
     # Check validity for automated system/agent actors
     if not is_human:
         allowed = VALID_TRANSITIONS.get(current_status, set())
-        if target_status != current_status and target_status not in allowed:
+        is_terminal_pr_completion = (
+            allow_todo_to_done and current_status == "todo" and target_status == "done"
+        )
+        if (
+            target_status != current_status
+            and target_status not in allowed
+            and not is_terminal_pr_completion
+        ):
             raise InvalidStateTransitionError(
                 f"Cannot transition task '{task_id}' from '{current_status}' to '{target_status}'. "
                 f"Allowed target states: {sorted(list(allowed))}"
@@ -125,6 +134,7 @@ def transition_task(
         )
     except Exception:
         meta = {}
+    original_meta = meta.copy()
 
     if metadata_patch:
         for key, value in metadata_patch.items():
@@ -135,13 +145,15 @@ def transition_task(
 
     if is_human:
         meta.pop("last_worker_failure", None)
-        meta.pop("permanently_blocked", None)
+        if not (
+            target_status == "blocked"
+            and metadata_patch
+            and metadata_patch.get("permanently_blocked") is True
+        ):
+            meta.pop("permanently_blocked", None)
         meta.pop("worker_failure_retries", None)
         meta.pop("conflict_retries", None)
         meta.pop("precommit_retries", None)
-        if target_status != "blocked":
-            meta.pop("blocked_reason", None)
-            meta.pop("blocked_reason_type", None)
 
     if target_status == "todo":
         meta.pop("awaiting_pr", None)
@@ -151,18 +163,37 @@ def transition_task(
     if target_status != "running" or worker_pid is None:
         meta.pop("worker_execution_id", None)
 
-    if current_status == "blocked" and target_status != "blocked":
+    reason_in_patch = (
+        metadata_patch.get("blocked_reason")
+        if (
+            metadata_patch
+            and isinstance(metadata_patch.get("blocked_reason"), str)
+            and metadata_patch.get("blocked_reason")
+            != original_meta.get("blocked_reason")
+        )
+        else None
+    )
+    reason_to_record = blocked_reason if blocked_reason is not None else reason_in_patch
+    if target_status == "blocked":
+        if reason_to_record is not None:
+            new_blocked_reason = reason_to_record
+            meta["blocked_reason"] = reason_to_record
+        elif current_status == "blocked":
+            new_blocked_reason = current_blocked_reason
+        else:
+            # Never carry a reason from an earlier lifecycle into a new block.
+            new_blocked_reason = None
+            meta.pop("blocked_reason", None)
+            meta.pop("blocked_reason_type", None)
+    else:
         new_blocked_reason = None
+        meta.pop("blocked_reason", None)
+        meta.pop("blocked_reason_type", None)
+
+    if current_status == "blocked" and target_status != "blocked":
         meta.pop("worker_failure_retries", None)
         meta.pop("last_worker_failure", None)
-        meta.pop("blocked_reason_type", None)
         meta.pop("permanently_blocked", None)
-        if not (metadata_patch and "blocked_reason" in metadata_patch):
-            meta.pop("blocked_reason", None)
-    elif target_status == "blocked":
-        new_blocked_reason = blocked_reason or current_blocked_reason
-    else:
-        new_blocked_reason = blocked_reason if blocked_reason is not None else None
 
     if is_exiting_running:
         new_worker_pid = None
@@ -214,39 +245,28 @@ def transition_task(
         )
     now = int(time.time())
 
-    try:
-        cursor.execute(
-            """
-            UPDATE tasks
-            SET status = ?, assignee = ?, blocked_reason = ?, worker_pid = ?, started_at = ?, metadata = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                target_status,
-                new_assignee,
-                new_blocked_reason,
-                new_worker_pid,
-                new_started_at,
-                json.dumps(meta),
-                now,
-                task_id,
-            ),
-        )
-    except sqlite3.OperationalError:
-        cursor.execute(
-            """
-            UPDATE tasks
-            SET status = ?, assignee = ?, metadata = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                target_status,
-                new_assignee,
-                json.dumps(meta),
-                now,
-                task_id,
-            ),
-        )
+    cursor.execute(
+        """
+        UPDATE tasks
+        SET status = ?, assignee = ?, worker_pid = ?, started_at = ?, metadata = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            target_status,
+            new_assignee,
+            new_worker_pid,
+            new_started_at,
+            json.dumps(meta),
+            now,
+            task_id,
+        ),
+    )
+
+    if target_status == "blocked":
+        if current_status != "blocked" or reason_to_record is not None:
+            record_task_block(conn, task_id, actor, new_blocked_reason, now)
+    else:
+        clear_task_block(conn, task_id)
 
     cursor.execute(
         """
@@ -275,7 +295,8 @@ def transition_task(
             ),
         )
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
     return {
         "id": task_id,

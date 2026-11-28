@@ -101,10 +101,10 @@ def test_goldfish_task_session_cleanup_updates_state_db(tmp_path, monkeypatch):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.execute(
-            "CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT, assignee TEXT, metadata TEXT, updated_at INTEGER)"
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT, assignee TEXT, metadata TEXT, updated_at INTEGER, blocked_reason TEXT)"
         )
         conn.execute(
-            "INSERT INTO tasks VALUES ('task-1', 'running', 'zf-goldfish', ?, 1)",
+            "INSERT INTO tasks (id, status, assignee, metadata, updated_at) VALUES ('task-1', 'running', 'zf-goldfish', ?, 1)",
             (json.dumps({"session_id": "gold-session"}),),
         )
         conn.execute(

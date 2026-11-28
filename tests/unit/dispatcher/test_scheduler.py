@@ -170,6 +170,9 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
             (now, now),
         )
         conn.execute(
+            "UPDATE tasks SET blocked_reason = 'dependency pending' WHERE id = 'child-1'"
+        )
+        conn.execute(
             "INSERT INTO task_links (parent_id, child_id, link_type, created_at) VALUES ('parent-1', 'child-1', 'blocks', ?)",
             (now,),
         )
@@ -191,9 +194,12 @@ def test_run_dispatch_cycle_unblocks_prerequisite_dependencies(tmp_path: Path):
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        child = conn.execute("SELECT status FROM tasks WHERE id = 'child-1'").fetchone()
+        child = conn.execute(
+            "SELECT status, blocked_reason FROM tasks WHERE id = 'child-1'"
+        ).fetchone()
         # Either unblocked to 'todo' or promoted to 'running'
         assert child["status"] in ("todo", "running")
+        assert child["blocked_reason"] is None
 
 
 def test_run_dispatch_cycle_defers_todo_with_unfinished_blocking_parent(
@@ -871,6 +877,32 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
             )
         return MagicMock(returncode=0, stdout="")
 
+    from dispatcher.scheduler import _package_and_open_pr as package_and_open_pr
+
+    def package_with_stale_retry_metadata(conn, cursor, row, meta, *args, **kwargs):
+        stale_meta = json.loads(
+            cursor.execute(
+                "SELECT metadata FROM tasks WHERE id = ?", (row["id"],)
+            ).fetchone()[0]
+        )
+        stale_meta.update(
+            {
+                "last_worker_failure": "old worker failure",
+                "worker_failure_retries": 3,
+                "permanently_blocked": True,
+                "conflict_retries": 2,
+                "packaging_retries": 2,
+                "last_packaging_error": "old packaging failure",
+                "precommit_retries": 2,
+                "last_precommit_error": "old precommit failure",
+            }
+        )
+        cursor.execute(
+            "UPDATE tasks SET metadata = ? WHERE id = ?",
+            (json.dumps(stale_meta), row["id"]),
+        )
+        return package_and_open_pr(conn, cursor, row, meta, *args, **kwargs)
+
     with (
         patch.object(dispatcher, "get_dispatcher_lock_path", return_value=lock_file),
         patch.dict(
@@ -894,6 +926,10 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
         patch.object(dispatcher, "stop_task_worker"),
         patch.object(dispatcher, "_remove_worktree"),
         patch.object(dispatcher, "setup_worktree"),
+        patch(
+            "dispatcher.scheduler._package_and_open_pr",
+            side_effect=package_with_stale_retry_metadata,
+        ),
     ):
         res = run_dispatch_cycle(db_path)
         assert res["ok"] is True
@@ -908,6 +944,23 @@ def test_run_dispatch_cycle_logs_conflict_resolved_activity(tmp_path: Path):
         actions = [a["action"] for a in acts]
         assert "conflict_resolved" in actions
         assert "pr_opened" in actions
+        task_row = conn.execute(
+            "SELECT status, assignee, pr_url, metadata FROM tasks WHERE id = 't-conf-res'"
+        ).fetchone()
+        assert (task_row["status"], task_row["assignee"]) == ("todo", "zf-reviewer")
+        assert task_row["pr_url"] == "https://github.com/foo/bar/pull/50"
+        final_meta = json.loads(task_row["metadata"])
+        for key in (
+            "last_worker_failure",
+            "worker_failure_retries",
+            "permanently_blocked",
+            "conflict_retries",
+            "packaging_retries",
+            "last_packaging_error",
+            "precommit_retries",
+            "last_precommit_error",
+        ):
+            assert key not in final_meta, key
 
 
 def test_run_dispatch_cycle_manual_done_archives_pr_and_stays_done(tmp_path: Path):
