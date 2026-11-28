@@ -701,7 +701,15 @@ def test_dashboard_setup_banner_new_task_and_settings_playwright(tmp_path, monke
 
             # The active-view poll must follow the newly selected board, not its old closure.
             api_requests.clear()
-            page.clock.run_for(3500)
+            with page.expect_request(
+                lambda request: request.url.endswith(
+                    "/sessions?limit=15&board_slug=other"
+                )
+            ):
+                with page.expect_request(
+                    lambda request: request.url.endswith("/agents?board_slug=other")
+                ):
+                    page.clock.run_for(3501)
             page.wait_for_load_state("networkidle")
             assert_api_requests(
                 [
