@@ -886,6 +886,8 @@ def test_terminate_process_group_windows_kills_the_tree_by_pid():
     proc = MagicMock(pid=unattached)
     with (
         patch("dispatcher.process_manager.IS_WINDOWS", True),
+        # The ancestor guard reads a tool-help snapshot on Windows: an empty one
+        # leaves the fake pid nobody's ancestor without touching ctypes.windll.
         patch("dispatcher.process_manager.parent_pid_map", return_value={}),
         patch("dispatcher.process_manager.kill_tree") as mock_kill_tree,
     ):
