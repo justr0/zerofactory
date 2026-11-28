@@ -213,7 +213,7 @@ def test_slop_gate_assertion_free_and_mock_heavy_tests(tmp_path: Path):
     )
     # Also add an assertion-free JS test
     (repo / "tests" / "ui.test.js").write_text(
-        "test('renders without crashing', () => {\n"
+        'test("don\'t render without crashing", () => {\n'
         "  const el = document.createElement('div');\n"
         "});\n"
     )
@@ -246,6 +246,87 @@ def test_slop_gate_assertion_free_and_mock_heavy_tests(tmp_path: Path):
     scorecard = build_diff_hygiene_scorecard(repo, target_branch="main")
     assert "[mock_heavy_test]" in scorecard
     assert "4 mocks vs 1 assertions" in scorecard
+
+
+def test_modified_existing_test_with_unchanged_assertions_is_not_assertion_free(
+    tmp_path: Path,
+):
+    repo = _init_repo(tmp_path)
+    test_file = repo / "tests" / "test_app.py"
+    test_file.write_text(
+        test_file.read_text().replace(
+            "def test_greet():\n",
+            "def test_greet(value=1):\n    result = value\n",
+            1,
+        )
+    )
+
+    report = analyze_workspace_diff(
+        repo, target_branch="main", include_working_tree=True
+    )
+    assert not [
+        finding for finding in report.errors if finding.rule == "assertion_free_test"
+    ]
+
+
+def test_new_test_without_assertions_is_assertion_free(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    (repo / "tests" / "test_new.py").write_text(
+        "def test_no_assert():\n    result = 1 + 1\n"
+    )
+
+    report = analyze_workspace_diff(
+        repo, target_branch="main", include_working_tree=True
+    )
+    findings = [
+        finding for finding in report.errors if finding.rule == "assertion_free_test"
+    ]
+    assert [(finding.file, finding.line) for finding in findings] == [
+        ("tests/test_new.py", 1)
+    ]
+
+
+def test_new_test_with_assertions_is_not_assertion_free(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    (repo / "tests" / "test_new.py").write_text(
+        "def test_with_assert():\n    assert 1 + 1 == 2\n"
+    )
+
+    report = analyze_workspace_diff(
+        repo, target_branch="main", include_working_tree=True
+    )
+    assert not [
+        finding for finding in report.errors if finding.rule == "assertion_free_test"
+    ]
+
+
+def test_assertion_free_finding_uses_post_image_line_with_context(
+    tmp_path: Path, monkeypatch
+):
+    repo = _init_repo(tmp_path)
+    test_file = repo / "tests" / "test_app.py"
+    test_file.write_text(
+        test_file.read_text() + "\ndef test_no_assert():\n    result = 1 + 1\n"
+    )
+    expected_line = len(test_file.read_text().splitlines()) - 1
+    real_run = subprocess.run
+
+    def run_with_context(*args, **kwargs):
+        command = args[0] if args else kwargs["args"]
+        if "-U0" in command:
+            command = ["-U2" if part == "-U0" else part for part in command]
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_with_context)
+    report = analyze_workspace_diff(
+        repo, target_branch="main", include_working_tree=True
+    )
+    findings = [
+        finding for finding in report.errors if finding.rule == "assertion_free_test"
+    ]
+    assert [(finding.file, finding.line) for finding in findings] == [
+        ("tests/test_app.py", expected_line)
+    ]
 
 
 def test_slop_gate_untested_production_diff(tmp_path: Path, monkeypatch):

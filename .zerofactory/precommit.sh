@@ -48,6 +48,7 @@ FASTAPI_VERSION="0.133.1"
 HTTPX_VERSION="0.28.1"
 PYDANTIC_VERSION="2.13.4"
 PYYAML_VERSION="6.0.3"
+UVICORN_VERSION="0.40.0"
 
 run_format() {
   echo "▶ Zero Factory precommit: format & lint"
@@ -127,9 +128,10 @@ run_test() {
     "httpx==${HTTPX_VERSION}"
     "pydantic==${PYDANTIC_VERSION}"
     "PyYAML==${PYYAML_VERSION}"
+    "uvicorn==${UVICORN_VERSION}"
   )
   install_log=""
-  if ! python3 -c "import pytest, fastapi, httpx, pydantic, yaml" >/dev/null 2>&1; then
+  if ! python3 -c "import pytest, fastapi, httpx, pydantic, yaml, uvicorn" >/dev/null 2>&1; then
     echo "  (info) pinned test stack not importable — attempting to install..."
     if command -v uv >/dev/null 2>&1; then
       # venv interpreters install directly; bare system/tool interpreters
@@ -143,10 +145,10 @@ run_test() {
       install_log="$(pip3 install --user "${test_deps[@]}" 2>&1)" || true
     fi
   fi
-  if python3 -c "import pytest, fastapi, httpx, pydantic, yaml" >/dev/null 2>&1; then
+  if python3 -c "import pytest, fastapi, httpx, pydantic, yaml, uvicorn" >/dev/null 2>&1; then
     python3 -m pytest tests/ -q -rs
   else
-    echo "  (error) pytest + plugin runtime deps (fastapi, httpx, pydantic, PyYAML) are"
+    echo "  (error) pytest + plugin runtime deps (fastapi, httpx, pydantic, PyYAML, uvicorn) are"
     echo "         required for Zero Factory precommit verification but could not be installed."
     if [ -n "$install_log" ]; then
       echo "  Install failure output (why the test stack is missing):"

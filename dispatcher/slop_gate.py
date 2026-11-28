@@ -71,7 +71,7 @@ _RE_BARE_PASS = re.compile(r"^\s*pass\s*(?:#.*)?$")
 
 _RE_PY_TEST_DEF = re.compile(r"^(\s*)(?:async\s+)?def\s+(test_[A-Za-z0-9_]*)\s*\(")
 _RE_PY_BLOCK_BOUNDARY = re.compile(r"^(\s*)(?:(?:async\s+)?def\s+|class\s+)")
-_RE_JS_TEST_DEF = re.compile(r"^(\s*)(?:it|test)\s*\(\s*['\"`]")
+_RE_JS_TEST_DEF = re.compile(r"""^(\s*)(?:it|test)\s*\(\s*(['"`])((?:\\.|[^\\])*?)\2""")
 _RE_JS_BLOCK_BOUNDARY = re.compile(r"^(\s*)(?:it|test|describe)\s*\(")
 _RE_ASSERTION = re.compile(
     r"\bassert\b|self\.assert|pytest\.(?:raises|warns|deprecated_call|fail)\b"
@@ -289,6 +289,7 @@ def _scan_added_lines(
     rel_path: str,
     lines_with_nums: list[tuple[int, str]],
     report: DiffHygieneReport,
+    existing_test_ids: set[str] | None = None,
 ) -> None:
     if not _is_code_file(rel_path):
         return
@@ -359,6 +360,9 @@ def _scan_added_lines(
             )
             if test_def_m:
                 _finalize_active_test()
+                test_id = test_def_m.group(2) if is_python else test_def_m.group(3)
+                if existing_test_ids and test_id in existing_test_ids:
+                    continue
                 active_test_line = line_num
                 active_test_indent = len(test_def_m.group(1))
                 active_test_snippet = stripped
@@ -600,6 +604,8 @@ def analyze_workspace_diff(
                 report.test_lines_deleted += 1
             elif current_file in prod_code_files_seen:
                 report.prod_code_lines_deleted += 1
+        elif raw_line.startswith(" "):
+            current_line += 1
 
     # Also inspect untracked files during packaging (before `git add .`)
     if include_working_tree:
@@ -657,7 +663,34 @@ def analyze_workspace_diff(
     report.dependency_files_touched = sorted(dep_files_seen)
 
     for rel_path, lines_with_nums in added_by_file.items():
-        _scan_added_lines(rel_path, lines_with_nums, report)
+        existing_test_ids: set[str] = set()
+        suffix = Path(rel_path).suffix.lower()
+        definition_pattern = (
+            _RE_PY_TEST_DEF
+            if suffix == ".py"
+            else _RE_JS_TEST_DEF
+            if suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+            else None
+        )
+        if rel_path in files_seen and definition_pattern is not None:
+            try:
+                base_file = subprocess.run(
+                    ["git", "show", f"{merge_base}:{rel_path}"],
+                    cwd=str(workspace_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if base_file.returncode == 0:
+                    id_group = 2 if suffix == ".py" else 3
+                    existing_test_ids = {
+                        match.group(id_group)
+                        for line in base_file.stdout.splitlines()
+                        if (match := definition_pattern.match(line))
+                    }
+            except Exception:
+                pass
+        _scan_added_lines(rel_path, lines_with_nums, report, existing_test_ids)
 
     # Spec "Do Not Touch" file boundary enforcement (including paths filtered by EXCLUDED_DIFF_PATHSPECS)
     dnt_patterns = extract_do_not_touch_patterns(spec_text)

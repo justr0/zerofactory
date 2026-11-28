@@ -218,7 +218,10 @@ def test_gateway_runtime_auto_starts_when_the_setting_is_on(tmp_path):
     db_path = tmp_path / "zerofactory.db"
     db_path.touch()
     with (
-        patch.dict(os.environ, ENV_WITHOUT_OPT_OUT),
+        patch.dict(
+            os.environ,
+            {**ENV_WITHOUT_OPT_OUT, "HERMES_HOME": "", "HERMES_PROFILE": ""},
+        ),
         patch.object(sys, "argv", _argv_inside(tmp_path, "-m", "gateway", "run")),
         patch.object(zf_db, "get_db_path", lambda: db_path),
         patch.object(
