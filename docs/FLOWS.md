@@ -267,7 +267,8 @@ Polls tasks matching: `pr_url` set and not `done`, OR `blocked` with a builder a
      equal to both the request head and the live PR head; anything else is logged and ignored. **FIX** re-opens
      one bounded fix round (fresh review budget; the verdict body is the builder's entire brief, earlier findings
      are deferred) and the round closes once the reviewer answers the fix commit — a recorded review round or an
-     approval, closed on the poll that sees it, before any conflict routing — after which the verdict is no
+     approval whose review is on the fix commit (never one standing on the pre-fix head, and only once the
+     builder has handed the fix over), closed on the poll that sees it, before any conflict routing — after which the verdict is no
      longer the brief and the closed protocol records (the recorded verdict, the dispatcher's fix-round note)
      stay on the task as history but are excluded from the builder's
      review-comment prompt; **MERGE** keeps it parked until the arbiter merges under its own sweep rules, and **ESCALATE**

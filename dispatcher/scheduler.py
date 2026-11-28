@@ -1860,7 +1860,7 @@ def _poll_pr_and_route_review(
                 "view",
                 f"task/{task_id}",
                 "--json",
-                "reviewDecision,state,url,mergeable,headRefOid",
+                "reviewDecision,state,url,mergeable,headRefOid,reviews",
             ],
             capture_output=True,
             text=True,
@@ -1875,7 +1875,7 @@ def _poll_pr_and_route_review(
                     "view",
                     row["pr_url"],
                     "--json",
-                    "reviewDecision,state,url,mergeable,headRefOid",
+                    "reviewDecision,state,url,mergeable,headRefOid,reviews",
                 ],
                 capture_output=True,
                 text=True,
@@ -2069,11 +2069,25 @@ def _poll_pr_and_route_review(
         # produced, whatever the PR's merge state: close the round before any
         # routing, or conflict routing requeues a builder and the open brief
         # comes back as its mandatory work - a second fix round after approval.
+        # While the round is open, only an approval of the current head is
+        # that answer, once the builder has packaged the fix: until then
+        # (awaiting_pr) - and after the push, until GitHub dismisses the stale
+        # review - reviewDecision keeps reporting the approval the pre-fix head
+        # earned, which would retire a fix no reviewer has seen.
         _approved_park = (
             row["status"] == "blocked"
             and str(meta.get("blocked_reason_type") or "") == "approved"
         )
-        if (decision == "APPROVED" or _approved_park) and _cap_arb.close_fix_round(
+        _pr_approval = decision == "APPROVED" and (
+            _cap_arb.fix_round_brief(meta) is None
+            or (
+                not meta.get("awaiting_pr")
+                and _cap_arb.approval_on_head(
+                    pr_data.get("reviews"), pr_data.get("headRefOid")
+                )
+            )
+        )
+        if (_pr_approval or _approved_park) and _cap_arb.close_fix_round(
             meta, now, by="approval"
         ):
             cursor.execute(
@@ -2123,7 +2137,7 @@ def _poll_pr_and_route_review(
 
         # An approval that answered a fix round is not sent back to a builder
         # over a conflict: the routing below keeps it at the human gate.
-        _approval_answered = (decision == "APPROVED" or _approved_park) and (
+        _approval_answered = (_pr_approval or _approved_park) and (
             _cap_arb.fix_round_closed_by(meta) == "approval"
         )
         if (
@@ -2230,7 +2244,7 @@ def _poll_pr_and_route_review(
             or bool(actionable_comments)
         )
         is_approved = (
-            decision == "APPROVED" or blocked_type == "approved"
+            _pr_approval or blocked_type == "approved"
         ) and not has_actionable_feedback
 
         if has_actionable_feedback and (

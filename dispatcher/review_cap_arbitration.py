@@ -795,6 +795,26 @@ def fix_round_brief(task_meta: dict[str, Any] | None) -> str | None:
     return brief or None
 
 
+def approval_on_head(reviews: Any, head_sha: Any) -> bool:
+    """True when the latest approving review was submitted on ``head_sha``.
+
+    GitHub's aggregate reviewDecision keeps reading APPROVED after a push
+    until the stale review is dismissed, so it cannot tell an approval of the
+    fix commit from one standing on the pre-fix head; the review's own commit
+    can. An unreadable list, or one without an approving review, is no
+    approval.
+    """
+    head = str(head_sha or "")
+    if not head or not isinstance(reviews, list):
+        return False
+    for review in reversed(reviews):
+        if isinstance(review, dict) and review.get("state") == "APPROVED":
+            commit = review.get("commit")
+            oid = commit.get("oid") if isinstance(commit, dict) else commit
+            return str(oid or "") == head
+    return False
+
+
 def post_arbitration_request(
     *,
     pr_url: str | None,
