@@ -180,8 +180,16 @@ export function SessionsView(props) {
             const agentInfo = agentsList.find(a => a.name === meta.id) || {};
             const agentSessions = boardFilteredSessions.filter(s => s.agent === meta.id);
             const isAgentActive = agentInfo.is_active || (agentInfo.status === "active") || agentSessions.some(s => s.status === "ongoing" || s.is_active);
-            const currentTask = agentInfo.current_task;
+            const currentTasks = Array.isArray(agentInfo.current_tasks) && agentInfo.current_tasks.length > 0
+              ? agentInfo.current_tasks
+              : (agentInfo.current_task ? [agentInfo.current_task] : []);
+            const currentTask = currentTasks[0] || null;
             const activeSession = agentInfo.active_session || agentSessions.find(s => s.status === "ongoing" || s.is_active);
+            const stopTarget = currentTask
+              ? { taskId: currentTask.id, sessionId: null, key: currentTask.id, label: "task " + currentTask.id }
+              : (activeSession
+                ? { taskId: null, sessionId: activeSession.session_id, key: activeSession.session_id, label: "session" }
+                : null);
             const totalAgentTurns = agentSessions.reduce((acc, s) => acc + (s.turn_count || 0), 0);
 
             return React.createElement(
@@ -228,20 +236,21 @@ export function SessionsView(props) {
                       }),
                       isAgentActive ? "Active" : "Idle"
                     ),
-                    isAgentActive && (currentTask || activeSession) && React.createElement(
+                    isAgentActive && stopTarget && React.createElement(
                       "button",
                       {
                         type: "button",
-                        disabled: stoppingSessionId === ((activeSession && activeSession.session_id) || (currentTask && currentTask.id)),
+                        "aria-label": "Stop " + stopTarget.label,
+                        disabled: stoppingSessionId === stopTarget.key,
                         className: "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-800/80 hover:border-rose-800/60 transition-colors shadow-xs cursor-pointer disabled:opacity-50",
-                        title: "Stop running AI session for this agent",
+                        title: "Stop " + stopTarget.label,
                         onClick: (e) => {
                           e.stopPropagation();
-                          handleStopTaskSession(currentTask && currentTask.id, activeSession && activeSession.session_id);
+                          handleStopTaskSession(stopTarget.taskId, stopTarget.sessionId);
                         }
                       },
                       React.createElement("span", { className: "text-[9px]" }, "⏹"),
-                      React.createElement("span", null, stoppingSessionId === ((activeSession && activeSession.session_id) || (currentTask && currentTask.id)) ? "Stopping..." : "Stop")
+                      React.createElement("span", null, stoppingSessionId === stopTarget.key ? "Stopping..." : "Stop")
                     )
                   )
                 ),
@@ -257,18 +266,24 @@ export function SessionsView(props) {
                     React.createElement("span", null, isAgentActive ? "Current Work" : "Status"),
                     isAgentActive && React.createElement("span", { className: "text-emerald-400 font-mono text-[10px]" }, "Executing")
                   ),
-                  currentTask
+                  currentTasks.length > 0
                     ? React.createElement(
-                      "button",
-                      {
-                        type: "button",
-                        className: "text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer",
-                        onClick: () => {
-                          setActiveView("board");
-                          loadTaskDetails(currentTask.id);
-                        }
-                      },
-                      "📋 " + currentTask.title + " ↗"
+                      "div",
+                      { className: "space-y-1" },
+                      currentTasks.map((task) => React.createElement(
+                        "button",
+                        {
+                          key: task.id,
+                          type: "button",
+                          className: "block text-left text-xs font-semibold text-indigo-300 hover:text-indigo-200 transition-colors line-clamp-1 cursor-pointer w-full",
+                          onClick: () => {
+                            setActiveView("board");
+                            loadTaskDetails(task.id);
+                          },
+                          title: task.title
+                        },
+                        "📋 " + task.title + " ↗"
+                      ))
                     )
                     : activeSession
                       ? React.createElement(
