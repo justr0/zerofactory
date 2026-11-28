@@ -166,7 +166,7 @@ def create_openwiki_task(
         return None
 
 
-def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str:
+def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str | None:
     try:
         res = subprocess.run(
             cmd,
@@ -176,9 +176,26 @@ def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str:
             text=True,
             timeout=10,
         )
-        return res.stdout.strip() if res.returncode == 0 else ""
+        return res.stdout.strip() if res.returncode == 0 else None
     except Exception:
-        return ""
+        return None
+
+
+def _request_openwiki_refresh(
+    slug: str, reason: str, repo_alias: str | None, auto_create_task: bool
+) -> tuple[bool, str]:
+    if auto_create_task:
+        task = create_openwiki_task(slug, "", repo_alias=repo_alias)
+        if task and task.get("id"):
+            return (
+                False,
+                f"{reason} Created task '{task['id']}' in 'todo' for zf-builder.",
+            )
+        return (
+            True,
+            f"{reason} Failed to create an OpenWiki refresh task; wake requested.",
+        )
+    return True, reason
 
 
 def get_state_file() -> Path:
@@ -353,6 +370,11 @@ def evaluate_single_repo_openwiki(
 
     # 4. Check git working tree cleanliness
     status_porcelain = _run_cmd(["git", "status", "--porcelain"], cwd=repo_dir)
+    if status_porcelain is None:
+        return (
+            False,
+            f"Unable to inspect git working tree at {repo_dir}; skipping OpenWiki update.",
+        )
     if status_porcelain:
         return (
             False,
@@ -370,16 +392,17 @@ def evaluate_single_repo_openwiki(
         ["git", "log", "-n", "200", "--format=%H%x09%s"],
         cwd=repo_dir,
     )
+    if marker_log is None:
+        reason = (
+            f"Unable to inspect Git sync markers; conservatively requesting an "
+            f"OpenWiki refresh{alias_label}."
+        )
+        return _request_openwiki_refresh(slug, reason, repo_alias, auto_create_task)
     for line in marker_log.splitlines():
         sha, _, subject = line.partition("\t")
         if subject.startswith("docs(openwiki): sync"):
             sync_commit = sha
             break
-    last_openwiki_commit = _run_cmd(
-        ["git", "log", "-1", "--format=%H", "--", "openwiki"],
-        cwd=repo_dir,
-    )
-
     state = load_state()
     board_state = state.get(slug, {})
     repo_state = board_state.get("repos", {}).get(repo_alias, {}) if repo_alias else {}
@@ -388,7 +411,19 @@ def evaluate_single_repo_openwiki(
         or state.get(f"{slug}:{repo_alias}", {}).get("last_scanned_sha")
         or board_state.get("last_scanned_sha")
     )
-    base_commit = sync_commit or last_scanned_sha or last_openwiki_commit
+    base_commit = sync_commit or last_scanned_sha
+    if not base_commit:
+        last_openwiki_commit = _run_cmd(
+            ["git", "log", "-1", "--format=%H", "--", "openwiki"],
+            cwd=repo_dir,
+        )
+        if last_openwiki_commit is None:
+            reason = (
+                f"Unable to inspect Git history for openwiki; conservatively "
+                f"requesting an OpenWiki refresh{alias_label}."
+            )
+            return _request_openwiki_refresh(slug, reason, repo_alias, auto_create_task)
+        base_commit = last_openwiki_commit
 
     if not base_commit:
         if auto_create_task:
@@ -425,6 +460,12 @@ def evaluate_single_repo_openwiki(
         ],
         cwd=repo_dir,
     )
+    if diff_log is None:
+        reason = (
+            f"Unable to inspect Git log since last OpenWiki commit ({base_commit[:8]}); "
+            f"conservatively requesting an OpenWiki refresh{alias_label}."
+        )
+        return _request_openwiki_refresh(slug, reason, repo_alias, auto_create_task)
     if not diff_log:
         return (
             False,
