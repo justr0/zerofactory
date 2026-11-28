@@ -1,11 +1,15 @@
 ---
 type: subsystem
 title: Dispatch Engine
-description: The dispatcher subsystem — the centralized task state machine, the run_dispatch_cycle lifecycle (in-dispatcher improvement scanner, autonomous recovery routing), multi-repo isolated Git worktrees, worker spawning with a spawn-grace period, the deterministic precommit self-healing gate plus the zero-token anti-slop diff gate, git/PR ops incl. the packaging-failure retry budget and HTTPS-to-SSH push fallback, the per-PR review cap with bounded arbitration, automerge, and the WAL-tolerant stuck-worker reaper.
+description: The dispatcher subsystem — the centralized 13-stage task state machine, the run_dispatch_cycle lifecycle (in-dispatcher improvement scanner, autonomous recovery routing), multi-repo isolated Git worktrees, worker spawning with a spawn-grace period, the deterministic precommit self-healing gate plus the zero-token anti-slop diff gate, git/PR ops incl. the packaging-failure retry budget and the HTTPS-to-SSH push fallback, the per-commit review cap, automerge, and the WAL-tolerant stuck-worker reaper.
 tags: [dispatcher, dispatch-loop, state-machine, git-worktree, worker-spawning, precommit, anti-slop, github-pr, reaper, self-healing, multi-repo, automerge, spawn-grace, recovery]
 sources:
   - id: openwiki-source-4942bcbe129130ccad2b7e2a
     resource: repo://__init__.py
+  - id: openwiki-source-9ab161c6e9774cf771b19ced
+    resource: repo://.zerofactory/precommit.sh
+  - id: openwiki-source-4d0299655ec14b97f5aaa9a7
+    resource: repo://dashboard/routes/cron.py
   - id: openwiki-source-c705147b9966f3d6f300034a
     resource: repo://dashboard/routes/tasks.py
   - id: openwiki-source-78d773f851580c376cac002d
@@ -28,8 +32,12 @@ sources:
     resource: repo://dispatcher/worker_spawner.py
   - id: openwiki-source-bd2c9dd479aa89010adee0f5
     resource: repo://dispatcher/worktree.py
+  - id: openwiki-source-0d153fd68e7210eb5d3be49d
+    resource: repo://paths.py
   - id: openwiki-source-57b14ecc6ef51ae6212b15f0
     resource: repo://settings.py
+  - id: openwiki-source-e06a9686c31922a42e06fb20
+    resource: repo://tests/unit/dispatcher/test_scanner.py
 generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
 verified:
   - by: openwiki/0.9.0
@@ -113,21 +121,24 @@ start/stop/status controls for that loop via
 
 The per-board improvement scanner runs **inside the dispatcher process**
 rather than as an external cron daemon (`repo://dispatcher/scanner.py#L334-L451`).
-Each dispatch cycle reaps dead scanner PIDs with `reap_active_scanners`
-(`repo://dispatcher/scheduler.py#L214-L217`,
-`repo://dispatcher/scheduler.py#L964-L968`), and when a board's active task count
-is below its cap, its `todo` count is below `idle_scan_max_todo`, no scanner is
-active for that board, and the `get_scanner_cron_config`
-(`repo://dispatcher/scanner.py#L270-L332`) cooldown has elapsed, the cycle
-launches a background `zf-orchestrator` scan of the board's repositories via
-`spawn_board_scanner` (`repo://dispatcher/scanner.py#L334-L451`,
-`repo://dispatcher/scheduler.py#L991-L1054`). The scanner prompt instructs
+Each dispatch cycle reaps completed or dead scanner processes with
+`reap_active_scanners` (`repo://dispatcher/scanner.py#L221-L262`,
+`repo://dispatcher/scheduler.py#L1065-L1067`). Reaping removes only the exited
+scanner's in-memory entry, PID file, and process artifacts; live scanner state
+and its PID record are retained. The regression test covers a live and completed
+scanner in one pass (`repo://tests/unit/dispatcher/test_scanner.py#L516-L562`).
+When global LLM capacity is available, a board's active task count is below its
+cap, its `todo` count is below `idle_scan_max_todo`, no scanner is active for
+that board, `scan_on_idle` is enabled, and the cooldown has elapsed, the cycle
+launches a background `zf-orchestrator` scan via `spawn_board_scanner`
+(`repo://dispatcher/scheduler.py#L1065-L1155`,
+`repo://dispatcher/scanner.py#L334-L451`). The scanner prompt instructs
 `zf-orchestrator` to file findings directly in `todo` assigned to
 `zf-builder` (`--status todo --assignee zf-builder`, respecting
 `idle_scan_max_todo`) so the dispatcher picks them up without a human
-triage step (`repo://dispatcher/scanner.py#L375-L383`). Lifecycle helpers —
-`get_active_scanner_pids`, `kill_board_scanner`, and `reap_active_scanners` —
-sit alongside in the same module (`repo://dispatcher/scanner.py#L59-L262`).
+triage step (`repo://dispatcher/scanner.py#L376-L399`). The lifecycle helpers
+are `get_active_scanner_pids`, `kill_board_scanner`, and
+`reap_active_scanners` (`repo://dispatcher/scanner.py#L59-L262`).
 
 ## Isolated-worktree invariant
 
@@ -317,19 +328,21 @@ ops).
   back to the builder, the dispatcher increments `review_round` in task
   metadata (written alongside the legacy `commit_review_count` for
   compatibility). The counter is a **per-PR** round count and is *not* reset
-  when the PR head commit changes. The cap is `ZEROFACTORY_MAX_REVIEW_ROUNDS`
-  (default **2**): once `review_round >= max`, the dispatcher marks the cap
-  reached and parks the task as `blocked` / `human`. If configured, bounded
-  arbitration receives the merge decision; the task remains parked until a
-  bound verdict, request deadline, PR merge/close, or operator recovery
-  (`repo://dispatcher/scheduler.py#L2100-L2225`,
-  `repo://dispatcher/scheduler.py#L1843-L1899`). The `recover` endpoint clears
+  when the PR head commit changes, so each new commit does not restart the
+  budget. The cap is `ZEROFACTORY_MAX_REVIEW_ROUNDS` (default **2**): once
+  `review_round >= max` the dispatcher sets `review_cap_reached` and
+  `blocked_reason_type = "human-gate"`, assigns the task to `human`, and moves
+  it to `blocked` instead of looping builder ↔ reviewer forever. Once
+  `review_cap_reached` is set, subsequent polls of that blocked/human task
+  early-return when no new PR comments have arrived, so the cap is applied exactly
+  once (`repo://dispatcher/scheduler.py#L1437-L1483`,
+  `repo://dispatcher/scheduler.py#L1344-L1351`). The `recover` endpoint clears
   `review_cap_reached`, `review_round`, and `commit_review_count`, giving a
-  recovered task a fresh round budget
-  (`repo://dashboard/routes/tasks.py#L1889-L1904`).
+  human-recovered task a fresh round budget
+  (`repo://dashboard/routes/tasks.py#L1724-L1726`).
 - **External-issue PR linkage** — when a task carries `external_issue` metadata
-<!-- openwiki: broken internal link [/openwiki/components/issues-importer.md] link "/openwiki/components/issues-importer.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-  (see [External Issue Import](/openwiki/components/issues-importer.md)), the
+<!-- openwiki: broken internal link [../architecture.md] file "../architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+  (see [Architecture](../architecture.md)), the
   PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
   `Resolves: <KEY>` branch still exists for pre-Jira-removal `jira`-source
   metadata rows) so merging the PR closes the source issue
@@ -350,8 +363,12 @@ ops).
 
 `reaper.py` detects hung workers using a shared `_compute_stuck_state` (a
 per-task max running time plus an inactivity timeout) so `reap_active_workers`
-(the only path that kills processes) and `check_stuck_tasks` (reporting /
-manual reap) cannot drift apart (`repo://dispatcher/reaper.py#L70-L134`).
+and `check_stuck_tasks` use the same stuck criteria; `reap_stuck_tasks` also
+terminates processes when manually reaping a task
+(`repo://dispatcher/reaper.py#L125-L182`,
+`repo://dispatcher/reaper.py#L225-L249`,
+`repo://dispatcher/reaper.py#L804-L905`,
+`repo://dispatcher/reaper.py#L983-L1079`).
 Because the dashboard holds many open
 connections plus an active writer, the reaper opens **WAL-tolerant**
 connections: `_open_reaper_conn` sets `PRAGMA busy_timeout`, and
@@ -418,12 +435,8 @@ step that died; the full grep playbook lives in
 ## Relationships
 
 Upstream: claims work off the durable Kanban SQLite substrate described in
-<!-- openwiki: broken internal link [/openwiki/architecture.md] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[Architecture](/openwiki/architecture.md). Downstream: the deterministic
-precommit and PR ops hand off to the reviewer, and the dashboard layer
-<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-([Dashboard & Automation](/openwiki/components/dashboard-cron.md)) triggers
-`run_dispatch_cycle` and inspects worker liveness. Coding rules for touching
-this code live in
-<!-- openwiki: broken internal link [/openwiki/conventions.md] link "/openwiki/conventions.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
-[Conventions](/openwiki/conventions.md).
+<!-- openwiki: broken internal link [../architecture.md] file "../architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
+[Architecture](../architecture.md). Downstream: the deterministic precommit
+and PR ops hand off to the reviewer; dashboard dispatch and cron routes trigger
+`run_dispatch_cycle` and inspect worker liveness. Coding rules for touching
+this code live in [Conventions](../conventions.md).

@@ -16,11 +16,11 @@
       "completedRunId": "2c7ddbbb-c6db-48a9-85ed-7b763e009c1b"
     },
     "/openwiki/components/dispatcher.md": {
-      "pageVersion": "sha256:2062cf174a6b824520d517e06fa9c9784234643227361bccce13081d316e5447",
+      "pageVersion": "sha256:42d91a8a2a8c3e9a88a7d21bf257aab13b40ec5dbcb1e1ed32e1536df96feb61",
       "completedBy": "hermes",
       "completedRunId": "49b302eb-8cf6-4fa5-9774-8efa015719b0",
-      "gitHead": "4ea851220d8bc734ff4c9d4293e8423f6b66bfc9",
-      "sourceFingerprint": "sha256:f4e13788509faf09944bd70a9205768c55a9409768bec19f8f6c8c660e64e0d1"
+      "gitHead": "b85038d9874fd1e2a23673c953481e9797c185d9",
+      "sourceFingerprint": "sha256:b10b08aeeddbd06e57a62ed53cfac82c637aacf681d605383b4827523d06da50"
     },
     "/openwiki/components/issues-importer.md": {
       "gitHead": "01be1b499d74788a3ed656bd6077f21a19bffe2b",
