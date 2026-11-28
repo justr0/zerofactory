@@ -476,17 +476,11 @@ var ZeroFactoryDashboard = (function(exports) {
 	//#endregion
 	//#region dashboard/src/components/Header.jsx
 	function Header(props) {
-		const { activeView, setActiveView, hasActiveAgents, sessionsList = [], agentsList = [], loadSessions, loadAgents, loadMemories, boards = [], selectedBoard, setSelectedBoard, handleOpenEditBoard, handleOpenEditBoardModal, handleOpenNewBoardModal, handleOpenCronModal, setShowCronModal, loadCronJobs, cronSchedulerEnabled = true, cronJobs = [], handleOpenSettingsModal, setShowSettingsModal, loadSettings, setShowNewTaskModal, setNewTaskForm, isDispatching, handleRunDispatcher, handleDispatch, setupStatus, isTogglingDispatcher, handleStartDispatcher, handleStopDispatcher, loadBoards, loadTasksAndStats } = props;
+		const { activeView, setActiveView, hasActiveAgents, sessionsList = [], agentsList = [], boards = [], selectedBoard, onSelectBoard, handleOpenEditBoard, handleOpenEditBoardModal, handleOpenNewBoardModal, handleOpenCronModal, setShowCronModal, loadCronJobs, cronSchedulerEnabled = true, cronJobs = [], handleOpenSettingsModal, setShowSettingsModal, loadSettings, setShowNewTaskModal, setNewTaskForm, isDispatching, handleRunDispatcher, handleDispatch, setupStatus, isTogglingDispatcher, handleStartDispatcher, handleStopDispatcher, loadBoards } = props;
 		return React.createElement("header", { className: "space-y-4 pb-5 border-b border-slate-800/80" }, React.createElement("div", { className: "flex flex-col lg:flex-row lg:items-center justify-between gap-4" }, React.createElement("div", { className: "flex items-center gap-4 flex-wrap" }, React.createElement(BoardSelector, {
 			boards,
 			selectedBoard,
-			onSelectBoard: (val) => {
-				setSelectedBoard(val);
-				loadTasksAndStats(val);
-				loadMemories(val);
-				loadSessions(val);
-				loadAgents(val);
-			},
+			onSelectBoard,
 			onOpenNewBoard: handleOpenNewBoardModal,
 			onOpenEditBoard: handleOpenEditBoard || handleOpenEditBoardModal,
 			liveSessions: sessionsList
@@ -507,12 +501,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			type: "button",
 			"aria-current": activeView === "sessions" || activeView === "agents" ? "page" : void 0,
 			className: "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-all cursor-pointer relative " + (activeView === "sessions" || activeView === "agents" ? "bg-indigo-600 text-white shadow-xs shadow-indigo-600/30" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"),
-			onClick: () => {
-				setActiveView("agents");
-				loadSessions();
-				loadAgents();
-				loadMemories(selectedBoard);
-			}
+			onClick: () => setActiveView("agents")
 		}, "🤖 Agents", (hasActiveAgents || sessionsList.some((s) => s.status === "ongoing" || s.is_active) || agentsList.some((a) => a.is_active)) && React.createElement("span", { className: "w-2 h-2 rounded-full bg-emerald-400 zfk-pulse-active shrink-0 ml-0.5" })), React.createElement("button", {
 			type: "button",
 			"aria-current": activeView === "instructions" ? "page" : void 0,
@@ -820,6 +809,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					onDragStart: (e) => handleDragStart(e, t),
 					onClick: () => loadTaskDetails(t.id),
 					onKeyDown: (e) => {
+						if (e.target !== e.currentTarget) return;
 						if (e.key === "Enter" || e.key === " ") {
 							e.preventDefault();
 							loadTaskDetails(t.id);
@@ -2155,7 +2145,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					title: "Thematic Review",
 					badge: "Running: review",
 					bcolor: "text-cyan-100 bg-cyan-900/90 border-cyan-500/70",
-					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge). A recovered reviewer remains queued for PR polling until a verdict routes it, without a redundant reviewer spawn."
+					desc: "zf-reviewer inspects the pre-digested Diff Hygiene Scorecard (including mock-overload warnings) and conducts up to 2 cumulative rounds per PR (Correctness & Tests ➔ Verification & Polish). Round 1 rework loops to Todo (building); an unresolved Round 2 parks the task and posts ONE [AI:zf-dispatcher] ARBITRATION REQUEST comment for the zf-gatekeeper profile (24h timeout, at most 2 per task). The request lists three ready-to-paste verdict lines. Only a PR conversation comment from an authorized GitHub account whose FIRST line is exactly one of them counts: [AI:zf-gatekeeper] ARBITRATION VERDICT: FIX | REQUEST: <key> | HEAD: <sha>, or the same line with MERGE or ESCALATE in place of FIX. FIX opens exactly one fix round scoped to the verdict, MERGE stays parked until the arbiter merges the PR, ESCALATE and an unanswered timeout stay parked for a human; approval moves to Human (awaiting_merge). Every park at the cap waits on a person: it holds through PR conflicts and stale GitHub review state, and a reviewer approval parks the task for human merge even while GitHub still shows an earlier request-changes review. The request deadline is measured from GitHub's own timestamp for the request comment (resolved by id when the thread cannot be read back; until it is verified nothing is consumed or expired), and a corrupt attempt counter reads as 0, so the next request is a valid attempt 1. A recovered reviewer remains queued for PR polling until a verdict routes it, without a redundant reviewer spawn."
 				},
 				{
 					num: "7",
@@ -2452,7 +2442,7 @@ var ZeroFactoryDashboard = (function(exports) {
 						},
 						{
 							cmd: "hermes zerofactory move <task_id> running",
-							desc: "Transition ticket status; agent running/done reports are bound to the current dispatcher execution"
+							desc: "Transition ticket status; agent running/done reports are bound to the current dispatch token, resolved from --execution-id, ZEROFACTORY_WORKER_EXECUTION_ID, or the agent session's dispatch header"
 						},
 						{
 							cmd: "hermes zerofactory recover <task_id> [--guidance \"...\"]",
@@ -3060,14 +3050,7 @@ var ZeroFactoryDashboard = (function(exports) {
 					className: "font-mono text-xs font-semibold px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 shadow-xs",
 					title: "Auto-Merge Active"
 				}, "⚡ Auto-merge");
-				const meta = typeof selectedTask.metadata === "string" ? (() => {
-					try {
-						return JSON.parse(selectedTask.metadata);
-					} catch (e) {
-						return {};
-					}
-				})() : selectedTask.metadata || {};
-				const issueLabels = (meta && meta.external_issue && meta.external_issue.labels || []).map((x) => String(x).trim().toLowerCase());
+				const issueLabels = (taskMeta && taskMeta.external_issue && taskMeta.external_issue.labels || []).map((x) => String(x).trim().toLowerCase());
 				if (issueLabels.some((x) => x === "hitl" || x === "manual-review")) return null;
 				if (issueLabels.some((x) => x === "automerge" || x === "yolo")) return React.createElement("span", {
 					className: "font-mono text-xs font-semibold px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 shadow-xs",
@@ -3204,13 +3187,6 @@ var ZeroFactoryDashboard = (function(exports) {
 				onClick: () => handleAdvanceTask(selectedTask)
 			}, "Advance Stage →")))
 		}, (() => {
-			const taskMeta = typeof selectedTask.metadata === "string" ? (() => {
-				try {
-					return JSON.parse(selectedTask.metadata);
-				} catch (e) {
-					return {};
-				}
-			})() : selectedTask.metadata || {};
 			const bugReport = taskMeta && taskMeta.zf_bug_report;
 			if (!bugReport) return null;
 			if (bugReport.issue_url) return React.createElement("div", { className: "mb-3 px-3.5 py-2.5 rounded-xl border border-purple-500/30 bg-purple-950/20 backdrop-blur-md flex items-center justify-between gap-3 text-xs" }, React.createElement("div", { className: "flex items-center gap-2 text-purple-200 min-w-0" }, React.createElement("span", { className: "text-base" }, "🐛"), React.createElement("div", { className: "truncate" }, React.createElement("div", { className: "font-semibold text-slate-100 flex items-center gap-1.5" }, "Zero Factory Defect Tracked on GitHub", React.createElement("span", { className: "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-purple-950/80 text-purple-300 border border-purple-800/60" }, "Upstream")), React.createElement("div", { className: "text-slate-400 text-[11px] truncate" }, bugReport.title || selectedTask.title))), React.createElement("a", {
@@ -5542,6 +5518,21 @@ var ZeroFactoryDashboard = (function(exports) {
 				setMemoriesLoading(false);
 			}
 		}, [fetchJSON]);
+		const loadBoardData = useCallback((boardSlug) => {
+			loadTasksAndStats(boardSlug);
+			loadMemories(boardSlug);
+			loadSessions(boardSlug);
+			loadAgents(boardSlug);
+		}, [
+			loadTasksAndStats,
+			loadMemories,
+			loadSessions,
+			loadAgents
+		]);
+		const handleSelectBoard = useCallback((boardSlug) => {
+			if (boardSlug === selectedBoardRef.current) loadBoardData(boardSlug);
+			else setSelectedBoard(boardSlug);
+		}, [loadBoardData]);
 		const handleDeleteMemory = useCallback(async (memId) => {
 			if (!await confirmAction({
 				title: "Delete Repository Memory",
@@ -5642,42 +5633,35 @@ var ZeroFactoryDashboard = (function(exports) {
 		useEffect(() => {
 			if (prevSelectedBoard.current === selectedBoard) return;
 			prevSelectedBoard.current = selectedBoard;
-			if (selectedBoard) {
-				loadTasksAndStats(selectedBoard);
-				loadMemories(selectedBoard);
-				loadSessions(selectedBoard);
-				loadAgents(selectedBoard);
-			}
-		}, [
-			selectedBoard,
-			loadTasksAndStats,
-			loadMemories,
-			loadSessions,
-			loadAgents
-		]);
+			if (selectedBoard) loadBoardData(selectedBoard);
+		}, [selectedBoard, loadBoardData]);
 		useEffect(() => {
 			if (activeView === "activities") loadActivities();
-			else if (activeView === "sessions" || activeView === "agents") {
-				loadSessions(selectedBoard);
-				loadAgents(selectedBoard);
-				loadMemories(selectedBoard);
-				const sTimer = setInterval(() => {
-					loadSessions(selectedBoard);
-					loadAgents(selectedBoard);
-				}, 3500);
-				return () => clearInterval(sTimer);
-			}
 		}, [
 			activeView,
 			activityActorFilter,
 			activityActionFilter,
 			activityBoardFilter,
 			activityPage,
-			loadActivities,
+			loadActivities
+		]);
+		useEffect(() => {
+			if (activeView !== "sessions" && activeView !== "agents") return;
+			const boardSlug = selectedBoardRef.current;
+			loadSessions(boardSlug);
+			loadAgents(boardSlug);
+			loadMemories(boardSlug);
+			const sTimer = setInterval(() => {
+				const currentBoard = selectedBoardRef.current;
+				loadSessions(currentBoard);
+				loadAgents(currentBoard);
+			}, 3500);
+			return () => clearInterval(sTimer);
+		}, [
+			activeView,
 			loadSessions,
 			loadAgents,
-			loadMemories,
-			selectedBoard
+			loadMemories
 		]);
 		useEffect(() => {
 			if (!autoRefresh) return;
@@ -6419,12 +6403,9 @@ var ZeroFactoryDashboard = (function(exports) {
 			hasActiveAgents,
 			sessionsList,
 			agentsList,
-			loadSessions,
-			loadAgents,
-			loadMemories,
 			boards,
 			selectedBoard,
-			setSelectedBoard,
+			onSelectBoard: handleSelectBoard,
 			handleOpenEditBoard,
 			handleOpenNewBoardModal,
 			setShowCronModal,
@@ -6441,8 +6422,7 @@ var ZeroFactoryDashboard = (function(exports) {
 			isTogglingDispatcher,
 			handleStartDispatcher,
 			handleStopDispatcher,
-			loadBoards,
-			loadTasksAndStats
+			loadBoards
 		}), activeView === "activities" ? React.createElement(ActivitiesView, {
 			activities,
 			activitiesTotal,

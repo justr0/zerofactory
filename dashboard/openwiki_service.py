@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +57,7 @@ def _get_board_repository_rows(
     if not eff_db.exists():
         raise FileNotFoundError(f"Zero Factory database not found: {eff_db}")
 
-    with sqlite3.connect(str(eff_db), timeout=5.0) as conn:
+    with closing(sqlite3.connect(str(eff_db), timeout=5.0)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, repo_alias, git_url, target_branch FROM board_repositories WHERE board_slug = ? ORDER BY id ASC",

@@ -431,6 +431,41 @@ def format_task_comment_body(comment: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+_CHANGE_REQUEST_PHRASES = (
+    "changes requested",
+    "changes needed",
+    "requires changes",
+    "please fix",
+    "must be fixed",
+    "needs work",
+    "action required",
+    "unresolved conflict",
+)
+
+_NON_BLOCKING_NEGATIONS = (
+    "no test changes needed",
+    "no code changes needed",
+    "no changes needed",
+    "no changes requested",
+    "without changes requested",
+    "zero changes requested",
+)
+
+
+def _has_change_request(lower_body: str) -> bool:
+    """True when lower-cased text asks for changes. Non-blocking negations are removed
+    first ("no test changes needed", "no code changes requested", ...) so they never read
+    as a request."""
+    cleaned = re.sub(
+        r"\b(no|without|zero)\s+[\w\s]{0,25}?\s*(changes\s+requested|changes\s+needed|action\s+required)",
+        "",
+        lower_body,
+    )
+    for negation in _NON_BLOCKING_NEGATIONS:
+        cleaned = cleaned.replace(negation, "")
+    return any(phrase in cleaned for phrase in _CHANGE_REQUEST_PHRASES)
+
+
 def is_reviewer_approval_comment(comment_body: str, state: str | None = None) -> bool:
     """Return True if a PR review comment or review summary represents an approval verdict.
 
@@ -444,36 +479,7 @@ def is_reviewer_approval_comment(comment_body: str, state: str | None = None) ->
         return False
     lower = body.lower()
 
-    # Pre-clean non-blocking negations before searching for changes requested
-    # e.g. "no test changes needed", "no code changes needed", "no changes needed", "no changes requested"
-    clean_for_changes = re.sub(
-        r"\b(no|without|zero)\s+[\w\s]{0,25}?\s*(changes\s+requested|changes\s+needed|action\s+required)",
-        "",
-        lower,
-    )
-    clean_for_changes = (
-        clean_for_changes.replace("no test changes needed", "")
-        .replace("no code changes needed", "")
-        .replace("no changes needed", "")
-        .replace("no changes requested", "")
-        .replace("without changes requested", "")
-        .replace("zero changes requested", "")
-    )
-
-    has_changes_requested = any(
-        phrase in clean_for_changes
-        for phrase in [
-            "changes requested",
-            "changes needed",
-            "requires changes",
-            "please fix",
-            "must be fixed",
-            "needs work",
-            "action required",
-            "unresolved conflict",
-        ]
-    )
-    if has_changes_requested:
+    if _has_change_request(lower):
         return False
 
     # Positive approval indicators
@@ -523,6 +529,41 @@ def is_reviewer_approval_comment(comment_body: str, state: str | None = None) ->
     return False
 
 
+# The reviewer tags its verdicts; a severity-tagged finding ("P1 — ...") marks a critique.
+_REVIEWER_TAG_RE = re.compile(r"^\s*\[ai:zf-reviewer\]", re.IGNORECASE)
+_NEGATED_CHANGE_REQUEST_RE = re.compile(
+    r"\b(?:no|without|zero)\s+(?:\w+\s+){0,3}?changes\s+(?:requested|needed)\b",
+    re.IGNORECASE,
+)
+_SEVERITY_TAG_RE = re.compile(
+    r"\bp[0-3]\b|\b(?:priority|severity)\s*[:#]?\s*[0-3]\b", re.IGNORECASE
+)
+
+
+def is_reviewer_pass_verdict(comment_body: str, state: str | None = None) -> bool:
+    """Return True for a reviewer verdict that passes the code and asks the builder for nothing.
+
+    This is the review that withholds only the merge decision ("Code checks passed; merge
+    authorization required. No code changes requested."): it carries the reviewer tag, states
+    a negated change request, raises no un-negated one and no severity-tagged finding. Routing
+    it to a builder spends a run on rework nobody asked for.
+
+    It is deliberately not an approval: whether the PR counts as approved stays with the
+    reviewer's ``blocked_reason_type`` / GitHub ``reviewDecision``, so a withheld merge
+    decision is never promoted by comment text.
+    """
+    body = (comment_body or "").strip()
+    if not body or not _REVIEWER_TAG_RE.match(body):
+        return False
+    if state not in (None, "COMMENTED"):
+        return False
+    if not _NEGATED_CHANGE_REQUEST_RE.search(body):
+        return False
+    if _SEVERITY_TAG_RE.search(body):
+        return False
+    return not _has_change_request(body.lower())
+
+
 def is_actionable_review_comment(
     comment: dict[str, Any],
     builder_assignee: str | None = None,
@@ -531,6 +572,7 @@ def is_actionable_review_comment(
 
     Filters out:
     - Reviewer approval verdicts (they approve, not critique)
+    - Reviewer pass verdicts that withhold only the merge decision (no rework requested)
     - Builder-authored comments, verification notes, and resolution summaries
     - Automated PR notifications, dedup notes, and status updates
     - Empty or whitespace-only comments
@@ -545,6 +587,10 @@ def is_actionable_review_comment(
 
     # If the comment is an approval verdict, it is not an actionable critique
     if is_reviewer_approval_comment(body, state):
+        return False
+
+    # A reviewer pass verdict withholds only the merge decision; it requests no rework
+    if is_reviewer_pass_verdict(body, state):
         return False
 
     author = (comment.get("author") or "").strip().lower()

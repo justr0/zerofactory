@@ -1,19 +1,152 @@
 """Unit tests for dispatcher/worker_spawner.py worker spawning and session isolation."""
 
+import contextlib
 import json
 import os
 import sqlite3
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
 
 import dispatcher.process_manager as process_manager
 import dispatcher.worker_spawner as worker_spawner
 from dispatcher.worker_spawner import spawn_agent_worker
+from dispatcher.worker_handoff import execution_token_line, token_from_prompt
 import zf_wincompat
 from zf_wincompat import detached_popen_kwargs
+
+
+TRIAGE_COMMENT_HEADINGS = [
+    ("zf-orchestrator", "### 💬 Previous Discussion & Human Responses:"),
+    ("zf-goldfish", "### 💬 Previous Discussion & Revision History:"),
+]
+
+
+def _spawn_triage_prompt(
+    tmp_path: Path,
+    role: str,
+    monkeypatch: pytest.MonkeyPatch,
+    comments: list[tuple[str, str, int]] | None = None,
+    *,
+    create_comments_table: bool = True,
+) -> tuple[str, MagicMock]:
+    """Spawn a triage worker using an isolated comment database and return its prompt/log."""
+    db_path = tmp_path / f"{role}.db"
+    monkeypatch.delenv("ZEROFACTORY_WORKER_COMMAND", raising=False)
+    monkeypatch.delenv("ZEROFACTORY_WORKER_ARGS", raising=False)
+    with sqlite3.connect(db_path) as conn:
+        if create_comments_table:
+            conn.execute(
+                "CREATE TABLE task_comments "
+                "(task_id TEXT, author TEXT, body TEXT, created_at INTEGER)"
+            )
+            conn.executemany(
+                "INSERT INTO task_comments VALUES ('task-context', ?, ?, ?)",
+                comments or [],
+            )
+            conn.execute(
+                "INSERT INTO task_comments VALUES ('other-task', 'human', ?, 5)",
+                ("Unrelated task comment",),
+            )
+
+    digest = SimpleNamespace(
+        digest_board_memories_context=lambda *args, **kwargs: "",
+        digest_board_architecture_context=lambda *args, **kwargs: "",
+        digest_parent_and_peer_tasks_context=lambda *args, **kwargs: "",
+    )
+    with (
+        patch.object(worker_spawner, "_d", return_value=digest),
+        patch.object(worker_spawner, "resolve_profile_state_db", return_value=None),
+        patch.object(worker_spawner, "resolve_hermes_bin", return_value="hermes"),
+        patch.object(
+            worker_spawner, "is_unattended_approvals_enabled", return_value=False
+        ),
+        patch.object(worker_spawner, "build_minimal_child_env", return_value={}),
+        patch.object(
+            worker_spawner, "build_shell_wrapper", side_effect=lambda cmd, _prefix: cmd
+        ),
+        patch.object(worker_spawner, "cleanup_process_artifacts"),
+        patch.object(worker_spawner._log, "debug") as debug_log,
+        patch("paths.get_hermes_home", return_value=tmp_path / "hermes"),
+        patch("subprocess.Popen") as mock_popen,
+        patch.dict(os.environ, {"ZEROFACTORY_DB": str(db_path)}, clear=False),
+        patch.dict(worker_spawner._active_workers),
+    ):
+        os.environ.pop("ZEROFACTORY_SKIP_WORKER_SPAWN", None)
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        spawn_agent_worker(
+            task_id="task-context",
+            title="Context task",
+            description="Task description",
+            priority="P1",
+            assignee=role,
+            workspace_path=str(tmp_path),
+            branch_name="task/context",
+            metadata=json.dumps(
+                {"specification": "Draft specification", "revision_count": 1}
+            ),
+        )
+        prompt = mock_popen.call_args.args[0][
+            mock_popen.call_args.args[0].index("-q") + 1
+        ]
+    return prompt, debug_log
+
+
+@pytest.mark.parametrize(("role", "heading"), TRIAGE_COMMENT_HEADINGS)
+def test_triage_prompts_include_ordered_task_comments(
+    tmp_path, monkeypatch, role, heading
+):
+    prompt, _ = _spawn_triage_prompt(
+        tmp_path,
+        role,
+        monkeypatch,
+        [
+            ("human", "Later response", 20),
+            ("zf-orchestrator", "Earlier question", 10),
+        ],
+    )
+
+    expected = (
+        f"{heading}\n"
+        "### Comment #1 (by @zf-orchestrator):\nEarlier question\n\n"
+        "### Comment #2 (by @human):\nLater response\n\n"
+    )
+    assert expected in prompt
+    assert "Unrelated task comment" not in prompt
+
+
+@pytest.mark.parametrize(("role", "heading"), TRIAGE_COMMENT_HEADINGS)
+def test_triage_prompts_omit_context_for_empty_comment_set(
+    tmp_path, monkeypatch, role, heading
+):
+    prompt, _ = _spawn_triage_prompt(tmp_path, role, monkeypatch)
+
+    assert heading not in prompt
+    # No worker_execution_id in the task metadata: the prompt goes out untouched.
+    assert token_from_prompt(prompt) is None
+
+
+@pytest.mark.parametrize(("role", "_heading"), TRIAGE_COMMENT_HEADINGS)
+def test_triage_comment_lookup_failure_is_nonfatal_and_role_logged(
+    tmp_path, monkeypatch, role, _heading
+):
+    prompt, debug_log = _spawn_triage_prompt(
+        tmp_path, role, monkeypatch, create_comments_table=False
+    )
+
+    assert f"Assigned Role: {role}" in prompt
+    debug_log.assert_any_call(
+        f"Could not inspect task_comments for {role.removeprefix('zf-')} prompt: %s",
+        ANY,
+    )
 
 
 def test_detached_popen_kwargs_platform_contract():
@@ -124,6 +257,13 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
             assert mock_popen.called
             args, kwargs = mock_popen.call_args
             prompt = mock_build_command.call_args.args[0]
+            # The prompt is the other half of the handoff token (worker_handoff): a
+            # worker's shell commands never see the env injected below.
+            assert prompt.splitlines()[:2] == [
+                "Handoff token for this dispatch: pass it as `--execution-id` to every "
+                "`hermes zerofactory move` you run.",
+                execution_token_line("exec-current"),
+            ]
             native_cmd = [
                 "hermes-test",
                 "-p",
@@ -402,6 +542,31 @@ def test_spawn_builder_arbitration_fix_round_prompt_is_the_verdict_only():
     )
     assert "Your goal as Builder (Fix Review Comments)" in re_reviewed
     assert "Arbitration Fix Round" not in re_reviewed
+
+
+def test_spawn_builder_closes_the_board_connections_it_opens():
+    """Every board connection the spawn path opens is closed by the time the
+    spawn returns. `with sqlite3.connect(...)` commits but never closes, and an
+    open handle keeps the board file from being deleted or replaced on Windows."""
+    opened = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    with patch.object(sqlite3, "connect", recording_connect):
+        # While connections leak, Windows refuses to delete the board file, so
+        # the helper's cleanup raises first; let the assertions name the cause.
+        with contextlib.suppress(PermissionError):
+            _spawn_builder_with_comments(PRIOR_FINDINGS, "zf-close-probe", None)
+
+    # The helper's own writer, plus at least one reader on the spawn path.
+    assert len(opened) >= 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
 
 def test_spawn_builder_arbitration_fix_round_keeps_deterministic_gate_failures():

@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -216,9 +217,7 @@ def test_handle_local_merge_conflict_increments_retries_and_routes_to_builder():
     conn.commit()
 
     cur = conn.cursor()
-    _handle_local_merge_conflict(
-        cur, "t1", "Feature 1", "/fake/ws", ["file.py"], now=1001
-    )
+    _handle_local_merge_conflict(cur, "t1", ["file.py"], now=1001)
     conn.commit()
 
     row = conn.execute(
@@ -245,9 +244,7 @@ def test_handle_local_merge_conflict_blocks_when_max_retries_exceeded():
 
     cur = conn.cursor()
     with patch.dict(os.environ, {"ZEROFACTORY_MAX_CONFLICT_RETRIES": "3"}):
-        _handle_local_merge_conflict(
-            cur, "t2", "Feature 2", "/fake/ws", ["file.py"], now=1001
-        )
+        _handle_local_merge_conflict(cur, "t2", ["file.py"], now=1001)
         conn.commit()
 
     row = conn.execute(
@@ -269,9 +266,7 @@ def test_handle_local_merge_conflict_blocks_when_max_retries_exceeded():
     )
     conn.commit()
     with patch.dict(os.environ, {"ZEROFACTORY_MAX_CONFLICT_RETRIES": "3"}):
-        _handle_local_merge_conflict(
-            cur, "t2", "Feature 2", "/fake/ws", ["file.py"], now=1002
-        )
+        _handle_local_merge_conflict(cur, "t2", ["file.py"], now=1002)
         conn.commit()
     row2 = conn.execute(
         "SELECT status, assignee, metadata FROM tasks WHERE id = 't2'"
@@ -651,7 +646,7 @@ def test_setup_worktree_reuses_existing_checked_out_worktree(tmp_path: Path):
     "target", ["alternate", "same-board-task", "target-link", "sibling"]
 )
 def test_setup_worktree_rejects_resolved_destinations_outside_task_root(
-    tmp_path: Path, target: str
+    tmp_path: Path, target: str, dir_link: Callable[[Path, Path], None]
 ):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -674,16 +669,16 @@ def test_setup_worktree_rejects_resolved_destinations_outside_task_root(
     if is_sibling:
         primary_dir.mkdir(parents=True)
         (primary_dir / ".git").write_text("gitdir: placeholder\n")
-        (task_root / "sibling").symlink_to(outside, target_is_directory=True)
+        dir_link(outside, task_root / "sibling")
     elif target == "target-link":
         base.mkdir(parents=True)
         task_root.mkdir()
-        (task_root / "frontend").symlink_to(outside, target_is_directory=True)
+        dir_link(outside, task_root / "frontend")
     elif target == "same-board-task":
         base.mkdir(parents=True)
         same_board_task = base / "another-task"
         same_board_task.mkdir()
-        task_root.symlink_to(same_board_task, target_is_directory=True)
+        dir_link(same_board_task, task_root)
     else:
         base.mkdir(parents=True)
 

@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,6 @@ from .config import _d, _log, get_db_path
 
 def digest_reviewer_git_context(
     workspace_path: Path,
-    branch_name: str | None = None,
     max_diff_lines: int = 400,
     max_diff_chars: int = 24000,
     target_branch: str | None = None,
@@ -220,7 +220,10 @@ def digest_board_memories_context(
         target_db = Path(db_path or os.environ.get("ZEROFACTORY_DB") or get_db_path())
         if target_db.exists():
             try:
-                with sqlite3.connect(str(target_db), timeout=2.0) as conn:
+                with (
+                    closing(sqlite3.connect(str(target_db), timeout=2.0)) as conn,
+                    conn,
+                ):
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
                     rows = cur.execute(
@@ -287,7 +290,7 @@ def digest_board_architecture_context(
         return ""
 
     try:
-        with sqlite3.connect(str(target_db), timeout=2.0) as conn:
+        with closing(sqlite3.connect(str(target_db), timeout=2.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
@@ -356,7 +359,7 @@ def digest_parent_and_peer_tasks_context(
         return ""
 
     try:
-        with sqlite3.connect(str(target_db), timeout=2.0) as conn:
+        with closing(sqlite3.connect(str(target_db), timeout=2.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 

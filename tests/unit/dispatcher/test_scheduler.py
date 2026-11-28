@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -382,7 +383,9 @@ def test_run_dispatch_cycle_promotes_todo_to_running(tmp_path: Path):
         }
 
 
-def test_packaging_recovery_rejects_same_board_cross_task_symlink(tmp_path: Path):
+def test_packaging_recovery_rejects_same_board_cross_task_symlink(
+    tmp_path: Path, dir_link: Callable[[Path, Path], None]
+):
     db_path = tmp_path / "test.db"
     _init_test_db(db_path)
     now = 1000
@@ -390,9 +393,9 @@ def test_packaging_recovery_rejects_same_board_cross_task_symlink(tmp_path: Path
     task_root = workspace_root / "b1" / "worktrees" / "recover-task"
     other_task = workspace_root / "b1" / "worktrees" / "other-task"
     (other_task / "repo" / ".git").mkdir(parents=True)
-    task_root.symlink_to(other_task, target_is_directory=True)
+    dir_link(other_task, task_root)
     persisted_task_root = workspace_root / "b1" / "worktrees" / "persisted-task"
-    persisted_task_root.symlink_to(other_task, target_is_directory=True)
+    dir_link(other_task, persisted_task_root)
     with sqlite3.connect(str(db_path)) as conn:
         for task_id, workspace in (
             ("recover-task", ""),

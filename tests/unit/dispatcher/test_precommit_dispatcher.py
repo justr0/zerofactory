@@ -1,6 +1,8 @@
 """Unit tests for deterministic precommit runner and failure handling in dispatcher."""
 
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -12,13 +14,38 @@ from dispatcher.worktree import (
 )
 
 
+def _bash_invocation(script: Path, *args: str) -> list[str]:
+    """Build the ``bash <script> <args>`` command the dispatcher itself uses.
+
+    On Windows a bare ``bash`` resolves to the WSL launcher (System32\\bash.exe)
+    before anything on PATH, and WSL cannot read ``/c/...`` paths, so prefer Git
+    for Windows' bash and hand it a POSIX-style path, as
+    ``run_deterministic_precommit`` does.
+    """
+    script_arg = str(script)
+    bash_exe = "bash"
+    if os.name == "nt":
+        normalized = script_arg.replace("\\", "/")
+        drive, _, rest = normalized.partition("/")
+        script_arg = f"/{drive[:1].lower()}/{rest}"
+        git = shutil.which("git")
+        if git:
+            for gdir in Path(git).resolve().parents[:3]:
+                cand = gdir / "bin" / "bash.exe"
+                if not cand.exists():
+                    cand = gdir / "usr" / "bin" / "bash.exe"
+                if cand.exists():
+                    bash_exe = str(cand)
+    return [bash_exe, script_arg, *args]
+
+
 def test_precommit_script_rejects_unsupported_phase():
     """An invalid phase prints usage and exits before running any checks."""
     repo_root = Path(__file__).resolve().parents[3]
     script = repo_root / ".zerofactory" / "precommit.sh"
 
     result = subprocess.run(
-        ["bash", str(script), "formatty"],
+        _bash_invocation(script, "formatty"),
         capture_output=True,
         text=True,
         check=False,
@@ -35,7 +62,7 @@ def test_precommit_script_rejects_extra_arguments():
     script = repo_root / ".zerofactory" / "precommit.sh"
 
     result = subprocess.run(
-        ["bash", str(script), "format", "typo"],
+        _bash_invocation(script, "format", "typo"),
         capture_output=True,
         text=True,
         check=False,
@@ -122,7 +149,6 @@ def test_handle_precommit_failure_retries(initialized_db: Path, tmp_path: Path):
         _handle_precommit_failure(
             cursor,
             task_id,
-            "feat: my task",
             str(tmp_path),
             "Syntax error on line 5",
             now,
@@ -138,27 +164,21 @@ def test_handle_precommit_failure_retries(initialized_db: Path, tmp_path: Path):
         assert "Syntax error on line 5" in meta["last_precommit_error"]
 
         # Attempt 2
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 2", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 2", now)
         conn.commit()
         cursor.execute("SELECT metadata FROM tasks WHERE id = ?", (task_id,))
         meta = json.loads(cursor.fetchone()["metadata"])
         assert meta["precommit_retries"] == 2
 
         # Attempt 3
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 3", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 3", now)
         conn.commit()
         cursor.execute("SELECT metadata FROM tasks WHERE id = ?", (task_id,))
         meta = json.loads(cursor.fetchone()["metadata"])
         assert meta["precommit_retries"] == 3
 
         # Attempt 4 (exceeding default 3 retries, recovery_count == 0): Should route to todo (recovery) for zf-orchestrator
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 4", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 4", now)
         conn.commit()
         cursor.execute(
             "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -179,9 +199,7 @@ def test_handle_precommit_failure_retries(initialized_db: Path, tmp_path: Path):
             (json.dumps(meta), task_id),
         )
         conn.commit()
-        _handle_precommit_failure(
-            cursor, task_id, "feat: my task", str(tmp_path), "Syntax error 5", now
-        )
+        _handle_precommit_failure(cursor, task_id, str(tmp_path), "Syntax error 5", now)
         conn.commit()
         cursor.execute(
             "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (task_id,)
@@ -231,7 +249,6 @@ def test_precommit_timeout_retry_clears_build(initialized_db: Path, tmp_path: Pa
         _handle_precommit_failure(
             cursor,
             task_id,
-            "feat: timeout task",
             str(workspace),
             "Precommit script timed out after 300s.",
             now,
@@ -255,7 +272,6 @@ def test_precommit_timeout_retry_clears_build(initialized_db: Path, tmp_path: Pa
         _handle_precommit_failure(
             cursor,
             task_id2,
-            "feat: nonzero task",
             str(tmp_path / "ws2"),
             "AssertionError: x != y",
             now,
