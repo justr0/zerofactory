@@ -32,7 +32,7 @@ sources:
     resource: repo://tests/conftest.py
   - id: openwiki-source-b4194cdb1aee8e18787b21d6
     resource: repo://tests/unit/dashboard/test_dashboard_css.py
-generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
+generated: { by: "hermes", at: "2026-11-28T12:31:20.531Z" }
 verified:
   - by: openwiki/0.6.0
     at: 2026-11-22T15:24:22.005Z

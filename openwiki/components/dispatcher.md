@@ -6,10 +6,10 @@ tags: [dispatcher, dispatch-loop, state-machine, git-worktree, worker-spawning, 
 sources:
   - id: openwiki-source-4942bcbe129130ccad2b7e2a
     resource: repo://__init__.py
-  - id: openwiki-source-9ab161c6e9774cf771b19ced
-    resource: repo://.zerofactory/precommit.sh
   - id: openwiki-source-4d0299655ec14b97f5aaa9a7
     resource: repo://dashboard/routes/cron.py
+  - id: openwiki-source-40abeef1715d8fbc4e418072
+    resource: repo://dashboard/routes/dispatch.py
   - id: openwiki-source-c705147b9966f3d6f300034a
     resource: repo://dashboard/routes/tasks.py
   - id: openwiki-source-78d773f851580c376cac002d
@@ -32,16 +32,14 @@ sources:
     resource: repo://dispatcher/worker_spawner.py
   - id: openwiki-source-bd2c9dd479aa89010adee0f5
     resource: repo://dispatcher/worktree.py
-  - id: openwiki-source-0d153fd68e7210eb5d3be49d
-    resource: repo://paths.py
   - id: openwiki-source-57b14ecc6ef51ae6212b15f0
     resource: repo://settings.py
   - id: openwiki-source-e06a9686c31922a42e06fb20
     resource: repo://tests/unit/dispatcher/test_scanner.py
-generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
+generated: { by: "hermes", at: "2026-11-28T12:43:28.258Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-22T19:54:57.790Z
+    at: 2026-11-28T12:43:28.258Z
 ---
 
 # Dispatch Engine
@@ -50,10 +48,11 @@ The dispatcher (`dispatcher/`) is the heart of the factory. Its job is to turn
 Kanban `todo` cards into live specialist workers, keep each one inside an
 isolated Git worktree, gate its output through a deterministic precommit
 pipeline, open a GitHub PR, route it through review (or auto-merge it), and
-reap anything that hangs. Every task status/assignee move funnels through one
-validated primitive — `transition_task` in `repo://dispatcher/state_machine.py`
-— so the reaper, the scheduler, and the dashboard's `move_task` never disagree
-about a legal move.
+reap anything that hangs. The reaper, scheduler, and dashboard use the
+validated `transition_task` primitive in
+`repo://dispatcher/state_machine.py` for lifecycle transitions; specialized
+dispatcher paths also update task rows directly and must preserve the same
+status/assignee invariants.
 
 ## The centralized 13-stage state machine
 
@@ -121,24 +120,24 @@ start/stop/status controls for that loop via
 
 The per-board improvement scanner runs **inside the dispatcher process**
 rather than as an external cron daemon (`repo://dispatcher/scanner.py#L334-L451`).
-Each dispatch cycle reaps completed or dead scanner processes with
-`reap_active_scanners` (`repo://dispatcher/scanner.py#L221-L262`,
-`repo://dispatcher/scheduler.py#L1065-L1067`). Reaping removes only the exited
-scanner's in-memory entry, PID file, and process artifacts; live scanner state
-and its PID record are retained. The regression test covers a live and completed
-scanner in one pass (`repo://tests/unit/dispatcher/test_scanner.py#L516-L562`).
-When global LLM capacity is available, a board's active task count is below its
-cap, its `todo` count is below `idle_scan_max_todo`, no scanner is active for
-that board, `scan_on_idle` is enabled, and the cooldown has elapsed, the cycle
-launches a background `zf-orchestrator` scan via `spawn_board_scanner`
+Each dispatch cycle reaps finished scanner processes with
+`reap_active_scanners` (`repo://dispatcher/scheduler.py#L1065-L1067`,
+`repo://dispatcher/scanner.py#L221-L262`). Reaping removes the completed
+scanner's in-memory entry, PID file, and process artifacts while retaining a
+live scanner and its PID record; a focused regression test covers both in one
+pass (`repo://tests/unit/dispatcher/test_scanner.py#L516-L562`). When global
+LLM capacity is available, the board's active task count is below its cap, its
+`todo` count is below `idle_scan_max_todo`, no scanner is active, scanning is
+enabled, and the cooldown has elapsed, the cycle launches a background
+`zf-orchestrator` scan via `spawn_board_scanner`
 (`repo://dispatcher/scheduler.py#L1065-L1155`,
-`repo://dispatcher/scanner.py#L334-L451`). The scanner prompt instructs
-`zf-orchestrator` to file findings directly in `todo` assigned to
-`zf-builder` (`--status todo --assignee zf-builder`, respecting
-`idle_scan_max_todo`) so the dispatcher picks them up without a human
-triage step (`repo://dispatcher/scanner.py#L376-L399`). The lifecycle helpers
-are `get_active_scanner_pids`, `kill_board_scanner`, and
-`reap_active_scanners` (`repo://dispatcher/scanner.py#L59-L262`).
+`repo://dispatcher/scanner.py#L270-L451`). The prompt directs the orchestrator
+to file findings directly in `todo` assigned to `zf-builder`
+(`--status todo --assignee zf-builder`, respecting `idle_scan_max_todo`)
+(`repo://dispatcher/scanner.py#L375-L384`). Supported lifecycle helpers are
+`get_active_scanner_pids`, `kill_board_scanner`, and `reap_active_scanners`
+(`repo://dispatcher/scanner.py#L59-L72`,
+`repo://dispatcher/scanner.py#L152-L262`).
 
 ## Isolated-worktree invariant
 
@@ -153,10 +152,10 @@ provisioning is bounded: every `git worktree add` runs under
 `_WORKTREE_ADD_TIMEOUT` (30s, `repo://dispatcher/config.py#L103`) and a
 timeout/failed add triggers `git worktree prune` plus one retry, so a slow or
 stuck checkout can never hang the dispatch cycle
-(`repo://dispatcher/worktree.py#L412-L452`). When a task
-completes or is abandoned, `_delete_remote_branch` / `_remove_worktree`
-prune the worktree and remote branch
-(`repo://dispatcher/worktree.py#L765-L931`). Merge conflicts are routed, not
+(`repo://dispatcher/worktree.py#L412-L452`). Terminal cleanup removes the managed worktree; it also closes the PR and
+deletes the remote branch when `close_pr` marks a human-closed task for
+archiving (`repo://dispatcher/scheduler.py#L3384-L3437`,
+`repo://dispatcher/worktree.py#L882-L1019`). Merge conflicts are routed, not
 swallowed: `_handle_local_merge_conflict` and `_handle_pr_conflict_from_github`
 send the task back to `zf-builder` for conflict resolution
 (`repo://dispatcher/worktree.py#L646-L764`,
@@ -210,9 +209,10 @@ live round number); the builder prompt likewise tags its GitHub output
 
 ## Deterministic precommit + self-healing retry
 
-Before any commit/PR, `run_deterministic_precommit` runs the worktree's
-`.zerofactory/precommit.sh` (format → build → test) with a timeout, capturing
-the full stdout/stderr (`repo://dispatcher/worktree.py#L1077-L1126`). If it
+When the worktree contains `.zerofactory/precommit.sh` and the explicit skip
+flag is unset, `run_deterministic_precommit` executes it (format → build →
+test) with a timeout, capturing the full stdout/stderr; a missing script is
+treated as a pass (`repo://dispatcher/worktree.py#L1194-L1275`). If it
 fails, `_handle_precommit_failure` implements the **self-healing loop**
 (`repo://dispatcher/worktree.py#L1127-L1269`):
 
@@ -340,10 +340,8 @@ ops).
   `review_cap_reached`, `review_round`, and `commit_review_count`, giving a
   human-recovered task a fresh round budget
   (`repo://dashboard/routes/tasks.py#L1724-L1726`).
-- **External-issue PR linkage** — when a task carries `external_issue` metadata
-<!-- openwiki: broken internal link [../architecture.md] file "../architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
-  (see [Architecture](../architecture.md)), the
-  PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
+- **External-issue PR linkage** — when a task carries `external_issue` metadata,
+  the PR body the dispatcher opens appends `Fixes #<n>` for GitHub issues (a legacy
   `Resolves: <KEY>` branch still exists for pre-Jira-removal `jira`-source
   metadata rows) so merging the PR closes the source issue
   (`repo://dispatcher/scheduler.py#L2199-L2216`); for GitHub issues the
@@ -363,12 +361,8 @@ ops).
 
 `reaper.py` detects hung workers using a shared `_compute_stuck_state` (a
 per-task max running time plus an inactivity timeout) so `reap_active_workers`
-and `check_stuck_tasks` use the same stuck criteria; `reap_stuck_tasks` also
-terminates processes when manually reaping a task
-(`repo://dispatcher/reaper.py#L125-L182`,
-`repo://dispatcher/reaper.py#L225-L249`,
-`repo://dispatcher/reaper.py#L804-L905`,
-`repo://dispatcher/reaper.py#L983-L1079`).
+(the only path that kills processes) and `check_stuck_tasks` (reporting /
+manual reap) cannot drift apart (`repo://dispatcher/reaper.py#L70-L134`).
 Because the dashboard holds many open
 connections plus an active writer, the reaper opens **WAL-tolerant**
 connections: `_open_reaper_conn` sets `PRAGMA busy_timeout`, and
@@ -435,8 +429,7 @@ step that died; the full grep playbook lives in
 ## Relationships
 
 Upstream: claims work off the durable Kanban SQLite substrate described in
-<!-- openwiki: broken internal link [../architecture.md] file "../architecture.md" does not exist. Fix the href or restore the target, then delete this comment. -->
 [Architecture](../architecture.md). Downstream: the deterministic precommit
-and PR ops hand off to the reviewer; dashboard dispatch and cron routes trigger
-`run_dispatch_cycle` and inspect worker liveness. Coding rules for touching
-this code live in [Conventions](../conventions.md).
+and PR ops hand off to the reviewer, while dashboard dispatch and cron routes
+trigger `run_dispatch_cycle` and inspect worker liveness. Coding rules for
+touching this code live in [Conventions](../conventions.md).

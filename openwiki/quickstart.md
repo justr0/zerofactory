@@ -24,7 +24,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-f0a6e7dc03522b2682f88655
     resource: repo://tests/conftest.py
-generated: { by: "hermes", at: "2026-11-22T19:54:57.790Z" }
+generated: { by: "hermes", at: "2026-11-28T12:31:20.531Z" }
 verified:
   - by: openwiki/0.6.0
     at: 2026-11-22T15:24:22.005Z
