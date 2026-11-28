@@ -162,7 +162,6 @@ from .scanner import (
     get_scanner_cron_config,
     kill_board_scanner,
     reap_active_scanners,
-    reset_idle_scanner_state,
     spawn_board_scanner,
 )
 from .scheduler import (
@@ -289,7 +288,6 @@ __all__ = [
     "reap_active_scanners",
     "_global_llm_occupancy",
     "spawn_board_scanner",
-    "reset_idle_scanner_state",
     # Worktree & Slop Gate
     "_find_checked_out_worktree",
     "resolve_board_repo_path",
