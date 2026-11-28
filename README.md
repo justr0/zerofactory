@@ -353,7 +353,7 @@ Zero Factory features an intelligent hybrid memory architecture powered by optio
 
 ### Integrated "Agents" Dashboard
 The dashboard navigation tab features an integrated **`Agents`** center:
-- **4 Specialist Agent Cards**: Real-time status (`🟢 Active` vs `⚪ Idle`), live execution activity, active session model & duration, and direct links to active Kanban tasks.
+- **4 Specialist Agent Cards**: Real-time status (`🟢 Active` vs `⚪ Idle`), live execution activity, active session model & duration, and direct links to every active Kanban task assigned to each specialist. The `/agents` response provides all tasks in `current_tasks`; `current_task` remains the first task for backwards compatibility.
 - **Sub-Tab Switcher**: Seamlessly switch between `💬 AI Sessions` (full execution history & chat resume links) and `🧠 Repository Memory` (knowledge cards with search, category filtering, and modal CRUD).
 
 ### Memory CLI Commands

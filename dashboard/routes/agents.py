@@ -75,7 +75,7 @@ def get_agents_status(board_slug: str | None = None):
         "zf-goldfish": "Adversarial spec audit, acceptance criteria & Ponytail ladder validation",
     }
 
-    running_tasks_by_assignee = {}
+    running_tasks_by_assignee: dict[str, list[dict]] = {}
     with get_db_conn() as conn:
         cursor = conn.cursor()
         query = "SELECT id, title, board_slug, assignee, workspace_path, updated_at FROM tasks WHERE status = 'running'"
@@ -83,17 +83,20 @@ def get_agents_status(board_slug: str | None = None):
         if board_slug and board_slug != "all":
             query += " AND board_slug = ?"
             params.append(board_slug)
+        query += " ORDER BY updated_at DESC, id ASC"
         cursor.execute(query, params)
         for row in cursor.fetchall():
             asgn = row[3]
             if asgn:
-                running_tasks_by_assignee[asgn] = {
-                    "id": row[0],
-                    "title": row[1],
-                    "board_slug": row[2],
-                    "workspace_path": row[4],
-                    "updated_at": row[5],
-                }
+                running_tasks_by_assignee.setdefault(asgn, []).append(
+                    {
+                        "id": row[0],
+                        "title": row[1],
+                        "board_slug": row[2],
+                        "workspace_path": row[4],
+                        "updated_at": row[5],
+                    }
+                )
 
     agents_data = []
     for prof in profiles:
@@ -162,8 +165,9 @@ def get_agents_status(board_slug: str | None = None):
             except Exception as e:
                 _log.debug("Error checking agent status for %s: %s", prof, e)
 
-        current_task = running_tasks_by_assignee.get(prof)
-        is_active = (active_sess is not None) or (current_task is not None)
+        current_tasks = running_tasks_by_assignee.get(prof, [])
+        current_task = current_tasks[0] if current_tasks else None
+        is_active = (active_sess is not None) or bool(current_tasks)
 
         agents_data.append(
             {
@@ -174,6 +178,7 @@ def get_agents_status(board_slug: str | None = None):
                 "status": "active" if is_active else "idle",
                 "is_active": is_active,
                 "active_session": active_sess,
+                "current_tasks": current_tasks,
                 "current_task": current_task,
                 "stats": {
                     "total_sessions": total_sessions,

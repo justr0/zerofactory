@@ -258,6 +258,9 @@
 .z-50 {
   z-index: 50;
 }
+.col-span-full {
+  grid-column: 1 / -1;
+}
 .m-0 {
   margin: 0px;
 }
