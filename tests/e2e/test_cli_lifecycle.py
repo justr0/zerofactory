@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -11,6 +12,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import __init__ as zf_cli
 from dashboard.plugin_api import init_db
@@ -99,6 +101,104 @@ class TestZeroFactoryCLIE2E(unittest.TestCase):
         # 2. Sync profiles
         out_sync = self._run_cli(["sync-profiles"])
         self.assertIn("Zero Factory Profiles Synced", out_sync)
+
+    def test_cli_move_reports_with_the_dispatch_handoff_token(self):
+        """A worker's `move done` carries the token of its own dispatch, or is rejected.
+
+        A worker's shell commands never see ZEROFACTORY_WORKER_EXECUTION_ID, so the CLI
+        takes the token from `--execution-id`, the env, or the worker session's
+        transcript — the route's stale-report gate itself is unchanged.
+        """
+        self._run_cli(["board", "create", "https://github.com/example/handoff.git"])
+        out_create = self._run_cli(
+            [
+                "create",
+                "Handoff token task",
+                "--board",
+                "example-handoff",
+                "--status",
+                "triage",
+                "--assignee",
+                "zf-builder",
+            ]
+        )
+        task_id = [part for part in out_create.split() if part.startswith("zf-")][
+            0
+        ].rstrip(":")
+
+        current, later, stale = "a" * 32, "b" * 32, "c" * 32
+        token_line = "ZEROFACTORY_WORKER_EXECUTION_ID={}".format
+        profile_db = self.fake_home / ".hermes" / "profiles" / "zf-builder" / "state.db"
+        profile_db.parent.mkdir(parents=True)
+        with sqlite3.connect(str(profile_db)) as conn:
+            conn.execute(
+                "CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO messages VALUES (?, 'user', ?)",
+                [
+                    # A zombie from an earlier dispatch of this task.
+                    ("sess-stale", token_line(stale)),
+                    # The spawner's header on the live worker's dispatch prompt.
+                    (
+                        "sess-worker",
+                        "Handoff token for this dispatch: pass it as `--execution-id` to "
+                        "every `hermes zerofactory move` you run.\n"
+                        f"{token_line(current)}\n\nTask ID: {task_id}",
+                    ),
+                    ("sess-other", "a dispatch from an older dispatcher: no token"),
+                ],
+            )
+
+        def dispatched(token):
+            """Put the task back in the hands of a live builder holding `token`."""
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'running', assignee = 'zf-builder', "
+                    "metadata = ? WHERE id = ?",
+                    (json.dumps({"worker_execution_id": token}), task_id),
+                )
+
+        def state():
+            with sqlite3.connect(str(self.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT status, metadata FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+            return row[0], json.loads(row[1] or "{}")
+
+        def report(session, *extra, env=None):
+            environ = {"HERMES_SESSION_ID": session, **(env or {})}
+            with patch.dict(os.environ, environ):
+                try:
+                    return self._run_cli(
+                        ["move", task_id, "done", "--actor", "zf-builder", *extra]
+                    ).strip()
+                except SystemExit as exc:
+                    return f"exit {exc.code}"
+
+        # Without the dispatcher's token the completion report is still rejected.
+        dispatched(current)
+        for session in ("sess-stale", "sess-other"):
+            assert report(session) == "exit 1"
+        assert state() == ("running", {"worker_execution_id": current})
+
+        # The worker's own session carries the token of its latest dispatch.
+        assert report("sess-worker") == f"Moved task {task_id} to done"
+        assert state() == ("running", {"awaiting_pr": True})
+
+        # The flag serves a worker whose transcript has no token.
+        dispatched(later)
+        assert report("sess-other", "--execution-id", later) == (
+            f"Moved task {task_id} to done"
+        )
+
+        # The env variable still outranks the transcript.
+        dispatched(later)
+        assert (
+            report("sess-worker", env={"ZEROFACTORY_WORKER_EXECUTION_ID": stale})
+            == "exit 1"
+        )
+        assert state() == ("running", {"worker_execution_id": later})
 
     def test_cli_migrate_status(self):
         """Migration status uses the module-level time import in cmd_run."""

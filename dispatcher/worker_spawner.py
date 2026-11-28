@@ -22,6 +22,7 @@ from .config import (
     resolve_profile_state_db,
 )
 from .process_manager import build_shell_wrapper, cleanup_process_artifacts
+from .worker_handoff import with_execution_token
 from . import review_cap_arbitration as _cap_arb
 
 try:
@@ -784,6 +785,16 @@ def spawn_agent_worker(
 
     from paths import get_hermes_home
 
+    try:
+        execution_id = json.loads(metadata or "{}").get("worker_execution_id")
+    except (AttributeError, TypeError, ValueError):
+        execution_id = None
+    # The prompt carries the token as well as the env below: a worker's shell commands
+    # run in the Hermes gateway process, which never sees the worker's own environment
+    # (dispatcher.worker_handoff). A zombie from an earlier dispatch holds an earlier
+    # prompt, so an earlier token.
+    prompt = with_execution_token(prompt, execution_id)
+
     cmd = build_worker_command(prompt, task_id, str(workdir), assignee)
     if cmd is None:
         hermes_bin = resolve_hermes_bin()
@@ -804,10 +815,6 @@ def spawn_agent_worker(
             **({} if worker_command else {"HERMES_PROFILE": assignee}),
         }
     )
-    try:
-        execution_id = json.loads(metadata or "{}").get("worker_execution_id")
-    except (AttributeError, TypeError, ValueError):
-        execution_id = None
     env.pop("ZEROFACTORY_WORKER_EXECUTION_ID", None)
     if execution_id:
         env["ZEROFACTORY_WORKER_EXECUTION_ID"] = str(execution_id)
