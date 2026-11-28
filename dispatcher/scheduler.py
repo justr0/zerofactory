@@ -130,6 +130,73 @@ def _resolve_task_repo(
         return None, True
 
 
+def _spawned_worker_is_stale(cursor, task_id, assignee):
+    """True when the task no longer awaits the worker just spawned for it.
+
+    A re-route can land between this cycle's row read and the end of the spawn
+    (claim -> spawn is about 12 s). The claim guards only ``status``, so the
+    operator's new assignee may already be on the row while this worker was
+    built for the old role. An unreadable row keeps the previous behaviour.
+    """
+    try:
+        cursor.execute("SELECT status, assignee FROM tasks WHERE id = ?", (task_id,))
+        row = cursor.fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None or "status" not in row.keys():
+        return True
+    return row["status"] != "running" or (
+        normalize_assignee(row["assignee"] or "zf-builder") != assignee
+    )
+
+
+def _release_stale_claim(cursor, task_id, now):
+    """Return a row still marked running by a stale claim to the todo queue."""
+    cursor.execute("SELECT status, metadata FROM tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    if row is None or row["status"] != "running":
+        return
+    try:
+        meta = json.loads(row["metadata"] or "{}")
+    except Exception:
+        meta = {}
+    if isinstance(meta, dict):
+        meta.pop("spawning_at", None)
+        cursor.execute(
+            "UPDATE tasks SET status = 'todo', metadata = ?, updated_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (json.dumps(meta), now, task_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE tasks SET status = 'todo', updated_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (now, task_id),
+        )
+
+
+# Parks that wait on a person or the arbiter rather than on a parent task.
+_DECISION_WAIT_PARK_TYPES = frozenset({"approved", "human-gate", "stuck"})
+
+
+def _waits_on_a_decision(task_meta: Any, *, status: Any, assignee: Any) -> bool:
+    """A blocked task that waits on a decision, not on its parents.
+
+    Step 1 releases a blocked child once its parents are done; a decision-wait
+    park had its parents done before it was parked, so that is no release
+    signal. The review-cap park, an open fix round and the typed parks
+    ``approved``, ``human-gate`` and ``stuck`` all hold.
+    """
+    if not isinstance(task_meta, dict):
+        return False
+    if _cap_arb.is_review_cap_park(task_meta, status=status, assignee=assignee):
+        return True
+    if _cap_arb.fix_round_brief(task_meta):
+        return True
+    park_type = str(task_meta.get("blocked_reason_type") or "").strip().lower()
+    return park_type in _DECISION_WAIT_PARK_TYPES
+
+
 def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
     """Execute one full dispatch cycle."""
     import dispatcher as _disp
@@ -192,7 +259,7 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
 
                 # 1. Unblock tasks whose parent dependencies are all done
                 cursor.execute("""
-                    SELECT id, title FROM tasks
+                    SELECT id, title, status, assignee, metadata FROM tasks
                     WHERE status = 'blocked'
                     AND id IN (SELECT child_id FROM task_links WHERE link_type = 'blocks' OR link_type IS NULL)
                     AND NOT EXISTS (
@@ -204,6 +271,19 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                     )
                 """)
                 for row in cursor.fetchall():
+                    try:
+                        row_meta = json.loads(row["metadata"] or "{}")
+                    except (TypeError, ValueError):
+                        row_meta = {}
+                    if _waits_on_a_decision(
+                        row_meta, status=row["status"], assignee=row["assignee"]
+                    ):
+                        # A decision-wait park (review cap, human HOLD, approval
+                        # awaiting merge, stuck worker, open fix round) does not
+                        # wait on its parents. Unblocking it here dispatched a
+                        # builder with no verdict, voided the open request, lifted
+                        # human HOLDs and restarted stuck workers every cycle.
+                        continue
                     transition_task(conn, row["id"], "todo", actor="dispatcher")
                     cursor.execute(
                         "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'unblock', 'All parent dependencies satisfied; moved to todo', ?)",
@@ -571,6 +651,30 @@ def run_dispatch_cycle(db_path: Path | None = None) -> dict[str, Any]:
                             cursor.execute(
                                 "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
                                 (revert_status, now, task_id),
+                            )
+                            conn.commit()
+                            continue
+
+                        if pid and _spawned_worker_is_stale(cursor, task_id, assignee):
+                            # The row was re-routed while this worker was starting.
+                            # Attached anyway, its exit report is judged by the new
+                            # role: a builder parked as "Reviewer exited without
+                            # recording a verdict". Stop it and hand the row back.
+                            _log.warning(
+                                "Task %s was re-routed while a %s worker was spawning; stopping worker PID %s",
+                                task_id,
+                                assignee,
+                                pid,
+                            )
+                            _disp.stop_task_worker(task_id, cursor, pid=pid)
+                            _release_stale_claim(cursor, task_id, now)
+                            cursor.execute(
+                                "INSERT INTO task_activity (task_id, actor, action, details, created_at) VALUES (?, 'dispatcher', 'spawn_superseded', ?, ?)",
+                                (
+                                    task_id,
+                                    f"Task re-routed during spawn; {assignee} worker PID {pid} was stopped and not attached",
+                                    now,
+                                ),
                             )
                             conn.commit()
                             continue
@@ -1315,11 +1419,18 @@ def _request_review_cap_arbitration(
         return None
     state["comment_id"] = posted["comment_id"]
     state["posted_by"] = posted.get("author") or ""
+    if posted.get("created_at"):
+        # Anchor the deadline to when the request comment really went up.
+        state["requested_at"] = posted["created_at"]
+    elif posted.get("timestamp_pending"):
+        # Posted, but GitHub's timestamp for the comment is not verified. No
+        # local stand-in: with no verified request time no verdict is consumed
+        # and nothing expires until the poll reads the timestamp back.
+        state["requested_at"] = 0
+        state["timestamp_pending"] = True
     if posted.get("adopted"):
-        # The comment already existed (a previous cycle lost its local state):
-        # anchor the deadline to when it was really posted.
+        # The comment already existed (a previous cycle lost its local state).
         state["adopted"] = True
-        state["requested_at"] = posted.get("created_at") or int(now)
     return state, body
 
 
@@ -1352,8 +1463,7 @@ def _apply_review_cap_arbitration_decision(
     title = row["title"]
     arbiter = str(state.get("arbiter") or _cap_arb.DEFAULT_ARBITER)
     verdict = decision["verdict"]
-    attempts = int(state.get("attempts") or 0)
-    max_attempts = int(state.get("max_arbitrations") or 0)
+    attempts, max_attempts = _cap_arb.attempt_counts(state)
     short = " ".join(str(decision.get("rationale") or "").split())[:200]
     verdict_body = str(decision.get("body") or "").strip()[:4000]
     state.update(
@@ -1549,8 +1659,17 @@ def _poll_arbitration_park(
             )
         return True
 
-    # Comments while parked are recorded for visibility only.
+    # Comments while parked are recorded for visibility only - except the
+    # dispatcher's own requests, which the cap branch already put on the task
+    # (an earlier attempt's request included: it asks for a decision, it is
+    # not feedback).
+    own_request_id = state.get("comment_id")
     for comment in new_pr_comments:
+        if comment.get("comment_id") == own_request_id:
+            continue
+        first_line = str(comment.get("body") or "").strip().splitlines()[:1]
+        if first_line and first_line[0].strip() == _cap_arb.REQUEST_PREFIX:
+            continue
         _record(comment)
         dirty = True
 
@@ -1583,11 +1702,49 @@ def _poll_arbitration_park(
         dirty = True
         return _hold()
 
+    if state.get("timestamp_pending"):
+        # The request was posted without a readable thread, so its comment time
+        # was never verified. Resolve it by id before anything else: a verdict
+        # is consumed, and the deadline measured, from GitHub's time only.
+        created = _cap_arb.fetch_issue_comment_created_at(
+            repo_path=repo_path,
+            pr_url=current_pr_url,
+            comment_id=state.get("comment_id"),
+        )
+        if created is None:
+            _log.info(
+                "Task %s: arbitration request %s has no verified timestamp yet; holding",
+                task_id,
+                state.get("request_key"),
+            )
+            return _hold()
+        state["requested_at"] = created
+        state["timestamp_verified_at"] = int(now)
+        state.pop("timestamp_pending", None)
+        task_meta[_cap_arb.STATE_KEY] = state
+        _activity(
+            "review_cap_arbitration_timestamp_verified",
+            (
+                f"Arbitration request {state.get('request_key')} timestamp verified "
+                f"from GitHub comment {state.get('comment_id')}"
+            ),
+        )
+        dirty = True
+
     conversation = _disp.fetch_pr_conversation_comments(
         repo_path=repo_path, pr_url=current_pr_url
     )
+    if conversation is None:
+        # Unknown thread: no verdict can be read, and "unanswered" cannot be
+        # established either. Decide nothing on this tick - not even the
+        # deadline - so an API hiccup never discards an in-window verdict.
+        _log.warning(
+            "Task %s: arbitration poll could not read the PR conversation; holding",
+            task_id,
+        )
+        return _hold()
     poll = _cap_arb.find_arbitration_verdict(
-        conversation or [],
+        conversation,
         arbiter=str(state.get("arbiter") or cfg["arbiter"]),
         key=str(state.get("request_key") or ""),
         request_head=str(state.get("request_head") or ""),
@@ -1703,7 +1860,7 @@ def _poll_pr_and_route_review(
                 "view",
                 f"task/{task_id}",
                 "--json",
-                "reviewDecision,state,url,mergeable,headRefOid",
+                "reviewDecision,state,url,mergeable,headRefOid,reviews",
             ],
             capture_output=True,
             text=True,
@@ -1718,7 +1875,7 @@ def _poll_pr_and_route_review(
                     "view",
                     row["pr_url"],
                     "--json",
-                    "reviewDecision,state,url,mergeable,headRefOid",
+                    "reviewDecision,state,url,mergeable,headRefOid,reviews",
                 ],
                 capture_output=True,
                 text=True,
@@ -1908,7 +2065,86 @@ def _poll_pr_and_route_review(
             )
             return True
 
-        if mergeable == "CONFLICTING" and row["status"] in ("blocked", "done"):
+        # A reviewer's approval answers the commit an arbitration FIX round
+        # produced, whatever the PR's merge state: close the round before any
+        # routing, or conflict routing requeues a builder and the open brief
+        # comes back as its mandatory work - a second fix round after approval.
+        # While the round is open, only an approval of the current head is
+        # that answer, once the builder has packaged the fix: until then
+        # (awaiting_pr) - and after the push, until GitHub dismisses the stale
+        # review - reviewDecision keeps reporting the approval the pre-fix head
+        # earned, which would retire a fix no reviewer has seen.
+        _approved_park = (
+            row["status"] == "blocked"
+            and str(meta.get("blocked_reason_type") or "") == "approved"
+        )
+        _pr_approval = decision == "APPROVED" and (
+            _cap_arb.fix_round_brief(meta) is None
+            or (
+                not meta.get("awaiting_pr")
+                and _cap_arb.approval_on_head(
+                    pr_data.get("reviews"), pr_data.get("headRefOid")
+                )
+            )
+        )
+        if (_pr_approval or _approved_park) and _cap_arb.close_fix_round(
+            meta, now, by="approval"
+        ):
+            cursor.execute(
+                "UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(meta), now, task_id),
+            )
+
+        def _unprocessed_feedback() -> list[dict]:
+            """PR comments this task has not processed, minus the arbitration
+            protocol's own records: requests and verdicts are not feedback."""
+            processed = set(meta.get("processed_review_comment_ids", []))
+            return [
+                c
+                for c in _disp.fetch_pr_review_comments(
+                    repo_path=repo_path,
+                    pr_url=current_pr_url,
+                    task_id=task_id,
+                    pr_data=pr_data,
+                    additional_reviewer_usernames=_board_additional_reviewers(
+                        cursor, row, board_slug
+                    ),
+                )
+                if c["comment_id"] not in processed
+                and not _cap_arb.is_protocol_comment(c)
+            ]
+
+        # A park waits on a person, whatever GitHub reports about the PR. On a
+        # quiet poll - no unprocessed comment that is feedback - a plain
+        # review-cap park (arbitration off, spent or unavailable) and a stuck
+        # park hold before any routing: a standing approval would auto-merge
+        # them, a conflict would hand them to a builder, a stale
+        # CHANGES_REQUESTED would burn a review round on nothing new. New
+        # feedback routes exactly as before.
+        _park_type = str(meta.get("blocked_reason_type") or "").strip().lower()
+        if (
+            _cap_arb.is_review_cap_park(meta, status=row["status"], assignee=assignee)
+            or _park_type == "stuck"
+        ):
+            if not _unprocessed_feedback():
+                log_step_state(
+                    "pr_poll",
+                    task_id,
+                    "park_hold",
+                    f"{_park_type or 'review-cap'} park; no new comment; holding",
+                )
+                return True
+
+        # An approval that answered a fix round is not sent back to a builder
+        # over a conflict: the routing below keeps it at the human gate.
+        _approval_answered = (_pr_approval or _approved_park) and (
+            _cap_arb.fix_round_closed_by(meta) == "approval"
+        )
+        if (
+            mergeable == "CONFLICTING"
+            and row["status"] in ("blocked", "done")
+            and not _approval_answered
+        ):
             # PR is conflicted on GitHub: route to
             # the builder's conflict flow (bounded
             # by ZEROFACTORY_MAX_CONFLICT_RETRIES).
@@ -1974,18 +2210,7 @@ def _poll_pr_and_route_review(
             pass
 
         processed_cmt_ids = set(task_meta.get("processed_review_comment_ids", []))
-        all_pr_comments = _disp.fetch_pr_review_comments(
-            repo_path=repo_path,
-            pr_url=current_pr_url,
-            task_id=task_id,
-            pr_data=pr_data,
-            additional_reviewer_usernames=_board_additional_reviewers(
-                cursor, row, board_slug
-            ),
-        )
-        new_pr_comments = [
-            c for c in all_pr_comments if c["comment_id"] not in processed_cmt_ids
-        ]
+        new_pr_comments = _unprocessed_feedback()
 
         # PR author lives in metadata (set at
         # packaging); titles carry no state.
@@ -2007,13 +2232,19 @@ def _poll_pr_and_route_review(
         # that crashes before signaling self-heals
         # via the worker retry budget.
         blocked_type = str(task_meta.get("blocked_reason_type") or "human-gate")
+        # An approval park carries the dispatcher's own latest verdict: the
+        # reviewer answered the fix commit. GitHub's aggregate reviewDecision
+        # keeps reporting CHANGES_REQUESTED until that review is dismissed, so
+        # on such a park it is stale state, not fresh feedback. Fresh feedback
+        # still arrives as a new review or comment (an unprocessed id).
+        approval_parked = blocked_type == "approved"
         has_actionable_feedback = (
-            decision == "CHANGES_REQUESTED"
+            (decision == "CHANGES_REQUESTED" and not approval_parked)
             or blocked_type == "changes-requested"
             or bool(actionable_comments)
         )
         is_approved = (
-            decision == "APPROVED" or blocked_type == "approved"
+            _pr_approval or blocked_type == "approved"
         ) and not has_actionable_feedback
 
         if has_actionable_feedback and (
@@ -2024,14 +2255,6 @@ def _poll_pr_and_route_review(
                 and reviewer_orphan_recovered
             )
         ):
-            if (
-                bool(task_meta.get("review_cap_reached"))
-                and row["status"] == "blocked"
-                and (row["assignee"] or "") == "human"
-                and not new_pr_comments
-            ):
-                return False
-
             for c in new_pr_comments:
                 cmt_body = _disp.format_task_comment_body(c)
                 cursor.execute(
@@ -2332,7 +2555,14 @@ def _poll_pr_and_route_review(
             task_dict = {"tags": tags_val, "metadata": task_meta}
             automerge_active = _disp.is_task_automerge_enabled(task_dict, board_dict)
 
-            if automerge_active:
+            # GitHub's merge rules are never bypassed: while a review still
+            # requests changes, an approval park does not auto-merge, and a
+            # conflicting PR is not merged by a poll. The human merge clears both.
+            if (
+                automerge_active
+                and decision != "CHANGES_REQUESTED"
+                and mergeable != "CONFLICTING"
+            ):
                 merged, merge_msg = _disp.attempt_pr_automerge(
                     current_pr_url, repo_path
                 )

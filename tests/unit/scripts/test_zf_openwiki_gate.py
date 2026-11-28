@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -129,7 +130,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, tags TEXT, created_at REAL, updated_at REAL)"
             )
@@ -188,7 +189,7 @@ class TestOpenWikiGate(unittest.TestCase):
 
     def test_api_task_creation_failure_does_not_use_sqlite_fallback(self):
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
             )
@@ -201,14 +202,14 @@ class TestOpenWikiGate(unittest.TestCase):
                 task = self.gate.create_openwiki_task("stale-board", "changes")
 
         self.assertIsNone(task)
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0
             )
 
     def test_sqlite_fallback_is_used_when_plugin_api_cannot_be_imported(self):
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
             )
@@ -218,7 +219,7 @@ class TestOpenWikiGate(unittest.TestCase):
                 task = self.gate.create_openwiki_task("test-board", "changes")
 
         self.assertIsNotNone(task)
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             row = conn.execute("SELECT board_slug, status FROM tasks").fetchone()
         self.assertEqual(row, ("test-board", "todo"))
 
@@ -227,7 +228,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, tags TEXT, created_at REAL, updated_at REAL)"
             )
@@ -272,7 +273,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, status TEXT, created_at REAL)"
             )
@@ -293,7 +294,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, status TEXT, created_at REAL)"
             )
@@ -310,7 +311,7 @@ class TestOpenWikiGate(unittest.TestCase):
             self.assertIn("status 'running'", reason)
 
             # Change to blocked
-            with sqlite3.connect(str(db_file)) as conn:
+            with closing(sqlite3.connect(str(db_file))) as conn, conn:
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked' WHERE id = 'task-run'"
                 )
@@ -326,7 +327,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (self.tmp / ".git").mkdir()
         (self.tmp / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute(
                 "CREATE TABLE tasks (id TEXT PRIMARY KEY, board_slug TEXT, title TEXT, description TEXT, status TEXT, assignee TEXT, priority TEXT, created_at REAL, updated_at REAL)"
             )
@@ -380,7 +381,7 @@ class TestOpenWikiGate(unittest.TestCase):
         remote_url = "https://github.com/example/payments-api.git"
         self._make_checkout(repo_dir, remote_url)
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
@@ -416,7 +417,7 @@ class TestOpenWikiGate(unittest.TestCase):
         )
         (repo_dir / "openwiki").mkdir()
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (board_slug TEXT, repo_alias TEXT, git_url TEXT)"
@@ -451,7 +452,7 @@ class TestOpenWikiGate(unittest.TestCase):
         remote_url = "https://github.com/example/payments-api.git"
         self._make_checkout(repo_dir, remote_url)
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
@@ -481,7 +482,7 @@ class TestOpenWikiGate(unittest.TestCase):
         repo_dir = self.tmp / "payments-checkout"
         self._make_checkout(repo_dir, "https://github.com/example/team/payments.git")
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
@@ -516,7 +517,7 @@ class TestOpenWikiGate(unittest.TestCase):
         repo_dir = self.tmp / "checkout"
         self._make_checkout(repo_dir, str(remote_repo))
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (board_slug TEXT, git_url TEXT)"
@@ -550,7 +551,7 @@ class TestOpenWikiGate(unittest.TestCase):
         (repo_worker / "openwiki").mkdir(parents=True)
 
         db_file = self.tmp / "zerofactory.db"
-        with sqlite3.connect(str(db_file)) as conn:
+        with closing(sqlite3.connect(str(db_file))) as conn, conn:
             conn.execute("CREATE TABLE boards (slug TEXT PRIMARY KEY)")
             conn.execute(
                 "CREATE TABLE board_repositories (id INTEGER PRIMARY KEY AUTOINCREMENT, board_slug TEXT, repo_alias TEXT, git_url TEXT, target_branch TEXT)"

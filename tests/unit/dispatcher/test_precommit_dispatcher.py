@@ -1,6 +1,8 @@
 """Unit tests for deterministic precommit runner and failure handling in dispatcher."""
 
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -12,13 +14,38 @@ from dispatcher.worktree import (
 )
 
 
+def _bash_invocation(script: Path, *args: str) -> list[str]:
+    """Build the ``bash <script> <args>`` command the dispatcher itself uses.
+
+    On Windows a bare ``bash`` resolves to the WSL launcher (System32\\bash.exe)
+    before anything on PATH, and WSL cannot read ``/c/...`` paths, so prefer Git
+    for Windows' bash and hand it a POSIX-style path, as
+    ``run_deterministic_precommit`` does.
+    """
+    script_arg = str(script)
+    bash_exe = "bash"
+    if os.name == "nt":
+        normalized = script_arg.replace("\\", "/")
+        drive, _, rest = normalized.partition("/")
+        script_arg = f"/{drive[:1].lower()}/{rest}"
+        git = shutil.which("git")
+        if git:
+            for gdir in Path(git).resolve().parents[:3]:
+                cand = gdir / "bin" / "bash.exe"
+                if not cand.exists():
+                    cand = gdir / "usr" / "bin" / "bash.exe"
+                if cand.exists():
+                    bash_exe = str(cand)
+    return [bash_exe, script_arg, *args]
+
+
 def test_precommit_script_rejects_unsupported_phase():
     """An invalid phase prints usage and exits before running any checks."""
     repo_root = Path(__file__).resolve().parents[3]
     script = repo_root / ".zerofactory" / "precommit.sh"
 
     result = subprocess.run(
-        ["bash", str(script), "formatty"],
+        _bash_invocation(script, "formatty"),
         capture_output=True,
         text=True,
         check=False,
@@ -35,7 +62,7 @@ def test_precommit_script_rejects_extra_arguments():
     script = repo_root / ".zerofactory" / "precommit.sh"
 
     result = subprocess.run(
-        ["bash", str(script), "format", "typo"],
+        _bash_invocation(script, "format", "typo"),
         capture_output=True,
         text=True,
         check=False,

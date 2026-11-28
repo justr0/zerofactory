@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -22,6 +21,7 @@ from dashboard.plugin_api import (
     get_task,
     init_db,
 )
+from tests.conftest import HOME_ENV_KEYS, fake_home_env, force_rmtree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -48,7 +48,7 @@ class TestAutomationScriptsE2E(unittest.TestCase):
             "ZEROFACTORY_DISABLE_DISPATCHER": os.environ.get(
                 "ZEROFACTORY_DISABLE_DISPATCHER"
             ),
-            "HOME": os.environ.get("HOME"),
+            **{key: os.environ.get(key) for key in HOME_ENV_KEYS},
         }
 
         os.environ["ZEROFACTORY_DB"] = str(self.db_path)
@@ -56,7 +56,7 @@ class TestAutomationScriptsE2E(unittest.TestCase):
         os.environ["ZEROFACTORY_DISABLE_DISPATCHER"] = "1"
         os.environ["ZEROFACTORY_SKIP_GIT"] = "1"
         os.environ["ZEROFACTORY_SKIP_WORKER_SPAWN"] = "1"
-        os.environ["HOME"] = str(self.fake_home)
+        os.environ.update(fake_home_env(self.fake_home))
         init_db(force=True)
 
         self.scripts_dir = REPO_ROOT / "scripts"
@@ -67,7 +67,7 @@ class TestAutomationScriptsE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def _run_script(
         self,
@@ -90,7 +90,7 @@ class TestAutomationScriptsE2E(unittest.TestCase):
             scanner_gate_env.pop(leaked, None)
         env = {
             **scanner_gate_env,
-            "HOME": str(self.fake_home),
+            **fake_home_env(self.fake_home),
             "PYTHONPATH": python_path,
             "ZEROFACTORY_DB": str(self.db_path),
             "ZEROFACTORY_LOCK_PATH": str(self.lock_path),

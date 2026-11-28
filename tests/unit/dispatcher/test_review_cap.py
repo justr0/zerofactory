@@ -31,6 +31,7 @@ from dispatcher import (
     is_reviewer_approval_comment,
     run_dispatch_cycle,
 )
+from dispatcher.github_pr import is_reviewer_pass_verdict
 
 
 class TestReviewerApprovalComment:
@@ -874,3 +875,122 @@ class TestApprovedParkIdempotent:
             assert "blocked_reason" not in meta
             assert "blocked_reason_type" not in meta
             assert "cmt_human_feedback" in meta["processed_review_comment_ids"]
+
+
+# Verbatim review of aesop-engine PR #23 (2026-11-25). The reviewer passed the code and
+# withheld only the merge decision; the dispatcher read it as an actionable critique and
+# spent a builder run on rework nobody requested.
+WITHHELD_MERGE_REVIEW = (
+    "[AI:zf-reviewer] [Reviewer Feedback] Round 1: Code checks passed; merge authorization required.\n\nNo "
+    "code changes requested. The conditional SQLite UPDATE is the first write after model completion, so "
+    "a committed rejection or promotion cannot be overwritten by scoring. The status, score, and success "
+    "event are committed together. The offline tests use a second SQLite connection for both "
+    "interleavings and cover normal rescoring and rollback on event failure. The diff stays in scope with "
+    "no new dependencies or workflow abstractions (Ponytail Rungs 1, 3, 5, 6, 7).\n\nVerification: 321 "
+    "tests passed; Ruff lint and format checks passed; GitHub reports no merge conflicts with "
+    "main.\n\nMerge gate (blocking, AGENTS.md:8): The task brief says the approval disposition triggers "
+    "automatic merge. Rohan must explicitly authorize merge of PR #23, or dispatcher auto-merge must be "
+    "disabled for this handoff so Rohan can decide. I am withholding the approval disposition, not "
+    "requesting code rework.\n\nCONVENTION: Test stale scoring at the model callback using a second SQLite "
+    "connection, and assert that neither a score nor a success event is appended."
+)
+
+
+class TestWithheldMergeVerdictStaysAtGate:
+    """Regression: a review that passes the code and withholds only the merge decision is
+    neither a critique nor an approval. The task stays parked at the human gate."""
+
+    @staticmethod
+    def _review(body: str, state: str = "COMMENTED") -> dict:
+        return {
+            "comment_id": "review_6062336544",
+            "author": "justr0",
+            "body": body,
+            "state": state,
+        }
+
+    def test_withheld_merge_review_is_not_a_critique(self):
+        assert is_reviewer_pass_verdict(WITHHELD_MERGE_REVIEW, "COMMENTED") is True
+        comment = self._review(WITHHELD_MERGE_REVIEW)
+        assert (
+            is_actionable_review_comment(comment, builder_assignee="zf-builder")
+            is False
+        )
+
+    def test_withheld_merge_review_is_not_an_approval(self):
+        # Comment text must never promote a merge decision the reviewer withheld.
+        assert is_reviewer_approval_comment(WITHHELD_MERGE_REVIEW, "COMMENTED") is False
+
+    def test_changes_requested_state_is_still_a_critique(self):
+        comment = self._review(WITHHELD_MERGE_REVIEW, "CHANGES_REQUESTED")
+        assert (
+            is_actionable_review_comment(comment, builder_assignee="zf-builder") is True
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "[AI:zf-reviewer] [Reviewer Feedback] Round 2: Changes requested. The lookup still "
+            "falls back to a sibling migrations/ directory. No test changes needed.",
+            "[AI:zf-reviewer] [Reviewer Feedback] Round 2: P1 — the lookup still falls back to a "
+            "sibling migrations/ directory. No test changes needed.",
+            "[AI:zf-reviewer] [Reviewer Feedback] Round 2: the lookup must be fixed before merge. "
+            "No test changes needed.",
+        ],
+    )
+    def test_critique_that_also_contains_a_negation_stays_a_critique(self, body: str):
+        assert is_reviewer_pass_verdict(body, "COMMENTED") is False
+        comment = self._review(body)
+        assert (
+            is_actionable_review_comment(comment, builder_assignee="zf-builder") is True
+        )
+
+    def test_comment_without_reviewer_tag_stays_actionable(self):
+        body = "Code checks passed on my side. No code changes needed from me, but add a changelog entry."
+        comment = self._review(body)
+        assert (
+            is_actionable_review_comment(comment, builder_assignee="zf-builder") is True
+        )
+
+    def test_parked_task_is_not_sent_back_to_builder(self, tmp_path: Path):
+        db_path = tmp_path / "test.db"
+        _init_test_db(db_path)
+        task_id = "t-withheld-merge"
+        harness = TestApprovedParkIdempotent()
+        harness._seed_task(
+            db_path,
+            task_id,
+            {
+                "blocked_reason": (
+                    "Awaiting explicit merge authorization for PR #23 (AGENTS.md:8); "
+                    "code review passed, no code changes requested"
+                ),
+                "blocked_reason_type": "human-gate",
+                "packaged_by": "zf-builder",
+                "last_reviewed_commit": "sha_park",
+                "processed_review_comment_ids": [],
+            },
+            assignee="human",
+        )
+
+        mock_stop, mock_remove = harness._run_cycles(
+            db_path, n=2, comments=[self._review(WITHHELD_MERGE_REVIEW)]
+        )
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT status, assignee, metadata FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            routed = conn.execute(
+                "SELECT COUNT(*) FROM task_activity WHERE task_id = ? AND action = 'changes_requested'",
+                (task_id,),
+            ).fetchone()[0]
+        assert (row["status"], row["assignee"]) == ("blocked", "human")
+        meta = json.loads(row["metadata"])
+        assert meta["blocked_reason_type"] == "human-gate"
+        assert meta["processed_review_comment_ids"] == ["review_6062336544"]
+        assert "review_round" not in meta
+        assert routed == 0
+        mock_stop.assert_not_called()
+        mock_remove.assert_not_called()

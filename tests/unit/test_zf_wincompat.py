@@ -134,3 +134,75 @@ def test_is_pid_alive_rejects_invalid_pid_without_opening_process(monkeypatch):
         assert wincompat.is_pid_alive(pid) is False
 
     kernel32.OpenProcess.assert_not_called()
+
+
+def test_parent_pid_map_reads_the_whole_snapshot_and_closes_it(monkeypatch):
+    """Every row lands in the map and the snapshot handle is released."""
+    rows = iter([(10, 4), (20, 10), (30, 20)])
+    walked = []
+    winfunctype = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+    entry_type = wincompat._PROCESSENTRY32W
+
+    def walk(snapshot, row):
+        walked.append(snapshot)
+        pid, ppid = next(rows, (None, None))
+        if pid is None:
+            return False
+        row[0].th32ProcessID = pid
+        row[0].th32ParentProcessID = ppid
+        return True
+
+    step = winfunctype(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(entry_type))(walk)
+    taken, closed = [], []
+    kernel32 = SimpleNamespace(
+        CreateToolhelp32Snapshot=lambda flag, pid: taken.append((flag, pid)) or 0x1234,
+        Process32FirstW=lambda *args: step(*args),
+        Process32NextW=lambda *args: step(*args),
+        CloseHandle=lambda handle: closed.append(handle),
+    )
+    monkeypatch.setattr(
+        ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
+
+    assert wincompat.parent_pid_map() == {10: 4, 20: 10, 30: 20}
+    assert taken == [(0x2, 0)]
+    assert len(walked) == 4  # three rows, then the call that ends the walk
+    assert closed == [0x1234]
+
+
+def test_parent_pid_map_is_unknown_when_no_snapshot_can_be_taken(monkeypatch):
+    """``None`` is "unknown": a caller must not read it as "no ancestors"."""
+    calls = []
+    kernel32 = SimpleNamespace(
+        CreateToolhelp32Snapshot=lambda flag, pid: ctypes.c_void_p(-1).value,
+        Process32FirstW=lambda *args: calls.append("first"),
+        Process32NextW=lambda *args: calls.append("next"),
+        CloseHandle=lambda *args: calls.append("close"),
+    )
+    monkeypatch.setattr(
+        ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
+
+    assert wincompat.parent_pid_map() is None
+    assert calls == []  # nothing to walk, and no handle to release
+
+
+def test_parent_pid_map_is_unknown_when_the_walk_fails_partway(monkeypatch):
+    """A half-read map must not pass for a complete one."""
+    closed = []
+
+    def torn(*_args):
+        raise OSError("snapshot torn mid-walk")
+
+    kernel32 = SimpleNamespace(
+        CreateToolhelp32Snapshot=lambda flag, pid: 0x1234,
+        Process32FirstW=torn,
+        Process32NextW=lambda *args: True,
+        CloseHandle=lambda handle: closed.append(handle),
+    )
+    monkeypatch.setattr(
+        ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
+
+    assert wincompat.parent_pid_map() is None
+    assert closed == [0x1234]

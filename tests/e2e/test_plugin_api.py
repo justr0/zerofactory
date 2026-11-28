@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import tempfile
 import time
 import unittest
@@ -20,6 +19,7 @@ from dashboard.plugin_api import (
     prune_old_activity,
     router,
 )
+from tests.conftest import force_rmtree
 
 
 class TestPluginAPIE2E(unittest.TestCase):
@@ -53,7 +53,7 @@ class TestPluginAPIE2E(unittest.TestCase):
                 os.environ[k] = v
             else:
                 os.environ.pop(k, None)
-        shutil.rmtree(self.td, ignore_errors=True)
+        force_rmtree(self.td)
 
     def test_01_boards_api_crud_and_limits(self):
         """Boards REST API: create, read, update max_concurrent_running and target_branch, delete."""

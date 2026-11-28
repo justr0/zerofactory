@@ -1,5 +1,6 @@
 """Unit tests for dispatcher/worker_spawner.py worker spawning and session isolation."""
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -15,6 +16,7 @@ import pytest
 import dispatcher.process_manager as process_manager
 import dispatcher.worker_spawner as worker_spawner
 from dispatcher.worker_spawner import spawn_agent_worker
+from dispatcher.worker_handoff import execution_token_line, token_from_prompt
 import zf_wincompat
 from zf_wincompat import detached_popen_kwargs
 
@@ -128,6 +130,8 @@ def test_triage_prompts_omit_context_for_empty_comment_set(
     prompt, _ = _spawn_triage_prompt(tmp_path, role, monkeypatch)
 
     assert heading not in prompt
+    # No worker_execution_id in the task metadata: the prompt goes out untouched.
+    assert token_from_prompt(prompt) is None
 
 
 @pytest.mark.parametrize(("role", "_heading"), TRIAGE_COMMENT_HEADINGS)
@@ -253,6 +257,13 @@ def test_spawn_agent_worker_cmd_and_session_isolation(tmp_path):
             assert mock_popen.called
             args, kwargs = mock_popen.call_args
             prompt = mock_build_command.call_args.args[0]
+            # The prompt is the other half of the handoff token (worker_handoff): a
+            # worker's shell commands never see the env injected below.
+            assert prompt.splitlines()[:2] == [
+                "Handoff token for this dispatch: pass it as `--execution-id` to every "
+                "`hermes zerofactory move` you run.",
+                execution_token_line("exec-current"),
+            ]
             native_cmd = [
                 "hermes-test",
                 "-p",
@@ -531,6 +542,31 @@ def test_spawn_builder_arbitration_fix_round_prompt_is_the_verdict_only():
     )
     assert "Your goal as Builder (Fix Review Comments)" in re_reviewed
     assert "Arbitration Fix Round" not in re_reviewed
+
+
+def test_spawn_builder_closes_the_board_connections_it_opens():
+    """Every board connection the spawn path opens is closed by the time the
+    spawn returns. `with sqlite3.connect(...)` commits but never closes, and an
+    open handle keeps the board file from being deleted or replaced on Windows."""
+    opened = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    with patch.object(sqlite3, "connect", recording_connect):
+        # While connections leak, Windows refuses to delete the board file, so
+        # the helper's cleanup raises first; let the assertions name the cause.
+        with contextlib.suppress(PermissionError):
+            _spawn_builder_with_comments(PRIOR_FINDINGS, "zf-close-probe", None)
+
+    # The helper's own writer, plus at least one reader on the spawn path.
+    assert len(opened) >= 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
 
 def test_spawn_builder_arbitration_fix_round_keeps_deterministic_gate_failures():
