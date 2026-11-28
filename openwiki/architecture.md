@@ -45,7 +45,7 @@ sources:
     resource: repo://plugin.yaml
   - id: openwiki-source-57b14ecc6ef51ae6212b15f0
     resource: repo://settings.py
-generated: { by: "hermes", at: "2026-11-28T12:31:20.531Z" }
+generated: { by: "hermes", at: "2026-11-23T15:15:28.452Z" }
 ---
 
 # Zero Factory Architecture
@@ -61,9 +61,7 @@ it). Triage work for complex or multi-repo goals flows through a sequential
 Elephant-Goldfish Model (EGM) pipeline: `zf-orchestrator` drafts the
 specification, `zf-goldfish` audits it in a zero-context session, and a human
 operator releases it (see
-<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Dashboard & Automation](/openwiki/components/dashboard-cron.md) and
-<!-- openwiki: broken internal link [/openwiki/components/dispatcher.md] link "/openwiki/components/dispatcher.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Dispatch Engine](/openwiki/components/dispatcher.md)).
 
 The architecture deliberately follows **stateless workers, stateful substrate**:
@@ -99,7 +97,6 @@ board. The dashboard also exposes REST endpoints that drive the same
 synchronization and import flows. The stored `external_issue` metadata is
 later read back by the dispatcher so the PR it opens for the task
 links the source issue (`Fixes #42`). See
-<!-- openwiki: broken internal link [/openwiki/components/issues-importer.md] link "/openwiki/components/issues-importer.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [External Issue Import](/openwiki/components/issues-importer.md).
 
 ## The 13-stage state machine
@@ -354,12 +351,8 @@ enforced structurally — a deterministic precommit pipeline
 (`.zerofactory/precommit.sh`: format → build → test) stands between a worker's
 output and a real PR, so a broken build or lint error never reaches a human.
 
-<!-- openwiki: broken internal link [/openwiki/components/dispatcher.md] link "/openwiki/components/dispatcher.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 See [Dispatch Engine](/openwiki/components/dispatcher.md) for the dispatch loop
-<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 in depth, [Dashboard & Automation](/openwiki/components/dashboard-cron.md)
-<!-- openwiki: broken internal link [/openwiki/conventions.md] link "/openwiki/conventions.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 for the operator/automation layer, [Conventions](/openwiki/conventions.md) for
-<!-- openwiki: broken internal link [/openwiki/quickstart.md] link "/openwiki/quickstart.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 the coding rules agents must follow, and [Quickstart](/openwiki/quickstart.md)
 to run the factory.

@@ -2,44 +2,46 @@
   "schemaVersion": 1,
   "pages": {
     "/openwiki/architecture.md": {
-      "gitHead": "a4118c4b71fadb18497df4efcf8dff21c089f6ad",
-      "sourceFingerprint": "sha256:fb1d2f8e8120387a1ea31d66d16821307015a923cf42d8c77ab38f448ca65555",
       "pageVersion": "sha256:4dc13fb2b44dc23cb5d6b092569903303e8e7c5df4f736197d0f55766bf07be8",
       "completedBy": "hermes",
-      "completedRunId": "50337cc2-94eb-49f7-83ea-e51a24e22afd"
+      "completedRunId": "50337cc2-94eb-49f7-83ea-e51a24e22afd",
+      "gitHead": "a4118c4b71fadb18497df4efcf8dff21c089f6ad",
+      "sourceFingerprint": "sha256:fb1d2f8e8120387a1ea31d66d16821307015a923cf42d8c77ab38f448ca65555"
     },
-    "/openwiki/architecture/overview.md": {
-      "gitHead": "be2ca4598cde90203b8141dc1b2b97dde81e84f4",
-      "pageVersion": "sha256:c56f10bd32f6fbdbb22ab684b20cd39348b6e0fd9cd8eaf3e23dd19a4b5108a9"
-    },
-    "/openwiki/architecture/task-lifecycle.md": {
-      "gitHead": "be2ca4598cde90203b8141dc1b2b97dde81e84f4",
-      "pageVersion": "sha256:66c17cff53c399ad3a76f0fa1044ca12a6e4d82a0145b4a3a32f475acdcba234"
+    "/openwiki/components/dashboard-cron.md": {
+      "gitHead": "7299805be52f1f6af1f286d0de69693a86ad6fed",
+      "sourceFingerprint": "sha256:42706c787e6614b821a47941cb9b149bf0eb67350928d4ebac96e98e597c6121",
+      "pageVersion": "sha256:1626cf1d61ff2b8bc811d598b3eae0aa59050024de8148280a6a3b46841e05a7",
+      "completedBy": "hermes",
+      "completedRunId": "2c7ddbbb-c6db-48a9-85ed-7b763e009c1b"
     },
     "/openwiki/components/dispatcher.md": {
-      "pageVersion": "sha256:83eab252e4b20a522068cafb1a7d94976767e31cd7c2fe8bc24f8388dc420036",
+      "pageVersion": "sha256:606e2040a134b8884cedbf334c61662f48f6953cd2f19aaffeedf68090f860cb",
       "completedBy": "hermes",
-      "completedRunId": "6a99126c-51b7-4b25-8b9d-351e55119ea6",
-      "gitHead": "8d3149df828cde31a295edf1790a330417fe0b8b",
-      "sourceFingerprint": "sha256:36dc94469d02f4d14344614a58014764a99fefb3d1ecd5309e3b6fe04328c032"
+      "completedRunId": "0ced2d31-a078-4d27-8dd7-dc13460ba9f0",
+      "gitHead": "be2ca4598cde90203b8141dc1b2b97dde81e84f4",
+      "sourceFingerprint": "sha256:08841427867c7dede83a2d1460cbfc63d237bb32056a429b1f5a83ff0c8aef0d"
+    },
+    "/openwiki/components/issues-importer.md": {
+      "gitHead": "01be1b499d74788a3ed656bd6077f21a19bffe2b",
+      "sourceFingerprint": "sha256:d85b200f5900d698cf7659e14a033fd06148e4bf119b52f385b2533b0a6cf59c",
+      "pageVersion": "sha256:97ca41d42c473ff316c0e1337bf34f4f3de8c1ee56fc86c4ae04b13595583117",
+      "completedBy": "hermes",
+      "completedRunId": "7c144636-b4c9-4b6a-ac2f-801d9ba3fe54"
     },
     "/openwiki/conventions.md": {
-      "gitHead": "a4118c4b71fadb18497df4efcf8dff21c089f6ad",
-      "sourceFingerprint": "sha256:fb1d2f8e8120387a1ea31d66d16821307015a923cf42d8c77ab38f448ca65555",
       "pageVersion": "sha256:6771b376b3ea0320983dc0e2a5969223f5cf05a2e723691cf1dcf686f12aa17b",
       "completedBy": "hermes",
-      "completedRunId": "0b73f50c-416f-44b4-afa7-030eb4edf9c1"
-    },
-    "/openwiki/operations/development.md": {
-      "gitHead": "be2ca4598cde90203b8141dc1b2b97dde81e84f4",
-      "pageVersion": "sha256:8ea9b95a888d606e714cc48ea74867ebed947ae98fe5b95317808c8ab9c751bd"
+      "completedRunId": "0b73f50c-416f-44b4-afa7-030eb4edf9c1",
+      "gitHead": "a4118c4b71fadb18497df4efcf8dff21c089f6ad",
+      "sourceFingerprint": "sha256:fb1d2f8e8120387a1ea31d66d16821307015a923cf42d8c77ab38f448ca65555"
     },
     "/openwiki/quickstart.md": {
-      "gitHead": "a4118c4b71fadb18497df4efcf8dff21c089f6ad",
-      "sourceFingerprint": "sha256:fb1d2f8e8120387a1ea31d66d16821307015a923cf42d8c77ab38f448ca65555",
       "pageVersion": "sha256:ccbdb78f8e74ecd184f1e876aef6ac14020eff67033e70a8a03d50a0df093a0f",
       "completedBy": "hermes",
-      "completedRunId": "0b73f50c-416f-44b4-afa7-030eb4edf9c1"
+      "completedRunId": "0b73f50c-416f-44b4-afa7-030eb4edf9c1",
+      "gitHead": "a4118c4b71fadb18497df4efcf8dff21c089f6ad",
+      "sourceFingerprint": "sha256:fb1d2f8e8120387a1ea31d66d16821307015a923cf42d8c77ab38f448ca65555"
     }
   }
 }

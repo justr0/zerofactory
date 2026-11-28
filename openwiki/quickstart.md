@@ -24,7 +24,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-f0a6e7dc03522b2682f88655
     resource: repo://tests/conftest.py
-generated: { by: "hermes", at: "2026-11-28T12:31:20.531Z" }
+generated: { by: "hermes", at: "2026-11-23T15:15:28.452Z" }
 verified:
   - by: openwiki/0.6.0
     at: 2026-11-22T15:24:22.005Z
@@ -38,13 +38,9 @@ verified:
 
 This is the canonical entry point to the Zero Factory knowledge base. Use it to
 get the factory running and to navigate to the deeper pages. The architecture
-<!-- openwiki: broken internal link [/openwiki/architecture.md] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 lives in [Architecture](/openwiki/architecture.md); the moving parts in
-<!-- openwiki: broken internal link [/openwiki/components/dispatcher.md] link "/openwiki/components/dispatcher.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Dispatch Engine](/openwiki/components/dispatcher.md) and
-<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Dashboard, Cron & Automation](/openwiki/components/dashboard-cron.md); and the
-<!-- openwiki: broken internal link [/openwiki/conventions.md] link "/openwiki/conventions.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 coding rules in [Conventions](/openwiki/conventions.md).
 
 ## What it is
@@ -202,7 +198,6 @@ CLI handler (the API `PATCH /tasks/{id}` refuses status changes with a 400,
 pointing at `POST /tasks/{id}/move`) so lifecycle side effects — worker stop,
 flag cleanup, dispatch trigger — always apply. `move` accepts `--assignee` to
 reassign ownership while transitioning columns
-<!-- openwiki: broken internal link [/openwiki/components/issues-importer.md] link "/openwiki/components/issues-importer.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 ([External Issue Import](/openwiki/components/issues-importer.md)). `reject`
 records the revision request as a task comment and, as a side effect,
 auto-records the human feedback as a `rejected_path` board memory
@@ -215,7 +210,6 @@ OpenWiki architecture docs stay in sync automatically: the per-board
 `zf_openwiki_gate.py` wake-gate daily; when new commits land on the default
 branch it files at most one P2 `zf-builder` doc-sync task (0 LLM tokens when
 nothing changed or an OpenWiki task is already active). See
-<!-- openwiki: broken internal link [/openwiki/components/dashboard-cron.md] link "/openwiki/components/dashboard-cron.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 [Dashboard, Cron & Automation](/openwiki/components/dashboard-cron.md).
 
 ## Task lifecycle
@@ -236,7 +230,5 @@ crash/timeout, repeated precommit failures, merge conflicts) are routed to the
 diagnosis attempt — `hermes zerofactory recover <task_id> [--guidance "..."]`
 sends the task back to `todo` for `zf-builder` — before escalating to
 `blocked` for a human. Details
-<!-- openwiki: broken internal link [/openwiki/architecture.md#session-per-handoff-model] link "/openwiki/architecture.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 in [Architecture](/openwiki/architecture.md#session-per-handoff-model)
-<!-- openwiki: broken internal link [/openwiki/components/dispatcher.md] link "/openwiki/components/dispatcher.md" is root-absolute, which no real consumer resolves against the repository root (not a coding agent reading the page, not GitHub's Markdown renderer, not a local viewer); use a path relative to this file instead. Fix the href or restore the target, then delete this comment. -->
 and [Dispatch Engine](/openwiki/components/dispatcher.md).
