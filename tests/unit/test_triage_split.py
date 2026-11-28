@@ -134,6 +134,57 @@ class TestTriageSplit(unittest.TestCase):
                 2,
             )
 
+    def test_idle_scanner_targets_non_first_board_and_keeps_todo_cap(self):
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO boards (slug, description, created_at, updated_at) VALUES ('first-board', 'First Board', 0, 0)"
+            )
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('idle_scan_max_todo_test-board', '1', 1)"
+            )
+            conn.commit()
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZEROFACTORY_IDLE_SCAN": "1",
+                "ZEROFACTORY_IDLE_SCAN_BOARD": "test-board",
+            },
+        ):
+            # Omitting --board resolves to first-board and is rejected for this scan.
+            with self.assertRaises(HTTPException) as exc:
+                create_task(
+                    TaskCreate(title="Scanner task without board", status="todo")
+                )
+            self.assertEqual(exc.exception.status_code, 403)
+
+            created = create_task(
+                TaskCreate(
+                    title="Scanner task on non-first board",
+                    board_slug="test-board",
+                    status="todo",
+                )
+            )
+            self.assertTrue(created["ok"])
+
+            with self.assertRaises(HTTPException) as exc:
+                create_task(
+                    TaskCreate(
+                        title="Scanner task over cap",
+                        board_slug="test-board",
+                        status="todo",
+                    )
+                )
+            self.assertEqual(exc.exception.status_code, 409)
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT board_slug, COUNT(*) FROM tasks WHERE status = 'todo' GROUP BY board_slug"
+                ).fetchall(),
+                [("test-board", 1)],
+            )
+
     def test_idle_scanner_zero_cap_and_manual_creation(self):
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.execute(
