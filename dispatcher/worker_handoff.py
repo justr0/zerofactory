@@ -28,40 +28,56 @@ from typing import Callable, Mapping
 EXECUTION_ID_ENV = "ZEROFACTORY_WORKER_EXECUTION_ID"
 SESSION_ID_ENV = "HERMES_SESSION_ID"
 
-# The line the dispatcher puts at the top of every worker prompt. Fixed prefix, and the
-# dispatcher's token is a uuid4 hex — anything else in a transcript is not a token.
-_TOKEN_LINE_TEMPLATE = "ZEROFACTORY_WORKER_EXECUTION_ID={token}"
-_TOKEN_LINE_RE = re.compile(
-    r"^ZEROFACTORY_WORKER_EXECUTION_ID=([0-9a-f]{32})$", re.MULTILINE
+#: The instruction line of the two-line header every dispatched prompt starts with.
+#: Wire format shared with the transcript parser below: the line is matched verbatim,
+#: so reword it only together with a parser that still accepts the previous one.
+HEADER_INSTRUCTION = (
+    "Handoff token for this dispatch: pass it as `--execution-id` to every "
+    "`hermes zerofactory move` you run."
 )
+_TOKEN_LINE_PREFIX = "ZEROFACTORY_WORKER_EXECUTION_ID="
+# The dispatcher's token is a uuid4 hex — anything else in a transcript is not a token.
+_TOKEN_LINE_RE = re.compile(r"ZEROFACTORY_WORKER_EXECUTION_ID=([0-9a-f]{32})")
+
+# User messages scanned per session, newest first. A dispatch prompt is a session's
+# first user message and a re-dispatch is its newest; only mid-run steering lands
+# between, so the bound is never reached by a real session — it only caps the read.
+_SESSION_SCAN_LIMIT = 50
 
 
 def execution_token_line(token: str) -> str:
     """The prompt line that carries one dispatch's token."""
-    return _TOKEN_LINE_TEMPLATE.format(token=token)
+    return f"{_TOKEN_LINE_PREFIX}{token}"
 
 
 def with_execution_token(prompt: str, token: str | None) -> str:
     """Prepend the token header to a worker prompt; ``prompt`` unchanged without a token."""
     if not token:
         return prompt
-    return (
-        "Handoff token for this dispatch: pass it as `--execution-id` to every "
-        "`hermes zerofactory move` you run.\n"
-        f"{execution_token_line(token)}\n\n{prompt}"
-    )
+    return f"{HEADER_INSTRUCTION}\n{execution_token_line(token)}\n\n{prompt}"
 
 
-def token_from_prompt(text: str) -> str | None:
-    """The newest token line in a prompt — a resumed session's latest dispatch wins."""
-    found = _TOKEN_LINE_RE.findall(text)
-    return found[-1] if found else None
+def token_from_prompt(text: str | None) -> str | None:
+    """The token of the dispatch header at the very top of ``text``; ``None`` without one.
+
+    Only a complete header in its prescribed position counts. A token line quoted
+    anywhere else — inside a task body, a review comment, a tool's output pasted into a
+    prompt — is not a dispatch and must not authenticate one.
+    """
+    if not isinstance(text, str):
+        return None
+    instruction, newline, rest = text.partition("\n")
+    if not newline or instruction.rstrip("\r") != HEADER_INSTRUCTION:
+        return None
+    token_line = rest.partition("\n")[0].rstrip("\r")
+    match = _TOKEN_LINE_RE.fullmatch(token_line)
+    return match.group(1) if match else None
 
 
 def token_from_session(
     session_id: str | None, state_db: Path | str | None
 ) -> str | None:
-    """Newest token among a session's user messages.
+    """Newest token among a session's dispatch prompts.
 
     ``None`` without a session or database, and on any read error: an unreadable
     transcript must degrade to "no token", never to a crash or a guessed one.
@@ -77,20 +93,52 @@ def token_from_session(
     except (sqlite3.Error, ValueError, TypeError, OSError):
         return None
     try:
+        # The prefix narrows the scan in SQL; the strict parser decides, so a header
+        # quoted at the start of a longer message still does not count.
         rows = conn.execute(
             "SELECT content FROM messages "
-            "WHERE session_id = ? AND role = 'user' ORDER BY rowid DESC",
-            (session_id,),
+            "WHERE session_id = ? AND role = 'user' AND content LIKE ? "
+            f"ORDER BY rowid DESC LIMIT {_SESSION_SCAN_LIMIT}",
+            (session_id, f"{HEADER_INSTRUCTION}%"),
         )
         for (content,) in rows:
-            if isinstance(content, str):
-                token = token_from_prompt(content)
-                if token:
-                    return token
+            token = token_from_prompt(content)
+            if token:
+                return token
     except sqlite3.Error:
         return None
     finally:
         conn.close()
+    return None
+
+
+def _own_profile_state_db(actor: str) -> Path | None:
+    """``state.db`` of the reporting profile, or ``None`` when the profile has none.
+
+    Only the actor's own profile database qualifies. The general profile resolver
+    ends in the global ``~/.hermes/state.db`` — a file holding the human operator's
+    sessions, which an unknown or unassigned actor must never be read as.
+    """
+    try:
+        from paths import (  # type: ignore
+            _plugin_profiles_root,
+            get_hermes_profiles_root,
+            normalize_assignee,
+        )
+    except ImportError:
+        return None
+    try:
+        profile = normalize_assignee(actor)
+        candidate = get_hermes_profiles_root() / profile / "state.db"
+        if candidate.is_file():
+            return candidate
+        plugin_root = _plugin_profiles_root()
+        if plugin_root is not None:
+            candidate = plugin_root / profile / "state.db"
+            if candidate.is_file():
+                return candidate
+    except Exception:  # noqa: BLE001 - profile resolution is best-effort here
+        pass
     return None
 
 
@@ -117,11 +165,7 @@ def resolve_worker_execution_id(
     if not session_id or not actor:
         return None
     if state_db_resolver is None:
-        try:
-            from paths import resolve_profile_state_db  # type: ignore
-        except ImportError:
-            return None
-        state_db_resolver = resolve_profile_state_db
+        state_db_resolver = _own_profile_state_db
     try:
         state_db = state_db_resolver(actor)
     except Exception:  # noqa: BLE001 - profile resolution is best-effort here

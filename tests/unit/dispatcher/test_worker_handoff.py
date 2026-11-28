@@ -9,6 +9,7 @@ import pytest
 
 from dispatcher.worker_handoff import (
     EXECUTION_ID_ENV,
+    HEADER_INSTRUCTION,
     SESSION_ID_ENV,
     execution_token_line,
     resolve_worker_execution_id,
@@ -20,6 +21,10 @@ from dispatcher.worker_handoff import (
 CURRENT = "a" * 32
 EARLIER = "b" * 32
 OTHER = "c" * 32
+INSTRUCTION = (
+    "Handoff token for this dispatch: pass it as `--execution-id` to every "
+    "`hermes zerofactory move` you run."
+)
 
 
 def _state_db(path, rows):
@@ -30,7 +35,7 @@ def _state_db(path, rows):
 
 
 def _sessions_db(path):
-    """A profile transcript: s1 resumed for a second dispatch, s2 once, s3 never."""
+    """A profile transcript: s1 resumed for a second dispatch, s2 once, s3 and s4 never."""
     _state_db(
         path,
         [
@@ -40,6 +45,12 @@ def _sessions_db(path):
             ("s3", "user", "a dispatch from an older dispatcher: no token"),
             ("s1", "user", with_execution_token("second dispatch", CURRENT)),
             ("s1", "user", "a follow-up message that carries no token"),
+            (
+                "s4",
+                "user",
+                "Review the PR. Its description quotes a dispatch header:\n"
+                f"{HEADER_INSTRUCTION}\n{execution_token_line(EARLIER)}\n\nend of quote",
+            ),
         ],
     )
     return path
@@ -47,11 +58,9 @@ def _sessions_db(path):
 
 def test_prompt_carries_the_token_line_above_an_untouched_body():
     prompt = with_execution_token("Task ID: zf-x\nTitle: x", CURRENT)
-    assert prompt == (
-        "Handoff token for this dispatch: pass it as `--execution-id` to every "
-        "`hermes zerofactory move` you run.\n"
-        f"{execution_token_line(CURRENT)}\n\n"
-        "Task ID: zf-x\nTitle: x"
+    assert (
+        prompt
+        == f"{INSTRUCTION}\n{execution_token_line(CURRENT)}\n\nTask ID: zf-x\nTitle: x"
     )
     assert token_from_prompt(prompt) == CURRENT
 
@@ -65,15 +74,35 @@ def test_prompt_without_a_token_is_untouched(token):
     "text",
     [
         "",
-        "ZEROFACTORY_WORKER_EXECUTION_ID=not-a-token",
-        "ZEROFACTORY_WORKER_EXECUTION_ID=" + CURRENT.upper(),
+        "ZEROFACTORY_WORKER_EXECUTION_ID=" + CURRENT,
+        f"Task ID: zf-x\n{execution_token_line(CURRENT)}",
         "quoted ZEROFACTORY_WORKER_EXECUTION_ID=" + CURRENT,
         "ZEROFACTORY_WORKER_EXECUTION_ID= " + CURRENT,
+        f"{INSTRUCTION}\nZEROFACTORY_WORKER_EXECUTION_ID=not-a-token",
+        f"{INSTRUCTION}\nZEROFACTORY_WORKER_EXECUTION_ID={CURRENT} trailing",
+        f"{INSTRUCTION}\nZEROFACTORY_WORKER_EXECUTION_ID={CURRENT.upper()}",
+        f"{INSTRUCTION}\n",  # instruction line, then the prompt without a token line
+        f"prefix {INSTRUCTION}\n{execution_token_line(CURRENT)}",
+        f"{INSTRUCTION} \n{execution_token_line(CURRENT)}",
+        f"Handoff token for this dispatch: run the move with --execution-id.\n"
+        f"{execution_token_line(CURRENT)}",
+        # The reviewer's finding: a header quoted inside a body is not a dispatch.
+        f"Task ID: zf-x\nDescription:\n{INSTRUCTION}\n{execution_token_line(CURRENT)}\n",
+        "Review of PR 152:\n```\n"
+        f"{INSTRUCTION}\n{execution_token_line(CURRENT)}\n```\n",
     ],
 )
-def test_only_the_dispatcher_token_line_counts(text):
-    """Anything but the exact line the spawner writes is not a token."""
+def test_only_a_complete_header_at_the_top_counts(text):
+    """Only the two-line header the spawner writes, first, is a dispatch."""
     assert token_from_prompt(text) is None
+
+
+def test_header_tolerates_crlf_and_nothing_after_it():
+    crlf = f"{INSTRUCTION}\r\n{execution_token_line(CURRENT)}\r\n\r\nTask ID: zf-x"
+    assert token_from_prompt(crlf) == CURRENT
+    assert (
+        token_from_prompt(f"{INSTRUCTION}\n{execution_token_line(CURRENT)}") == CURRENT
+    )
 
 
 def test_newest_token_in_a_session_wins(tmp_path):
@@ -81,8 +110,17 @@ def test_newest_token_in_a_session_wins(tmp_path):
     assert token_from_session("s1", db) == CURRENT
     assert token_from_session("s2", db) == OTHER
     assert token_from_session("s3", db) is None
+    assert token_from_session("s4", db) is None
     assert token_from_session("never-seen", db) is None
     assert token_from_session(None, db) is None
+
+
+def test_header_below_many_steering_messages_is_still_found(tmp_path):
+    """The scan bound counts dispatch prompts, not the messages between them."""
+    db = tmp_path / "state.db"
+    noise = [("s1", "user", f"steering note {n}") for n in range(80)]
+    _state_db(db, [("s1", "user", with_execution_token("t", CURRENT)), *noise])
+    assert token_from_session("s1", db) == CURRENT
 
 
 @pytest.mark.parametrize("broken", ["missing", "not-a-database", "no-messages-table"])
@@ -105,6 +143,7 @@ def test_unreadable_transcript_is_no_token(tmp_path, broken):
         (None, {SESSION_ID_ENV: "s1"}, CURRENT),
         (None, {SESSION_ID_ENV: "s1", EXECUTION_ID_ENV: ""}, CURRENT),
         (None, {SESSION_ID_ENV: "s3"}, None),
+        (None, {SESSION_ID_ENV: "s4"}, None),
         (None, {}, None),
     ],
 )
@@ -168,3 +207,19 @@ def test_default_resolver_reads_the_reporting_profiles_own_transcript(
         resolve_worker_execution_id(actor="zf-reviewer", env={SESSION_ID_ENV: "s1"})
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "actor", ["zf-reviewer", "somebody", "unassigned", "human", ""]
+)
+def test_default_resolver_never_falls_back_to_the_global_database(
+    tmp_path, monkeypatch, actor
+):
+    """An actor without a profile of its own has no token, even when the global
+    ``state.db`` holds a session that carries one: the human operator's transcript
+    is never read as a worker's."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _state_db(
+        tmp_path / "state.db", [("s1", "user", with_execution_token("t", CURRENT))]
+    )
+    assert resolve_worker_execution_id(actor=actor, env={SESSION_ID_ENV: "s1"}) is None
